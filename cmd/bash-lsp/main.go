@@ -131,38 +131,41 @@ type astView struct {
 	kids []*astView
 }
 
-func buildView(n *tree.Node) *astView {
+// buildView builds the view of n. byParent maps a node to the comments that
+// belong directly under it, in source order.
+func buildView(n *tree.Node, byParent map[*tree.Node][]*tree.Node) *astView {
 	v := &astView{n: n}
-	for _, c := range n.Children {
-		v.kids = append(v.kids, buildView(c))
-	}
-	return v
-}
-
-// insertComment places c under the deepest node whose range holds it, before
-// the first sibling that starts after it.
-func (v *astView) insertComment(c *tree.Node) {
-	for _, k := range v.kids {
-		if k.n.Range.Start.Offset <= c.Range.Start.Offset && c.Range.End.Offset <= k.n.Range.End.Offset {
-			k.insertComment(c)
-			return
-		}
-	}
+	cs := byParent[n]
 	i := 0
-	for i < len(v.kids) && v.kids[i].n.Range.Start.Offset <= c.Range.Start.Offset {
-		i++
+	for _, c := range n.Children {
+		// A comment goes before the first child that starts after it.
+		for i < len(cs) && cs[i].Range.Start.Offset < c.Range.Start.Offset {
+			v.kids = append(v.kids, &astView{n: cs[i]})
+			i++
+		}
+		v.kids = append(v.kids, buildView(c, byParent))
 	}
-	v.kids = append(v.kids, nil)
-	copy(v.kids[i+1:], v.kids[i:])
-	v.kids[i] = &astView{n: c}
-}
-
-func fileView(f *tree.File) *astView {
-	v := buildView(f.Root)
-	for _, c := range f.Comments {
-		v.insertComment(c)
+	for ; i < len(cs); i++ {
+		v.kids = append(v.kids, &astView{n: cs[i]})
 	}
 	return v
+}
+
+// fileView merges File.Comments into the node tree in one pass. Each comment
+// goes under the deepest node whose range holds it (found with the indexed
+// tree.Locator), and before the first sibling that starts after it. Both
+// File.Comments and every node's children are in source order.
+func fileView(f *tree.File) *astView {
+	loc := f.NewLocator()
+	byParent := map[*tree.Node][]*tree.Node{}
+	for _, c := range f.Comments {
+		p := loc.At(c.Range.Start.Offset)
+		for p != f.Root && !(p.Range.Start.Offset <= c.Range.Start.Offset && c.Range.End.Offset <= p.Range.End.Offset) {
+			p = p.Parent
+		}
+		byParent[p] = append(byParent[p], c)
+	}
+	return buildView(f.Root, byParent)
 }
 
 func (v *astView) json() astNode {

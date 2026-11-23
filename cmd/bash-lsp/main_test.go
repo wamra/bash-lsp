@@ -264,3 +264,62 @@ func TestUsageErrorsExitTwo(t *testing.T) {
 		}
 	}
 }
+
+// manyComments is a script of n comment lines with a function before, between
+// and after them.
+func manyComments(t testing.TB, n int) string {
+	t.Helper()
+	var b strings.Builder
+	b.WriteString("#!/bin/bash\nfirst() { :; }\n")
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&b, "# c%d\n", i)
+		if i == n/2 {
+			b.WriteString("middle() { :; }\n")
+		}
+	}
+	b.WriteString("last() { :; }\n")
+	path := filepath.Join(t.TempDir(), "many.sh")
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestAstManyCommentsKeepsCountAndOrder(t *testing.T) {
+	const n = 20000
+	out := runOK(t, "ast", manyComments(t, n))
+	var got []string
+	var order []string // functions and comments in output order, depth 1 only
+	for _, l := range strings.Split(out, "\n") {
+		if strings.HasPrefix(l, "  Comment ") {
+			got = append(got, l[strings.Index(l, `"`):])
+			order = append(order, "c")
+		}
+		if strings.HasPrefix(l, "    FuncDecl ") {
+			order = append(order, l[strings.Index(l, `"`):])
+		}
+	}
+	// The shebang is a comment too.
+	if len(got) != n+1 {
+		t.Fatalf("%d top-level comments, want %d", len(got), n+1)
+	}
+	for i := 0; i < n; i++ {
+		if want := fmt.Sprintf("\"c%d\"", i); got[i+1] != want {
+			t.Fatalf("comment %d is %s, want %s", i+1, got[i+1], want)
+		}
+	}
+	if order[1] != `"first"` || order[2+n/2+1] != `"middle"` || order[len(order)-1] != `"last"` {
+		t.Fatalf("function order wrong: first=%s middle=%s last=%s", order[1], order[2+n/2+1], order[len(order)-1])
+	}
+}
+
+func BenchmarkAstManyComments(b *testing.B) {
+	path := manyComments(b, 20000)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var out, errb bytes.Buffer
+		if code := run([]string{"ast", path, "--json"}, strings.NewReader(""), &out, &errb); code != 0 {
+			b.Fatalf("exit %d: %s", code, errb.String())
+		}
+	}
+}
