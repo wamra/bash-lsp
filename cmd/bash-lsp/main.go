@@ -159,13 +159,19 @@ func fileView(f *tree.File) *astView {
 	loc := f.NewLocator()
 	byParent := map[*tree.Node][]*tree.Node{}
 	for _, c := range f.Comments {
-		p := loc.At(c.Range.Start.Offset)
-		for p != f.Root && !(p.Range.Start.Offset <= c.Range.Start.Offset && c.Range.End.Offset <= p.Range.End.Offset) {
-			p = p.Parent
-		}
+		p := commentParent(f, loc, c)
 		byParent[p] = append(byParent[p], c)
 	}
 	return buildView(f.Root, byParent)
+}
+
+// commentParent is the node a comment is printed under.
+func commentParent(f *tree.File, loc *tree.Locator, c *tree.Node) *tree.Node {
+	p := loc.At(c.Range.Start.Offset)
+	for p != f.Root && !(p.Range.Start.Offset <= c.Range.Start.Offset && c.Range.End.Offset <= p.Range.End.Offset) {
+		p = p.Parent
+	}
+	return p
 }
 
 func (v *astView) json() astNode {
@@ -209,24 +215,45 @@ func (v *astView) print(w io.Writer, depth int) {
 // hundreds of megabytes of indentation or fail inside encoding/json.
 const astMaxDepth = 1000
 
-// treeDepth is the number of levels of the tree under root, root included.
-// It walks with an explicit stack: the tree can be far deeper than is safe to
-// recurse over.
-func treeDepth(root *tree.Node) int {
+// nodeDepths returns the depth of every node under root (root is 1) and the
+// deepest level. It walks with an explicit stack: the tree can be far deeper
+// than is safe to recurse over.
+func nodeDepths(root *tree.Node) (map[*tree.Node]int, int) {
 	type frame struct {
 		n *tree.Node
 		d int
 	}
+	depths := map[*tree.Node]int{}
 	max := 0
 	stack := []frame{{root, 1}}
 	for len(stack) > 0 {
 		f := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
+		depths[f.n] = f.d
 		if f.d > max {
 			max = f.d
 		}
 		for _, c := range f.n.Children {
 			stack = append(stack, frame{c, f.d + 1})
+		}
+	}
+	return depths, max
+}
+
+// treeDepth is the number of levels of the node tree under root, root included.
+func treeDepth(root *tree.Node) int {
+	_, d := nodeDepths(root)
+	return d
+}
+
+// viewDepth is the number of levels of what `ast` prints: the node tree with
+// each comment one level under the node it is printed under.
+func viewDepth(f *tree.File) int {
+	depths, max := nodeDepths(f.Root)
+	loc := f.NewLocator()
+	for _, c := range f.Comments {
+		if d := depths[commentParent(f, loc, c)] + 1; d > max {
+			max = d
 		}
 	}
 	return max
@@ -248,7 +275,7 @@ func cmdAst(args []string, stdout, stderr io.Writer) int {
 	if f.Skipped != "" {
 		return fail(stderr, fmt.Errorf("%s: %s", pos[0], f.Skipped))
 	}
-	if depth := treeDepth(f.Root); depth > astMaxDepth {
+	if depth := viewDepth(f); depth > astMaxDepth {
 		return fail(stderr, fmt.Errorf("tree too deep to print (depth %d)", depth))
 	}
 	if asJSON {

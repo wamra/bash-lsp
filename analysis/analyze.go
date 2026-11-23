@@ -21,6 +21,7 @@ func Analyze(files map[string][]byte, opt Options) *Snapshot {
 	for path, src := range files {
 		if len(src) > MaxFileBytes {
 			f := tree.NewFile(path, nil)
+			f.Dialect = parse.Detect(path, src)
 			f.Skipped = fmt.Sprintf("file is %d bytes, over the %d byte limit", len(src), MaxFileBytes)
 			facts[path] = Bind(f)
 			continue

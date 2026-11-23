@@ -14,8 +14,8 @@ import (
 	"sync"
 
 	"github.com/wamra/bash-lsp/analysis"
-	"github.com/wamra/bash-lsp/internal/front"
 	"github.com/wamra/bash-lsp/internal/workspace"
+	"github.com/wamra/bash-lsp/parse"
 	"github.com/wamra/bash-lsp/tree"
 )
 
@@ -63,7 +63,7 @@ func (d *docsOnly) SetOverlay(path string, _ int, text []byte) {
 		f = workspace.OversizeFile(path, fmt.Sprintf("%s: %d bytes exceeds the %d byte file limit",
 			filepath.Base(path), len(text), workspace.DefaultMaxFileBytes))
 	} else {
-		f = front.Parse(path, text, front.Detect(path, text))
+		f = parse.File(path, text)
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()

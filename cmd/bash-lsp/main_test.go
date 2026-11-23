@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wamra/bash-lsp/parse"
 )
 
 func TestVersion(t *testing.T) {
@@ -415,5 +417,59 @@ func TestAstShallowStillPrints(t *testing.T) {
 	var out, errb bytes.Buffer
 	if code := run([]string{"ast", p}, strings.NewReader(""), &out, &errb); code != 0 || out.Len() == 0 {
 		t.Fatalf("exit %d stderr %q", code, errb.String())
+	}
+}
+
+// nestedSrc is n nested braces around inner.
+func nestedSrc(n int, inner string) string {
+	return strings.Repeat("{ ", n) + inner + strings.Repeat("; }", n) + "\n"
+}
+
+// findDepth returns a source whose printed view is exactly depth levels deep
+// (and, when treeLess is set, whose node tree is one level shallower).
+func findDepth(t *testing.T, depth int, treeLess bool) string {
+	t.Helper()
+	inners := []string{"true", "x=1", "a && b", "x=$(true)", "x=$(# c\n)", "x=$(true # c\n)"}
+	for n := depth/2 - 8; n <= depth/2; n++ {
+		for _, in := range inners {
+			src := nestedSrc(n, in)
+			f := parse.File("d.sh", []byte(src))
+			if viewDepth(f) == depth && (!treeLess || treeDepth(f.Root) == depth-1) {
+				return src
+			}
+		}
+	}
+	t.Fatalf("no source with printed depth %d (treeLess=%v)", depth, treeLess)
+	return ""
+}
+
+func TestAstDepthThreshold(t *testing.T) {
+	cases := []struct {
+		name     string
+		depth    int
+		treeLess bool
+		refused  bool
+	}{
+		{"1000 prints", 1000, false, false},
+		{"1001 is refused", 1001, false, true},
+		{"1000 nodes plus a comment level is refused", 1001, true, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "d.sh")
+			if err := os.WriteFile(p, []byte(findDepth(t, c.depth, c.treeLess)), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			for _, args := range [][]string{{"ast", p}, {"ast", "--json", p}} {
+				code, out, errs := runCode(t, args...)
+				if c.refused {
+					if code != 1 || out != "" || !strings.Contains(errs, "tree too deep to print (depth 1001)") {
+						t.Fatalf("%v: exit %d, %d bytes, stderr %q", args, code, len(out), errs)
+					}
+				} else if code != 0 || out == "" {
+					t.Fatalf("%v: exit %d: %s", args, code, errs)
+				}
+			}
+		})
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/wamra/bash-lsp/analysis"
+	"github.com/wamra/bash-lsp/tree"
 )
 
 func abs(p string) string {
@@ -44,6 +45,14 @@ func TestAnalyzeOversizeFileIsSkipped(t *testing.T) {
 	ff := s.Facts(p)
 	if ff == nil || ff.File.Skipped == "" || len(ff.Decls) != 0 {
 		t.Fatalf("facts %+v", ff)
+	}
+	if ff.File.Dialect != tree.Bash {
+		t.Fatalf("Dialect = %v, want bash", ff.File.Dialect)
+	}
+	bats := abs("big.bats")
+	s = analysis.Analyze(map[string][]byte{bats: big}, analysis.Options{Root: abs("")})
+	if d := s.Facts(bats).File.Dialect; d != tree.Bats {
+		t.Fatalf("oversize .bats Dialect = %v, want bats", d)
 	}
 	if analysis.MaxFileBytes != 2<<20 {
 		t.Fatalf("MaxFileBytes = %d", analysis.MaxFileBytes)

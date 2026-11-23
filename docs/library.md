@@ -1,3 +1,45 @@
+# Using bash-lsp as a library
+
+Four packages are public: the root package `bash-lsp`, `analysis`, `parse`
+and `tree`. The parser behind them is internal and cannot be imported.
+
+| Package | What it gives you |
+|---|---|
+| `github.com/wamra/bash-lsp` | `Load(root)`: discover the shell files under a directory the way the language server does (`.gitignore`, symlink policy, default size and count limits) and return an `*analysis.Snapshot`. A missing or non-directory root is an error; a file that does not parse is not. |
+| `.../parse` | `Detect(path, src)`, `File(path, src)` (detect, then parse) and `FileAs(path, src, dialect)`. Never returns nil. `File.Dialect` says what was used; syntax problems are in `File.Errors`, a file that was not parsed says why in `File.Skipped`. |
+| `.../analysis` | `Bind(file)` gives the facts of one file; `Analyze(files, opts)` parses and binds a set of in-memory files (keys are absolute paths), resolves `source` among them and returns generation 1. Files over `analysis.MaxFileBytes` (2 MiB) are in the snapshot as skipped. The snapshot answers `Definition`, `References`, `WorkspaceSymbols`, `DocumentSymbols`, `Visible`, `SourceEdges`, `BindingsOf`. |
+| `.../tree` | The syntax tree: `tree.File`, `tree.Node`, `tree.Kind`, `tree.Dialect`. |
+
+Use `bashlsp.Load` for a directory on disk, `analysis.Analyze` for files you
+hold in memory, and `parse.File` for one file's tree.
+
+Every slice a snapshot returns (`Paths`, `SourceEdges` with its `Targets`,
+`Visible`, `BindingsOf`) is a copy you may modify. The facts, declarations and
+tree nodes a snapshot hands out are read-only (see the doc comments).
+
+Tree shapes you can rely on: one `tree.KAndOr` node spans a whole `&&`/`||`
+chain (children are the operands in order, operators are not recorded);
+`tree.KPipeline` is flat; every statement is a `tree.KStmt`.
+
+## Example
+
+A separate module, `example.com/consumer`, loads `testdata/corpus` and prints
+where `build_release` is defined and referenced. Its `go.mod`:
+
+```
+module example.com/consumer
+
+go 1.26.0
+
+require github.com/wamra/bash-lsp v0.0.0
+
+replace github.com/wamra/bash-lsp => ~/dev/bash-lsp
+```
+
+(`go build` also adds `require mvdan.cc/sh/v3 v3.14.1 // indirect`.) Its
+`main.go`:
+
+```go
 // Command consumer loads a directory of shell files and prints where
 // build_release is defined and every place that refers to it.
 package main
@@ -75,7 +117,7 @@ func rel(root, p string) string {
 }
 ```
 
-Output:
+Output of `./consumer testdata/corpus` (go1.26.0):
 
 ```
 definition: lib/util.sh:4:1
@@ -86,20 +128,6 @@ references: 4
   main.sh:6:3
   main.sh:7:3
 ```
-
-The consumer's `go.mod`:
-
-```
-module example.com/consumer
-
-go 1.26.0
-
-require github.com/wamra/bash-lsp v0.0.0
-
-replace github.com/wamra/bash-lsp => ~/dev/bash-lsp
-```
-
-(`go build` also adds `require mvdan.cc/sh/v3 v3.14.1 // indirect`.)
 
 ## Go version
 

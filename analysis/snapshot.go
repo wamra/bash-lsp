@@ -18,8 +18,9 @@ const (
 	Unresolved
 )
 
-// Symbol is one named thing: a function, an alias or a variable. Read-only:
-// shared between snapshots.
+// Symbol is one named thing: a function, an alias or a variable. Read-only. A
+// Symbol belongs to the snapshot that built it (each Build makes new ones from
+// the shared, read-only Decls); it is not valid in another snapshot.
 type Symbol struct {
 	Kind  DeclKind
 	Name  string

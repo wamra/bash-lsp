@@ -66,7 +66,8 @@ const (
 // VarAttrs are the attributes a declaration gives a variable.
 type VarAttrs struct{ Local, Exported, Readonly, Integer, Array, Assoc, Nameref, Global bool }
 
-// Decl is one declaration. Read-only: shared between snapshots.
+// Decl is one declaration. Read-only: snapshots built from the same FileFacts
+// share its Decls.
 type Decl struct {
 	Kind      DeclKind
 	Name      string
@@ -90,7 +91,8 @@ const (
 	UseVarWrite
 )
 
-// Use is one use of a name. Read-only: shared between snapshots. ViaAlias: the use is the target named inside an alias definition.
+// Use is one use of a name. Read-only: snapshots built from the same FileFacts
+// share its Uses. ViaAlias: the use is the target named inside an alias definition.
 type Use struct {
 	Kind     UseKind
 	Name     string
@@ -111,7 +113,7 @@ type SourceRef struct {
 
 // FileFacts is everything Bind extracts from one file. Read-only: shared
 // between snapshots (a snapshot built after an edit reuses the facts of the
-// files that did not change).
+// files that did not change), and with them every Decl and Use.
 type FileFacts struct {
 	Path    string
 	File    *tree.File
