@@ -3,7 +3,8 @@
 A Bash language server written in Go. It resolves definitions, references and
 symbols across `source`d files, over LSP on stdio.
 
-Status: milestone 1 is built and not yet released. Go to definition,
+Status: milestone 1 is built and not yet released. One known crash on crafted
+deeply nested input is open (`docs/m1-deferred.md`). Go to definition,
 references, implementation, hover, document and workspace symbols work across
 `source`d files (static, `$(dirname "$0")`-relative and glob loaders), through
 aliases and with locals scoped to their function; syntax errors are reported

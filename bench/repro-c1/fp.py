@@ -1,0 +1,15 @@
+import os
+d="/private/tmp/wbrr/fp"
+def w(n,s): open(os.path.join(d,n),"w").write(s)
+w("unclosed_bracket_then_assigns.sh", "echo [\n" + "".join(f"A{i}=1\n" for i in range(1200)))
+w("unclosed_bracket_then_pipes.sh", "echo Press [Enter\n" + "ls | grep x | wc -l\n"*400)
+w("elif_1500.sh", "if [ \"$1\" = a0 ]; then :\n" + "".join(f"elif [ \"$1\" = a{i} ]; then :\n" for i in range(1,1500)) + "fi\n")
+w("case_3000.sh", "case $1 in\n" + "".join(f"  a{i}) echo {i} ;;\n" for i in range(3000)) + "esac\n")
+w("pipeline_3000.sh", "cat x" + " | cat"*3000 + "\n")
+w("andor_3000.sh", "true" + " && true"*3000 + "\n")
+w("heredoc_brackets.sh", "cat <<EOF\n" + "((((([[[[{{{{ $x\n"*5000 + "EOF\n")
+w("dquote_brackets.sh", "".join('echo "((((( [[[[ {{{{"\n' for _ in range(5000)))
+w("comment_smileys.sh", "# :( :( :( :(\n"*6000)
+w("sequential_if_5000.sh", "if x; then y; fi\n"*5000)
+w("time_seq.sh", "time ls\n"*3000)
+w("func_seq.sh", "".join(f"f{i}() {{ :; }}\n" for i in range(3000)))
