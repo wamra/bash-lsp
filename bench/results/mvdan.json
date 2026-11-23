@@ -1,0 +1,122 @@
+{
+ "big": {
+  "bytes": 560711,
+  "mb_per_s": 35.15615937998968,
+  "parse_ms": 15.949
+ },
+ "name": "mvdan/sh 3.14.1 (parser only)",
+ "results": {
+  "C01": [
+   true,
+   "source call with literal path; FuncDecl in util.sh"
+  ],
+  "C01d": [
+   true,
+   "path = $HERE + literal; HERE = $(dirname ...) visible as CmdSubst"
+  ],
+  "C02": [
+   true,
+   "alias definition is an ordinary call with arg br=build_release; `br` is an ordinary call. Parser does not expand aliases"
+  ],
+  "C03": [
+   true,
+   "trap body is a quoted string; re-parsing it yields a call to log"
+  ],
+  "C04": [
+   true,
+   "per-file facts only; which file sees which is not a parser concern"
+  ],
+  "C04b": [
+   true,
+   "FuncDecl and call positions"
+  ],
+  "C05": [
+   true,
+   "as C02"
+  ],
+  "C06": [
+   true,
+   "cmd=build_release is a literal assignment; \"$cmd\" call has a ParamExp as command word"
+  ],
+  "C07": [
+   true,
+   "eval argument is a literal string; re-parsing yields the call"
+  ],
+  "C08": [
+   true,
+   "local decls and uses are attributable to their function: deploy uses=2 other uses=1"
+  ],
+  "C09": [
+   true,
+   "FuncDecl with name range"
+  ],
+  "C10": [
+   true,
+   "enclosing function of the call is known: true"
+  ],
+  "C11": [
+   true,
+   "as C10"
+  ],
+  "C12": [
+   true,
+   "locals nested under FuncDecl"
+  ],
+  "C13": [
+   true,
+   "tree in 7.3µs, 3 functions"
+  ],
+  "C14": [
+   true,
+   "definition node available; hover text is ours to write"
+  ],
+  "C14b": [
+   true,
+   "comment kept with its line; adjacency to the FuncDecl on the next line is derivable"
+  ],
+  "C15": [
+   true,
+   "call in library, decl in sourcing script, source edge: all present; linking them is ours"
+  ],
+  "C16": [
+   true,
+   "as C15"
+  ],
+  "C17": [
+   true,
+   "for f in plugins/*.sh (literal glob) and . \"$f\" are both visible"
+  ],
+  "C18": [
+   true,
+   "funcs=map[after_fi:5 before_break:2] err=\u003cnil\u003e recovered=true"
+  ],
+  "C19": [
+   false,
+   "funcs=map[before_exp:2] err=broken_exp.sh:3:9: not a valid parameter expansion operator: \"\\n\""
+  ],
+  "C20": [
+   true,
+   "broken_fi: err=false recovered-flag=true; broken_exp: err=true"
+  ],
+  "C22": [
+   true,
+   "FuncDecl in unopened file"
+  ],
+  "C24": [
+   true,
+   "as C08"
+  ],
+  "C25": [
+   true,
+   "own decl and call"
+  ],
+  "C28": [
+   true,
+   "bare ParamExp outside quotes is distinguishable; the lint rule is ours or ShellCheck's"
+  ],
+  "C29": [
+   true,
+   "source path word has a range"
+  ]
+ }
+}

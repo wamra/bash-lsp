@@ -1,0 +1,1 @@
+{"name": "bash-lsp 0.1.0", "files": 1000, "walk_to_first_answer_ms": 141, "initialize_ms": 3, "workspace_symbol_hits": 2, "definition_found": true, "edit_to_definition_ms": [42.8, 51.3, 39.2, 49.0, 45.1, 41.7], "edit_to_definition_ms_median": 45.1, "rss_mb": 331}

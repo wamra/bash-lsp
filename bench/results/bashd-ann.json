@@ -1,0 +1,175 @@
+{
+ "name": "bashd 0.4.0",
+ "caps": {
+  "definitionProvider": true,
+  "referencesProvider": true,
+  "hoverProvider": true,
+  "documentSymbolProvider": true,
+  "workspaceSymbolProvider": true,
+  "implementationProvider": false,
+  "callHierarchyProvider": false,
+  "renameProvider": true,
+  "documentFormattingProvider": true,
+  "documentRangeFormattingProvider": true,
+  "completionProvider": true,
+  "signatureHelpProvider": false,
+  "codeActionProvider": true,
+  "semanticTokensProvider": false,
+  "foldingRangeProvider": false,
+  "selectionRangeProvider": false,
+  "inlayHintProvider": true,
+  "documentLinkProvider": false,
+  "documentHighlightProvider": false,
+  "diagnosticProvider": true,
+  "codeLensProvider": false,
+  "colorProvider": true
+ },
+ "sync": 1,
+ "timings": {
+  "initialize_ms": 14,
+  "definition_ms_median": 0.2,
+  "rss_mb": 12
+ },
+ "results": {
+  "C13": [
+   true,
+   "first documentSymbol right after didOpen is non-empty",
+   "3 symbols"
+  ],
+  "C01": [
+   true,
+   "definition across a static `source ./lib/util.sh`",
+   "[('lib/util.sh', 4)]"
+  ],
+  "C01d": [
+   false,
+   "definition across `source \"$HERE/lib/util.sh\"` (HERE=$(dirname $0))",
+   "[]"
+  ],
+  "C02": [
+   false,
+   "definition through alias reaches the function",
+   "[] (alias def line 4 also acceptable alongside)"
+  ],
+  "C03": [
+   false,
+   "definition of function named in trap string",
+   "[]"
+  ],
+  "C04": [
+   true,
+   "references exclude same-named function in unrelated orphan.sh",
+   "[('lib/util.sh', 4), ('main.sh', 7)]"
+  ],
+  "C04b": [
+   true,
+   "references include the definition and the direct call",
+   "[('lib/util.sh', 4), ('main.sh', 7)]"
+  ],
+  "C05": [
+   false,
+   "references include the call through alias br",
+   "[('lib/util.sh', 4), ('main.sh', 7)]"
+  ],
+  "C06": [
+   false,
+   "references include cmd=build_release / \"$cmd\"",
+   "[('lib/util.sh', 4), ('main.sh', 7)]"
+  ],
+  "C07": [
+   false,
+   "references include eval \"build_release y\"",
+   "[('lib/util.sh', 4), ('main.sh', 7)]"
+  ],
+  "C08": [
+   true,
+   "references of a local variable stay inside its function",
+   "[('main.sh', 6), ('main.sh', 7), ('main.sh', 8)]"
+  ],
+  "C09": [
+   false,
+   "prepareCallHierarchy returns an item",
+   "{'__error__': 'timeout'}"
+  ],
+  "C10": [
+   false,
+   "incoming calls of build_release include deploy",
+   "no item"
+  ],
+  "C11": [
+   false,
+   "outgoing calls of deploy include build_release",
+   "{'__error__': 'timeout'}"
+  ],
+  "C12": [
+   true,
+   "document symbols are hierarchical (locals nested in function)",
+   "hierarchical=True top=['deploy', 'other', 'unquoted']"
+  ],
+  "C14": [
+   true,
+   "hover at a function definition is non-empty",
+   "{\"contents\": {\"kind\": \"markdown\", \"value\": \"```sh\\nbuild_release() {\\n  local name=\\\"$1\\\"\\n  log \\\"building $name\\\"\\n}\\n```\\n\\n(defined at line **4**)\"}}"
+  ],
+  "C14b": [
+   false,
+   "hover shows the doc comment above the function",
+   "{\"contents\": {\"kind\": \"markdown\", \"value\": \"```man\\nlog(1)                      General Commands Manual                     log(1)\\n\\nNAME\\n     log \\u2013 Access system wide log messages created by o"
+  ],
+  "C24": [
+   true,
+   "rename of a local variable edits only its function",
+   "[('main.sh', 6), ('main.sh', 7), ('main.sh', 8)]"
+  ],
+  "C28": [
+   true,
+   "diagnostic on unquoted `rm $f`",
+   "[(20, 'SC2086', 'Double quote to prevent globbing and word splittin')]"
+  ],
+  "C29": [
+   true,
+   "source path resolves to lib/util.sh (definition or document link)",
+   "[('lib/util.sh', 1)]"
+  ],
+  "C25": [
+   true,
+   "call inside orphan.sh resolves to its own definition only",
+   "[('orphan.sh', 2)]"
+  ],
+  "C15": [
+   false,
+   "library call resolves to a function defined by the sourcing script",
+   "[]"
+  ],
+  "C16": [
+   true,
+   "references from the script find the call inside the library",
+   "[('app.sh', 4), ('lib/hooks.sh', 4)]"
+  ],
+  "C17": [
+   false,
+   "definition through a glob loader (for f in plugins/*.sh; . \"$f\")",
+   "[]"
+  ],
+  "C22": [
+   true,
+   "workspace symbol finds a function in an unopened file",
+   "['on_start', 'f', 'HERE', 'run_hooks', 'log', 'build_release', 'name', 'deploy', 'name', 'cmd', 'other', 'name', 'unquoted', 'f', 'build_release', 'plugin_a']"
+  ],
+  "C18": [
+   false,
+   "missing `fi`: functions before and after are still in symbols",
+   "[]"
+  ],
+  "C19": [
+   false,
+   "unterminated `${x`: functions before and after are still in symbols",
+   "[]"
+  ],
+  "C20": [
+   true,
+   "syntax errors are reported as diagnostics in both broken files",
+   "broken_fi=5 broken_exp=3"
+  ]
+ }
+}
