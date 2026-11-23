@@ -85,3 +85,25 @@ func TestKindString(t *testing.T) {
 		t.Fatal("names")
 	}
 }
+
+func TestNodeAtOverlappingSiblings(t *testing.T) {
+	f := NewFile("o.sh", []byte("0123456789"))
+	rg := func(a, b int) Range { return Range{Start: f.PosAt(a), End: f.PosAt(b)} }
+	first := &Node{Kind: KStmt, Range: rg(0, 9), Parent: f.Root}
+	second := &Node{Kind: KStmt, Range: rg(4, 6), Parent: f.Root}
+	f.Root.Children = []*Node{first, second}
+	if got := f.NodeAt(5); got != second {
+		t.Errorf("offset 5: want the later-starting sibling")
+	}
+	if got := f.NodeAt(2); got != first {
+		t.Errorf("offset 2: want first")
+	}
+	if got := f.NodeAt(8); got != first {
+		t.Errorf("offset 8: want first")
+	}
+	tie := &Node{Kind: KStmt, Range: rg(4, 7), Parent: f.Root}
+	f.Root.Children = append(f.Root.Children, tie)
+	if got := f.NodeAt(5); got != tie {
+		t.Errorf("tie on start: want the later child")
+	}
+}

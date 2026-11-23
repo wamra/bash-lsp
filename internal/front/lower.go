@@ -1,6 +1,7 @@
 package front
 
 import (
+	"regexp"
 	"sort"
 	"strings"
 
@@ -163,6 +164,9 @@ func (l *lowerer) stmt(s *syntax.Stmt) *tree.Node {
 func (l *lowerer) command(c syntax.Command) *tree.Node {
 	switch c := c.(type) {
 	case *syntax.CallExpr:
+		if n := l.declCall(c); n != nil {
+			return n
+		}
 		var kids []*tree.Node
 		for _, a := range c.Assigns {
 			kids = append(kids, l.assign(a))
@@ -550,4 +554,78 @@ func (l *lowerer) test(e syntax.TestExpr) []*tree.Node {
 		return l.test(e.X)
 	}
 	return nil
+}
+
+var declKeywords = map[string]bool{"local": true, "declare": true, "typeset": true, "export": true, "readonly": true}
+
+var identPrefix = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*`)
+
+// plainLit returns the text of a word that is a single unquoted literal.
+func plainLit(w *syntax.Word) (*syntax.Lit, bool) {
+	if len(w.Parts) != 1 {
+		return nil, false
+	}
+	lit, ok := w.Parts[0].(*syntax.Lit)
+	return lit, ok && lit.ValuePos.IsValid()
+}
+
+// declCall lowers `local|declare|typeset|export|readonly ARGS` that the parser
+// gave as a plain call (every dialect but Bash) into the same KDecl shape the
+// Bash DeclClause produces. Calls with env-assignment prefixes stay calls.
+func (l *lowerer) declCall(c *syntax.CallExpr) *tree.Node {
+	if len(c.Assigns) > 0 || len(c.Args) == 0 {
+		return nil
+	}
+	kw, ok := plainLit(c.Args[0])
+	if !ok || !declKeywords[kw.Value] {
+		return nil
+	}
+	var kids []*tree.Node
+	for _, w := range c.Args[1:] {
+		kids = append(kids, l.declArg(w))
+	}
+	n := l.mk(tree.KDecl, c.Args[0].Pos(), c.End(), kids...)
+	n.Name, n.NameRange = kw.Value, l.rng(kw.ValuePos, kw.ValueEnd)
+	return n
+}
+
+// declArg lowers one declaration argument: `name`, `name=value`, `name+=value`
+// become a KAssign named name; anything else a nameless KAssign wrapping the word.
+func (l *lowerer) declArg(w *syntax.Word) *tree.Node {
+	if lit, ok := w.Parts[0].(*syntax.Lit); ok && lit.ValuePos.IsValid() {
+		if name := identPrefix.FindString(lit.Value); name != "" {
+			rest := lit.Value[len(name):]
+			start := l.pos(lit.ValuePos)
+			nameRange := tree.Range{Start: start, End: l.f.PosAt(start.Offset + len(name))}
+			bare := len(w.Parts) == 1 && rest == ""
+			valued := strings.HasPrefix(rest, "=") || strings.HasPrefix(rest, "+=")
+			if bare || valued {
+				var kids []*tree.Node
+				if valued {
+					eq := len(name) + strings.IndexByte(rest, '=') + 1 // offset just past '='
+					var parts []*tree.Node
+					if eq < len(lit.Value) {
+						ls := l.f.PosAt(start.Offset + eq)
+						ln := &tree.Node{Kind: tree.KLit, Value: lit.Value[eq:], Range: tree.Range{Start: ls, End: l.pos(lit.ValueEnd)}}
+						parts = append(parts, ln)
+					}
+					for _, p := range w.Parts[1:] {
+						parts = append(parts, l.part(p))
+					}
+					if len(parts) > 0 {
+						vw := &tree.Node{Kind: tree.KWord, Children: parts,
+							Range: tree.Range{Start: parts[0].Range.Start, End: l.pos(w.End())}}
+						for _, p := range parts {
+							p.Parent = vw
+						}
+						kids = append(kids, vw)
+					}
+				}
+				n := l.mk(tree.KAssign, w.Pos(), w.End(), kids...)
+				n.Name, n.NameRange = name, nameRange
+				return n
+			}
+		}
+	}
+	return l.mk(tree.KAssign, syntax.Pos{}, syntax.Pos{}, l.word(w))
 }

@@ -308,3 +308,112 @@ func TestHeredocAndExpansions(t *testing.T) {
 		t.Error("ParamExp names not set")
 	}
 }
+
+func TestNodeAtHeredocPipeline(t *testing.T) {
+	src := "cat <<EOF | grep x\nbody\nEOF\n"
+	f := Parse("h.sh", []byte(src), Bash)
+	if len(f.Errors) != 0 {
+		t.Fatal(f.Errors)
+	}
+	callWord := func(n *tree.Node) string {
+		c := n.Enclosing(tree.KCall)
+		if n.Kind == tree.KCall {
+			c = n
+		}
+		if c == nil {
+			return ""
+		}
+		return string(src[c.Children[0].Range.Start.Offset:c.Children[0].Range.End.Offset])
+	}
+	if got := callWord(f.NodeAt(strings.Index(src, "grep"))); got != "grep" {
+		t.Errorf("NodeAt(grep) call = %q", got)
+	}
+	body := f.NodeAt(strings.Index(src, "body"))
+	hd := body.Enclosing(tree.KHeredoc)
+	if body.Kind != tree.KHeredoc && hd == nil {
+		t.Fatalf("NodeAt(body) = %v, not under a heredoc", body.Kind)
+	}
+	if got := callWord(hd0(body, hd)); got != "" {
+		t.Errorf("heredoc body should not be inside a call, got %q", got)
+	}
+	if st := body.Enclosing(tree.KPipeline); st == nil {
+		t.Fatal("body not under the pipeline")
+	}
+	var cat *tree.Node
+	for p := body; p != nil; p = p.Parent {
+		if p.Kind == tree.KStmt && p.Parent != nil && p.Parent.Kind == tree.KPipeline {
+			cat = p
+			break
+		}
+	}
+	if cat == nil || cat != cat.Parent.Children[0] {
+		t.Fatal("body must land under the first (cat) stage")
+	}
+}
+
+func hd0(body, hd *tree.Node) *tree.Node {
+	if body.Kind == tree.KHeredoc {
+		return body
+	}
+	return hd
+}
+
+func TestDeclOutsideBashMatchesBash(t *testing.T) {
+	src := []byte("#!/bin/sh\nf() { local a=1 b; }\n")
+	if Detect("x.sh", src) != POSIX {
+		t.Fatal("expected POSIX detection")
+	}
+	shape := func(d Dialect) (name string, assigns []string, vals int) {
+		f := Parse("x.sh", src, d)
+		if len(f.Errors) != 0 {
+			t.Fatal(d, f.Errors)
+		}
+		dc := find(f, tree.KDecl, "local")
+		if dc == nil {
+			t.Fatalf("%v: no KDecl", d)
+		}
+		for _, a := range dc.Children {
+			if a.Kind != tree.KAssign {
+				t.Fatalf("%v: child %v", d, a.Kind)
+			}
+			assigns = append(assigns, a.Name)
+			vals += len(a.Children)
+			if a.Name != "" && string(src[a.NameRange.Start.Offset:a.NameRange.End.Offset]) != a.Name {
+				t.Errorf("%v: NameRange for %q", d, a.Name)
+			}
+		}
+		return dc.Name, assigns, vals
+	}
+	pn, pa, pv := shape(POSIX)
+	bn, ba, bv := shape(Bash)
+	if pn != "local" || bn != "local" || !reflect.DeepEqual(pa, []string{"a", "b"}) || !reflect.DeepEqual(ba, pa) || pv != bv || pv != 1 {
+		t.Fatalf("posix %q %v %d, bash %q %v %d", pn, pa, pv, bn, ba, bv)
+	}
+}
+
+func TestDeclOutsideBashEdges(t *testing.T) {
+	f := Parse("x.sh", []byte("export -r X=\"$y\" Z\nX=1 local y\nlocal\n"), POSIX)
+	if len(f.Errors) != 0 {
+		t.Fatal(f.Errors)
+	}
+	ex := find(f, tree.KDecl, "export")
+	if ex == nil || len(ex.Children) != 3 || ex.Children[0].Name != "" || ex.Children[1].Name != "X" || ex.Children[2].Name != "Z" {
+		t.Fatalf("export: %+v", ex)
+	}
+	if ex.Children[0].Children[0].Kind != tree.KWord || len(ex.Children[1].Children) != 1 {
+		t.Fatal("option word / value child shape")
+	}
+	if find(f, tree.KDecl, "local") == nil {
+		t.Fatal("bare `local` should be a KDecl")
+	}
+	n := 0
+	f.Root.Walk(func(x *tree.Node) bool {
+		if x.Kind == tree.KDecl && x.Name == "local" {
+			n++
+		}
+		return true
+	})
+	if n != 1 {
+		t.Fatalf("`X=1 local y` must stay a call; %d local decls", n)
+	}
+}

@@ -137,14 +137,17 @@ func NewFile(path string, src []byte) *File {
 }
 
 // NodeAt returns the deepest node whose Range contains offset; Root if none.
+// Sibling ranges may overlap (a heredoc body lies inside the first stage of a
+// pipeline whose second stage starts earlier), so at each level it descends
+// into the containing child with the greatest Range.Start.Offset; on a tie,
+// the later child.
 func (f *File) NodeAt(offset int) *Node {
 	n := f.Root
 	for {
 		var next *Node
 		for _, c := range n.Children {
-			if c.Range.Contains(offset) {
+			if c.Range.Contains(offset) && (next == nil || c.Range.Start.Offset >= next.Range.Start.Offset) {
 				next = c
-				break
 			}
 		}
 		if next == nil {
