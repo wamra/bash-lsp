@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"path/filepath"
+	"slices"
 	"sort"
 
 	"github.com/wamra/bash-lsp/tree"
@@ -41,10 +42,15 @@ type Location struct {
 	Range tree.Range
 }
 
-// Options configure Build. SearchPaths may be nil.
+// Options configure Build. SearchPaths may be nil. Prev, when set, is the
+// snapshot of the previous generation: Build reuses its visibility sets when
+// the files and the source graph are unchanged, which is the case for most
+// edits (a change inside a function body). The result is the same as a build
+// without Prev.
 type Options struct {
 	Root        string
 	SearchPaths func(path string) []string
+	Prev        *Snapshot
 }
 
 // maxAliasDepth bounds alias chains.
@@ -118,6 +124,8 @@ type Snapshot struct {
 	visible    []bitset
 	incomplete []bool
 	sourced    []bool
+	adj        [][]int // resolved source edges as file indexes; with unresolved, the key for reusing visible
+	unresolved []bool
 
 	funcSyms, aliasSyms, varSyms map[string][]*Symbol
 	localSyms                    map[localKey]*Symbol
@@ -182,10 +190,34 @@ func Build(files map[string]*FileFacts, opt Options, generation uint64) *Snapsho
 			}
 		}
 	}
-	s.computeVisibility(adj, unresolved)
+	s.adj, s.unresolved = adj, unresolved
+	if p := opt.Prev; p != nil && s.sameGraph(p) {
+		s.visible, s.incomplete = p.visible, p.incomplete
+	} else {
+		s.computeVisibility(adj, unresolved)
+	}
 	s.collectSymbols()
 	s.bindAll()
 	return s
+}
+
+// sameGraph reports whether p has the same files and the same source graph as
+// s, so that p's visibility and incomplete flags are s's too.
+func (s *Snapshot) sameGraph(p *Snapshot) bool {
+	if len(s.paths) != len(p.paths) || len(p.visible) != len(s.paths) {
+		return false
+	}
+	for i, path := range s.paths {
+		if path != p.paths[i] || s.unresolved[i] != p.unresolved[i] || !slices.Equal(s.adj[i], p.adj[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// sharesVisibility reports whether s uses the very visibility sets of p (tests).
+func (s *Snapshot) sharesVisibility(p *Snapshot) bool {
+	return len(s.visible) > 0 && len(p.visible) > 0 && &s.visible[0] == &p.visible[0]
 }
 
 // computeVisibility fills visible and incomplete. Visible(A) is everything

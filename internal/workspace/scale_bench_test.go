@@ -73,3 +73,44 @@ func TestOverlayIdenticalToDiskReusesFacts(t *testing.T) {
 		t.Fatal("reverting the text did not revert the facts")
 	}
 }
+
+// chainWorkspace writes files of funcs functions each into dir; file i sources
+// file i-1 and function i_k calls function (i-1)_k (same shape as
+// bench/gen_workspace.py).
+func chainWorkspace(tb testing.TB, dir string, files, funcs int) {
+	tb.Helper()
+	for i := 0; i < files; i++ {
+		var b strings.Builder
+		b.WriteString("#!/usr/bin/env bash\n")
+		if i > 0 {
+			fmt.Fprintf(&b, "source ./s%04d.sh\n", i-1)
+		}
+		for k := 0; k < funcs; k++ {
+			fmt.Fprintf(&b, "# Function %d_%d.\nf%d_%d() {\n  local a=\"$1\"\n", i, k, i, k)
+			if i > 0 {
+				fmt.Fprintf(&b, "  f%d_%d \"$a\"\n", i-1, k)
+			}
+			b.WriteString("  echo \"$a\"\n}\n\n")
+		}
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("s%04d.sh", i)), []byte(b.String()), 0o644); err != nil {
+			tb.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkSetOverlayChain1000 is one edit in the middle of a 1,000-file,
+// 20-functions-each source chain: the whole-workspace relink.
+func BenchmarkSetOverlayChain1000(b *testing.B) {
+	dir := b.TempDir()
+	chainWorkspace(b, dir, 1000, 20)
+	w, err := Open(dir, Limits{})
+	if err != nil {
+		b.Fatal(err)
+	}
+	p := filepath.Join(w.Root(), "s0500.sh")
+	src, _ := os.ReadFile(p)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		w.SetOverlay(p, i+1, append(append([]byte{}, src...), fmt.Sprintf("# edit %d\n", i)...))
+	}
+}

@@ -327,7 +327,7 @@ func (w *Workspace) rebuild() {
 		files[o.entry.path] = o.entry.facts
 	}
 	w.gen++
-	w.snap.Store(analysis.Build(files, analysis.Options{Root: w.root, SearchPaths: w.searchPaths}, w.gen))
+	w.snap.Store(analysis.Build(files, analysis.Options{Root: w.root, SearchPaths: w.searchPaths, Prev: w.snap.Load()}, w.gen))
 }
 
 // ---- discovery ----
