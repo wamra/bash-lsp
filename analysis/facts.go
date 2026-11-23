@@ -282,9 +282,12 @@ func (b *binder) paramExp(n *tree.Node, sc *Scope) {
 		if s := n.Range.Start.Offset; s >= 0 && s < len(b.src) && b.src[s] != '$' {
 			read, write = b.arithAccess(s, n.Range.End.Offset, 0, len(b.src))
 			// The parser drops NUL bytes but counts them in its name range
-			// (`((A<NUL>[0]++`); an arithmetic name is exactly its bytes.
+			// (`((A<NUL>[0]++`); an arithmetic name is exactly its bytes, and
+			// one with a NUL inside (`((0<NUL>A[0]++`) is not recorded.
 			if a := nr.Start.Offset; a >= 0 && a+len(n.Name) <= len(b.src) && string(b.src[a:a+len(n.Name)]) == n.Name {
 				nr = tree.Range{Start: nr.Start, End: b.ff.File.PosAt(a + len(n.Name))}
+			} else {
+				read, write = false, false
 			}
 		}
 		if read {
