@@ -375,3 +375,30 @@ func TestArithmeticWriteInPrivateScopeIsPrivate(t *testing.T) {
 		}
 	}
 }
+
+// In arithmetic the binder reads the source text, and a NUL ends a name: the
+// bytes after it start the next (docs/m2a-acceptance.md, NUL name rules).
+func TestArithmeticSplitsNameAtNUL(t *testing.T) {
+	for src, want := range map[string]string{
+		"((A\x00B=1))\n":       "read A 2-3, write B 4-5, decl B 4-5",
+		"let A\x00B=1\n":       "read A 4-5, write B 6-7, decl B 6-7",
+		"echo $((A\x00B+1))\n": "read A 8-9, read B 10-11",
+	} {
+		ff := bindSrcT(src)
+		var got []string
+		for _, u := range ff.Uses {
+			switch u.Kind {
+			case UseVarRead:
+				got = append(got, fmt.Sprintf("read %s %d-%d", u.Name, u.Range.Start.Offset, u.Range.End.Offset))
+			case UseVarWrite:
+				got = append(got, fmt.Sprintf("write %s %d-%d", u.Name, u.Range.Start.Offset, u.Range.End.Offset))
+			}
+		}
+		for _, d := range ff.Decls {
+			got = append(got, fmt.Sprintf("decl %s %d-%d", d.Name, d.NameRange.Start.Offset, d.NameRange.End.Offset))
+		}
+		if g := strings.Join(got, ", "); g != want {
+			t.Errorf("%q: %s, want %s", src, g, want)
+		}
+	}
+}

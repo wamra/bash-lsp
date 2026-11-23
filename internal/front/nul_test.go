@@ -226,3 +226,39 @@ func TestNULIndexMatchesScan(t *testing.T) {
 		}
 	}
 }
+
+// The per-kind NUL name rules of docs/m2a-acceptance.md, pinned: in an
+// assignment, Bash `declare` and mksh `typeset` the parser ends the name at
+// the NUL (`A\0B=1` names `A`, range text `A`); a heredoc tag is the shell's
+// word, NUL removed (`<<E\0F` names `EF`), with the source bytes as range.
+func TestNULNameRules(t *testing.T) {
+	for _, c := range []struct {
+		d         Dialect
+		src       string
+		kind      tree.Kind
+		name      string
+		rangeText string
+	}{
+		{Bash, "A\x00B=1\n", tree.KAssign, "A", "A"},
+		{Bash, "declare A\x00B=1\n", tree.KAssign, "A", "A"},
+		{Mksh, "typeset A\x00B=1\n", tree.KAssign, "A", "A"},
+		{Bash, "cat <<E\x00F\nx\nEF\n", tree.KHeredoc, "EF", "E\x00F"},
+	} {
+		f := Parse("/ws/f.sh", []byte(c.src), c.d)
+		var found *tree.Node
+		f.Root.Walk(func(n *tree.Node) bool {
+			if found == nil && n.Kind == c.kind {
+				found = n
+			}
+			return true
+		})
+		if found == nil {
+			t.Errorf("%q (%v): no %v", c.src, c.d, c.kind)
+			continue
+		}
+		got := c.src[found.NameRange.Start.Offset:found.NameRange.End.Offset]
+		if found.Name != c.name || got != c.rangeText {
+			t.Errorf("%q (%v): %v name %q range text %q, want %q and %q", c.src, c.d, c.kind, found.Name, got, c.name, c.rangeText)
+		}
+	}
+}
