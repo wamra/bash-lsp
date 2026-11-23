@@ -201,7 +201,7 @@ func (r *resolver) scriptDir(w *tree.Node) string {
 func (r *resolver) varIsScriptDir(name string) bool {
 	var d *Decl
 	for _, c := range r.ff.Decls {
-		if c.Kind == DeclVariable && c.Name == name {
+		if c.Kind == DeclVariable && c.Name == name && !c.Temp {
 			if d != nil {
 				return false
 			}

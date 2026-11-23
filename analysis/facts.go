@@ -3,6 +3,7 @@
 package analysis
 
 import (
+	"bytes"
 	"regexp"
 	"strings"
 
@@ -53,6 +54,7 @@ type Decl struct {
 	AliasTo   string // DeclAlias: first word of the alias value when literal, else ""
 	Literal   string // DeclVariable: assigned value when it is a single literal or fully-literal quoted string, else ""
 	Implicit  string // "" for assignments/declare; else the builtin that declares it: "read", "mapfile", "readarray", "getopts", "printf -v", "for", "select"
+	Temp      bool   // true for an assignment prefixed to a command (`X=1 cmd`): it lives only for that command and must not be offered as a definition for later reads
 }
 
 // UseKind says how a name is used.
@@ -172,7 +174,7 @@ func (b *binder) visit(n *tree.Node, sc *Scope) {
 	case tree.KFor:
 		if n.Name != "" {
 			impl := "for"
-			if o := n.Range.Start.Offset; o >= 0 && o <= len(b.src) && strings.HasPrefix(string(b.src[o:]), "select") {
+			if o := n.Range.Start.Offset; o >= 0 && o <= len(b.src) && bytes.HasPrefix(b.src[o:], []byte("select")) {
 				impl = "select"
 			}
 			b.variable(n.Name, n.NameRange, n, sc, VarAttrs{}, "", impl)
@@ -280,7 +282,8 @@ func literalText(w *tree.Node) (string, bool) {
 
 func (b *binder) declClause(n *tree.Node, sc *Scope) {
 	var attrs VarAttrs
-	skip := false // -f/-F/-p: function or listing form, no variables declared
+	dashN := false // -n: nameref for declare/typeset/local, "remove the export attribute" for export/readonly
+	skip := false  // -f/-F/-p: function or listing form, no variables declared
 	for _, a := range n.Children {
 		if a.Kind != tree.KAssign || a.Name != "" || len(a.Children) == 0 || a.Children[0].Kind != tree.KWord {
 			continue
@@ -302,7 +305,7 @@ func (b *binder) declClause(n *tree.Node, sc *Scope) {
 			case 'A':
 				attrs.Assoc = true
 			case 'n':
-				attrs.Nameref = true
+				dashN = true
 			case 'g':
 				attrs.Global = true
 			case 'f', 'F', 'p':
@@ -312,13 +315,15 @@ func (b *binder) declClause(n *tree.Node, sc *Scope) {
 	}
 	switch n.Name {
 	case "export":
-		attrs.Exported = true
+		attrs.Exported = !dashN
 	case "readonly":
 		attrs.Readonly = true
 	case "local":
 		attrs.Local = true
+		attrs.Nameref = dashN
 	case "declare", "typeset":
 		attrs.Local = sc.Func != "" && !attrs.Global
+		attrs.Nameref = dashN
 	}
 	for _, a := range n.Children {
 		if skip && a.Kind == tree.KAssign && a.Name != "" {
@@ -343,13 +348,30 @@ func (b *binder) call(n *tree.Node, sc *Scope) {
 	if len(words) > 0 {
 		if name, ok := literalText(words[0]); ok && name != "" {
 			if b.builtin(n, name, words, sc) {
-				b.children(n, sc)
+				b.callChildren(n, sc, len(words) > 0)
 				return
 			}
 			b.use(UseCall, name, words[0].Range, sc, n)
 		}
 	}
-	b.children(n, sc)
+	b.callChildren(n, sc, len(words) > 0)
+}
+
+// callChildren visits a call's children; env-prefix assignments are Temp when a command follows.
+func (b *binder) callChildren(n *tree.Node, sc *Scope, hasCmd bool) {
+	for _, c := range n.Children {
+		if c.Kind != tree.KAssign || !hasCmd {
+			b.visit(c, sc)
+			continue
+		}
+		start := len(b.ff.Decls)
+		b.assign(c, sc, VarAttrs{}, "")
+		for _, d := range b.ff.Decls[start:] {
+			if d.Node == c {
+				d.Temp = true
+			}
+		}
+	}
 }
 
 // builtin handles calls with special meaning. It returns true when the call

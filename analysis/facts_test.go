@@ -176,12 +176,15 @@ func TestImplicitDeclVariants(t *testing.T) {
 }
 
 func TestAttrFlags(t *testing.T) {
-	ff := bindSrc(t, "export -n E=1\nreadonly R=2\ndeclare -xi N=3\ndeclare -a A=(1 2)\nf() { declare L=1; typeset -g T=1; local -r K=1; }\n")
+	ff := bindSrc(t, "export -n E=1\nexport X0=1\nreadonly R=2\ndeclare -xi N=3\ndeclare -a A=(1 2)\nf() { declare L=1; typeset -g T=1; local -r K=1; }\n")
 	if d := decl(ff, DeclVariable, "R"); !d.Attrs.Readonly {
 		t.Errorf("R %+v", d.Attrs)
 	}
-	if d := decl(ff, DeclVariable, "E"); !d.Attrs.Exported {
-		t.Errorf("E %+v", d.Attrs)
+	if d := decl(ff, DeclVariable, "E"); d.Attrs.Exported || d.Attrs.Nameref {
+		t.Errorf("E (export -n) %+v", d.Attrs)
+	}
+	if d := decl(ff, DeclVariable, "X0"); !d.Attrs.Exported || d.Attrs.Nameref {
+		t.Errorf("X0 %+v", d.Attrs)
 	}
 	if d := decl(ff, DeclVariable, "N"); !d.Attrs.Exported || !d.Attrs.Integer || d.Attrs.Local {
 		t.Errorf("N %+v", d.Attrs)
@@ -332,5 +335,24 @@ func TestBrokenFile(t *testing.T) {
 	ff := bindFile(t, "../testdata/corpus/broken_fi.sh")
 	if ff.File == nil || ff.Root == nil {
 		t.Fatal("no facts")
+	}
+}
+
+func TestTempEnvAssignment(t *testing.T) {
+	ff := bindSrc(t, "X=1 cmd\nY=2\n")
+	if d := decl(ff, DeclVariable, "X"); d == nil || !d.Temp {
+		t.Errorf("X: %+v", d)
+	}
+	if d := decl(ff, DeclVariable, "Y"); d == nil || d.Temp {
+		t.Errorf("Y: %+v", d)
+	}
+	found := false
+	for _, u := range ff.Uses {
+		if u.Kind == UseVarWrite && u.Name == "X" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("UseVarWrite for X dropped")
 	}
 }
