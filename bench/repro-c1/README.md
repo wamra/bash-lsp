@@ -6,3 +6,8 @@ the wrongly refused ones; they write under `/private/tmp/wbrr/` (edit `base`
 to change that). `run.sh CASE` runs `./bash-lsp symbols cases/CASE --json`
 with a 120 s alarm. Run the generators with `uv run --no-project python`.
 See `docs/m1-deferred.md`, last section.
+
+`run_all.py BINARY OUTDIR` runs every generator here (fp.py included) against a binary and
+prints one JSON record: exit codes, first output line and outcome per case
+(`bench/results/repro-c1-m2a.json` is its output for the M2a binary). Nothing is written
+outside OUTDIR.

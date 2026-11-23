@@ -463,8 +463,9 @@ func (s *server) publish(be backend, d *document, path string) {
 		if f.Skipped != "" {
 			diags = append(diags, Diagnostic{Severity: 3, Code: "WB1002", Source: "bash-lsp", Message: f.Skipped})
 		}
+		cs := converters{}
 		for _, e := range f.Errors {
-			diags = append(diags, Diagnostic{Range: rangeOf(f, e.Range), Severity: 1, Code: "WB1001", Source: "bash-lsp", Message: e.Msg})
+			diags = append(diags, Diagnostic{Range: cs.rangeOf(f, e.Range), Severity: 1, Code: "WB1001", Source: "bash-lsp", Message: e.Msg})
 		}
 	}
 	s.c.notify("textDocument/publishDiagnostics", publishDiagnosticsParams{URI: d.uri, Diagnostics: diags})
@@ -472,10 +473,19 @@ func (s *server) publish(be backend, d *document, path string) {
 
 // ---- positions ----
 
-func rangeOf(f *tree.File, r tree.Range) Range {
+// converters converts the ranges of one request to UTF-16, one tree.Converter
+// per file: a request with many ranges on one long line scans that line once.
+type converters map[*tree.File]*tree.Converter
+
+func (cs converters) rangeOf(f *tree.File, r tree.Range) Range {
+	c := cs[f]
+	if c == nil {
+		c = f.NewConverter()
+		cs[f] = c
+	}
 	var out Range
-	out.Start.Line, out.Start.Character = f.ToUTF16(r.Start)
-	out.End.Line, out.End.Character = f.ToUTF16(r.End)
+	out.Start.Line, out.Start.Character = c.ToUTF16(r.Start)
+	out.End.Line, out.End.Character = c.ToUTF16(r.End)
 	return out
 }
 
@@ -491,17 +501,18 @@ func fileOf(snap *analysis.Snapshot, path string) *tree.File {
 	return nil
 }
 
-func (s *server) rangeIn(snap *analysis.Snapshot, path string, r tree.Range) Range {
+func (s *server) rangeIn(cs converters, snap *analysis.Snapshot, path string, r tree.Range) Range {
 	if f := fileOf(snap, path); f != nil {
-		return rangeOf(f, r)
+		return cs.rangeOf(f, r)
 	}
 	return rawRange(r)
 }
 
 func (s *server) locations(snap *analysis.Snapshot, ls []analysis.Location) []Location {
 	out := make([]Location, 0, len(ls))
+	cs := converters{}
 	for _, l := range ls {
-		out = append(out, Location{URI: s.uriOf(l.Path), Range: s.rangeIn(snap, l.Path, l.Range)})
+		out = append(out, Location{URI: s.uriOf(l.Path), Range: s.rangeIn(cs, snap, l.Path, l.Range)})
 	}
 	return out
 }
@@ -573,7 +584,7 @@ func (s *server) hover(raw json.RawMessage) (any, *rpcError) {
 	if !found {
 		return nil, nil
 	}
-	return hover{Contents: markupContent{Kind: "markdown", Value: md}, Range: s.rangeIn(snap, path, rng)}, nil
+	return hover{Contents: markupContent{Kind: "markdown", Value: md}, Range: s.rangeIn(converters{}, snap, path, rng)}, nil
 }
 
 func symbolKind(k analysis.DeclKind) int {
@@ -602,10 +613,11 @@ func (s *server) documentSymbol(raw json.RawMessage) (any, *rpcError) {
 		}
 		return []SymbolInformation{}, nil
 	}
+	cs := converters{}
 	if s.hierarchical {
 		out := make([]DocumentSymbol, 0, len(syms))
 		for _, d := range syms {
-			out = append(out, hierSymbol(f, d))
+			out = append(out, hierSymbol(cs, f, d))
 		}
 		return out, nil
 	}
@@ -614,7 +626,7 @@ func (s *server) documentSymbol(raw json.RawMessage) (any, *rpcError) {
 	var flat func(d analysis.DocSymbol, container string)
 	flat = func(d analysis.DocSymbol, container string) {
 		out = append(out, SymbolInformation{Name: d.Name, Kind: symbolKind(d.Kind),
-			Location: Location{URI: uri, Range: rangeOf(f, d.Range)}, ContainerName: container})
+			Location: Location{URI: uri, Range: cs.rangeOf(f, d.Range)}, ContainerName: container})
 		for _, c := range d.Children {
 			flat(c, d.Name)
 		}
@@ -625,15 +637,15 @@ func (s *server) documentSymbol(raw json.RawMessage) (any, *rpcError) {
 	return out, nil
 }
 
-func hierSymbol(f *tree.File, d analysis.DocSymbol) DocumentSymbol {
+func hierSymbol(cs converters, f *tree.File, d analysis.DocSymbol) DocumentSymbol {
 	detail := d.Detail
 	if d.Kind == analysis.DeclAlias {
 		detail = "alias"
 	}
 	out := DocumentSymbol{Name: d.Name, Detail: detail, Kind: symbolKind(d.Kind),
-		Range: rangeOf(f, d.Range), SelectionRange: rangeOf(f, d.Selection)}
+		Range: cs.rangeOf(f, d.Range), SelectionRange: cs.rangeOf(f, d.Selection)}
 	for _, c := range d.Children {
-		out.Children = append(out.Children, hierSymbol(f, c))
+		out.Children = append(out.Children, hierSymbol(cs, f, c))
 	}
 	return out
 }
@@ -648,9 +660,10 @@ func (s *server) workspaceSymbol(raw json.RawMessage) (any, *rpcError) {
 	snap := s.backend().Snapshot()
 	infos := snap.WorkspaceSymbols(p.Query, 0)
 	out := make([]SymbolInformation, 0, len(infos))
+	cs := converters{}
 	for _, i := range infos {
 		out = append(out, SymbolInformation{Name: i.Name, Kind: symbolKind(i.Kind),
-			Location: Location{URI: s.uriOf(i.Path), Range: s.rangeIn(snap, i.Path, i.Range)}})
+			Location: Location{URI: s.uriOf(i.Path), Range: s.rangeIn(cs, snap, i.Path, i.Range)}})
 	}
 	return out, nil
 }

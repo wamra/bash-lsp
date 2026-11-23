@@ -20,6 +20,7 @@ type resyncer struct {
 	f      *tree.File
 	d      Dialect
 	budget int // candidate lines still allowed, shared by the whole file
+	nul    nulIndex
 }
 
 // attempt is one parser run over f.Src[off:], lowered to absolute positions.
@@ -34,7 +35,7 @@ type attempt struct {
 // parseFile parses all of f.Src and returns its statements, errors and
 // comments.
 func parseFile(f *tree.File, d Dialect) (stmts []*tree.Node, errs []tree.SyntaxError, comments []*tree.Node) {
-	r := &resyncer{f: f, d: d, budget: maxResyncAttempts}
+	r := &resyncer{f: f, d: d, budget: maxResyncAttempts, nul: newNULIndex(f.Src)}
 	return r.resolve(r.raw(0))
 }
 
@@ -47,7 +48,7 @@ func (r *resyncer) raw(off int) attempt {
 	}
 	base := f.PosAt(off)
 	a := attempt{failOff: -1}
-	a.stmts, a.errs = lowerStmts(f, base, af.Stmts)
+	a.stmts, a.errs = lowerStmts(f, base, af.Stmts, r.nul)
 	a.comments = lowerComments(f, base, af)
 	switch {
 	case crashed:

@@ -84,3 +84,86 @@ func (f *File) FromUTF16(line, char int) Pos {
 	}
 	return f.PosAt(off)
 }
+
+// checkpointEvery is the byte spacing of a Converter's checkpoints on a long line.
+const checkpointEvery = 1024
+
+// A Converter does the work of File.ToUTF16 for many positions of one file.
+// ToUTF16 rescans the line from its start on every call, which is quadratic
+// when thousands of positions sit on one long line; a Converter scans each
+// long line once, keeps a (byte offset, UTF-16 column) checkpoint every
+// checkpointEvery bytes, and answers each position from the nearest
+// checkpoint, in any order. Results equal File.ToUTF16's. Not safe for
+// concurrent use; make one per request.
+type Converter struct {
+	f     *File
+	lines map[int][]checkpoint         // by line index, for lines longer than checkpointEvery
+	last  struct{ line, off, col int } // a rune boundary and its column, from the previous call
+}
+
+type checkpoint struct{ off, col int }
+
+// NewConverter returns a Converter for f.
+func (f *File) NewConverter() *Converter { return &Converter{f: f} }
+
+// ToUTF16 is File.ToUTF16.
+func (c *Converter) ToUTF16(p Pos) (line, char int) {
+	f := c.f
+	p = f.PosAt(p.Offset)
+	line = p.Line - 1
+	i := f.lines[line]
+	if p.Offset-i <= checkpointEvery {
+		return f.ToUTF16(p)
+	}
+	cps, ok := c.lines[line]
+	if !ok {
+		cps = f.checkpoints(line)
+		if c.lines == nil {
+			c.lines = map[int][]checkpoint{}
+		}
+		c.lines[line] = cps
+	}
+	// the last checkpoint at or before p.Offset
+	k := sort.Search(len(cps), func(k int) bool { return cps[k].off > p.Offset }) - 1
+	i, char = cps[k].off, cps[k].col
+	// positions usually come in source order: continue from the previous answer when it is closer
+	if c.last.line == line && c.last.off <= p.Offset && c.last.off > i {
+		i, char = c.last.off, c.last.col
+	}
+	end := len(f.Src)
+	if line+1 < len(f.lines) {
+		end = f.lines[line+1]
+	}
+	for i < p.Offset {
+		u, size := units(f.Src[i:end])
+		if i+size > p.Offset { // p is inside this rune: File.ToUTF16 cuts it, each byte one unit
+			return line, char + p.Offset - i
+		}
+		char += u
+		i += size
+	}
+	c.last.line, c.last.off, c.last.col = line, i, char
+	return line, char
+}
+
+// checkpoints scans line once, recording a checkpoint at a rune boundary at
+// least every checkpointEvery bytes; the first is the line start.
+func (f *File) checkpoints(line int) []checkpoint {
+	start := f.lines[line]
+	end := len(f.Src)
+	if line+1 < len(f.lines) {
+		end = f.lines[line+1]
+	}
+	cps := []checkpoint{{start, 0}}
+	col, next := 0, start+checkpointEvery
+	for i := start; i < end; {
+		u, size := units(f.Src[i:end])
+		col += u
+		i += size
+		if i >= next {
+			cps = append(cps, checkpoint{i, col})
+			next = i + checkpointEvery
+		}
+	}
+	return cps
+}

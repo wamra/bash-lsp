@@ -244,8 +244,8 @@ func costCases() map[string]string {
 		// and never close them: resync parses the tail again from every one
 		// of them, deep.
 		"resync-sustained": fill("echo '\n"+strings.Repeat("echo "+strings.Repeat("$(", 20)+"\n", 50), " a", "\n"),
-		// The same with braces, the slowest construct to parse, held just
-		// under the nesting limit and taken past it at the end of the file:
+		// The same with braces (8.9 s a parse; resyncArith, 17.5 s, is the
+		// slowest input known), held just under the nesting limit and taken past it at the end of the file:
 		// every one of resync's parses runs to the nesting error.
 		"resync-at-limit": fill("echo '\n"+strings.Repeat("{ {\n", 50)+strings.Repeat("{ ", 9800), "a;", strings.Repeat("{ ", 200)+"\n"),
 		// And without the last 200: every parse runs to the end of the file.
@@ -348,5 +348,22 @@ func TestDeepFileBesideOthers(t *testing.T) {
 	wg.Wait()
 	if n := changed.Load(); n != 0 {
 		t.Fatalf("%d files changed their result", n)
+	}
+}
+
+// resyncArith is the slowest input known for resync: the first line leaves a
+// quote open, so resync runs 50 candidate re-parses over 2 MiB of lines that
+// each nest 2,000 arithmetic subscripts inside `$(( ))`, and each of those
+// parses is deep, long and lowers to nothing. It is a benchmark, not a test:
+// one Parse takes about 16 s (bench/results/resync-cost-m2a-task5.txt).
+func resyncArith() string {
+	line := "echo $(( " + strings.Repeat("(a[", 2000) + "1" + strings.Repeat("])", 2000) + " ))\n"
+	return fill("echo '\n", line, "")
+}
+
+func BenchmarkResyncArith(b *testing.B) {
+	src := []byte(resyncArith())
+	for b.Loop() {
+		Parse("x.sh", src, Bash)
 	}
 }
