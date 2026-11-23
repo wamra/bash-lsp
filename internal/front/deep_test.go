@@ -310,7 +310,7 @@ func TestLowererDepthBound(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			stmts, errs := lowerStmts(f, f.PosAt(0), af.Stmts)
+			stmts, errs := lowerStmts(f, f.PosAt(0), af.Stmts, newNULIndex(f.Src))
 			f.Root.Children = stmts
 			f.Errors = errs
 			if !hasErr(f, "nested deeper") {

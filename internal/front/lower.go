@@ -28,6 +28,15 @@ type lowerer struct {
 	ptrs  []*tree.Node
 
 	depth int // recursion depth of stmt, word, part and ifClause; see maxDepth
+
+	// nul indexes the NUL bytes of f.Src, nil when it has none. Then every NUL
+	// correction below is skipped and ranges are the parser's.
+	nul nulIndex
+	// valueLit is the first literal of the assignment value being lowered and
+	// valueFrom the absolute offset of that assignment's name: the parser gives
+	// such a literal a position counted from the lexer's name (see nulLit).
+	valueLit  *syntax.Lit
+	valueFrom int
 }
 
 // maxDepth bounds the lowerer's recursion. A statement nested deeper is
@@ -93,8 +102,9 @@ func nextChunk(prev int) int {
 // lowerStmts lowers a statement list parsed from f.Src[base.Offset:]. A
 // statement whose lowering panics is dropped and reported rather than taking
 // the whole file down. Callers use the returned errors to extend File.Errors.
-func lowerStmts(f *tree.File, base tree.Pos, stmts []*syntax.Stmt) ([]*tree.Node, []tree.SyntaxError) {
-	l := &lowerer{f: f, base: base, cursor: base.Offset}
+// nul is newNULIndex(f.Src), built once per file.
+func lowerStmts(f *tree.File, base tree.Pos, stmts []*syntax.Stmt, nul nulIndex) ([]*tree.Node, []tree.SyntaxError) {
+	l := &lowerer{f: f, base: base, cursor: base.Offset, nul: nul}
 	var out []*tree.Node
 	for _, s := range stmts {
 		if n := l.safeStmt(s); n != nil {
@@ -215,14 +225,9 @@ func (l *lowerer) missing(n *tree.Node, p syntax.Pos, tok string) {
 // for name ranges, which must hold the name's bytes and nothing else.
 func (l *lowerer) rng(a, b syntax.Pos) tree.Range {
 	s, e := l.base.Offset+int(a.Offset()), l.base.Offset+int(b.Offset())
-	src := l.f.Src
-	if s >= 0 && e <= len(src) && s <= e {
-		for s < e && src[s] == 0 {
-			s++
-		}
-		for e > s && src[e-1] == 0 {
-			e--
-		}
+	if l.nul != nil && s >= 0 && e <= len(l.f.Src) && s <= e {
+		s = min(l.nul.skip(s), e)
+		e = max(l.nul.back(e), s)
 	}
 	return tree.Range{Start: l.f.PosAt(s), End: l.f.PosAt(e)}
 }
@@ -476,6 +481,13 @@ func (l *lowerer) assign(a *syntax.Assign) *tree.Node {
 	var kids []*tree.Node
 	kids = append(kids, l.arith(a.Index)...)
 	if a.Value != nil {
+		// getAssign positions a `name=value` value at the name's start plus the
+		// lexer's length of `name=`; a NUL from there on leaves it early.
+		if l.nul != nil && a.Name != nil && a.Index == nil && len(a.Value.Parts) > 0 {
+			if lit, ok := a.Value.Parts[0].(*syntax.Lit); ok {
+				l.valueLit, l.valueFrom = lit, l.base.Offset+int(a.Name.ValuePos.Offset())
+			}
+		}
 		kids = append(kids, l.word(a.Value))
 	}
 	var rparen syntax.Pos
@@ -617,34 +629,8 @@ func (l *lowerer) part1(p syntax.WordPart) *tree.Node {
 		}
 		n := l.mk(tree.KLit, p.ValuePos, p.ValueEnd)
 		n.Value = p.Value
-		// Only a literal that is, or sits in a word that holds, a NUL byte is touched: the
-		// range of every other literal stays the parser's (the lexer also drops line
-		// continuations from a value).
-		if r := l.rng(p.ValuePos, p.ValueEnd); n.Range.End.Offset <= len(l.f.Src) && n.Range.Start.Offset <= n.Range.End.Offset &&
-			r.Start.Offset >= n.Range.Start.Offset && r.End.Offset <= n.Range.End.Offset {
-			src := l.f.Src
-			inside := bytes.IndexByte(src[n.Range.Start.Offset:n.Range.End.Offset], 0) >= 0
-			before := false // a NUL earlier in the same word, e.g. in the name of `name=value`
-			for k := n.Range.Start.Offset - 1; k >= 0 && !strings.ContainsRune(" \t\r\n;&|()", rune(src[k])); k-- {
-				if src[k] == 0 {
-					before = true
-					break
-				}
-			}
-			if inside {
-				n.Range = r // without the NUL bytes the lexer dropped at either end
-			}
-			// An assignment value's position is computed from the lexer's name length,
-			// so a NUL inside the name leaves it that many bytes early: start at the
-			// value's own text when the source (minus NUL) only ends with it.
-			if inside || before {
-				if raw := bytes.ReplaceAll(src[n.Range.Start.Offset:n.Range.End.Offset], []byte{0}, nil); len(raw) > len(p.Value) && bytes.HasSuffix(raw, []byte(p.Value)) {
-					start := l.valueEnd(&syntax.Lit{ValuePos: p.ValuePos}, len(raw)-len(p.Value), true)
-					if start <= n.Range.End.Offset {
-						n.Range.Start = l.f.PosAt(start)
-					}
-				}
-			}
+		if l.nul != nil {
+			l.nulLit(n, p)
 		}
 		return n
 	case *syntax.SglQuoted:
@@ -712,6 +698,37 @@ func (l *lowerer) part1(p syntax.WordPart) *tree.Node {
 		return l.mk(tree.KBraceExp, p.Pos(), p.End(), kids...)
 	}
 	return l.mk(tree.KLit, p.Pos(), p.End())
+}
+
+// nulLit corrects the range of a literal in a source holding NUL bytes. Only a
+// literal that holds a NUL, or is an assignment value with a NUL between the
+// name's start and the value, is touched: the range of every other literal
+// stays the parser's (the lexer also drops line continuations from a value).
+// O(log n) plus the literal's own length.
+func (l *lowerer) nulLit(n *tree.Node, p *syntax.Lit) {
+	s, e := n.Range.Start.Offset, n.Range.End.Offset
+	r := l.rng(p.ValuePos, p.ValueEnd)
+	if e > len(l.f.Src) || s > e || r.Start.Offset < s || r.End.Offset > e {
+		return
+	}
+	inside := l.nul.count(s, e) > 0
+	before := p == l.valueLit && l.nul.count(l.valueFrom, s) > 0 // e.g. a NUL in the name of `name=value`
+	if inside {
+		n.Range = r // without the NUL bytes the lexer dropped at either end
+	}
+	if !inside && !before {
+		return
+	}
+	// The value's position is computed from the lexer's name length, so a NUL
+	// inside the name leaves it that many bytes early: start at the value's own
+	// text when the source (minus NUL) only ends with it.
+	s, e = n.Range.Start.Offset, n.Range.End.Offset
+	if raw := e - s - l.nul.count(s, e); raw > len(p.Value) && l.nul.endsWith(l.f.Src, s, e, p.Value) {
+		start := l.valueEnd(&syntax.Lit{ValuePos: p.ValuePos}, raw-len(p.Value), true)
+		if start <= e {
+			n.Range.Start = l.f.PosAt(start)
+		}
+	}
 }
 
 // arith flattens an arithmetic expression into the words it contains, in
@@ -844,17 +861,94 @@ func (l *lowerer) declArg(w *syntax.Word) *tree.Node {
 func (l *lowerer) valueEnd(lit *syntax.Lit, n int, skipNUL bool) int {
 	src := l.f.Src
 	i := min(max(l.base.Offset+int(lit.ValuePos.Offset()), 0), len(src))
-	for ; n > 0 && i < len(src); i++ {
-		if src[i] != 0 {
-			n--
-		}
+	if l.nul == nil {
+		return min(i+max(n, 0), len(src))
 	}
+	i = min(l.nul.nth(i, n), len(src))
 	if skipNUL {
-		for i < len(src) && src[i] == 0 {
-			i++
-		}
+		i = l.nul.skip(i)
 	}
 	return i
+}
+
+// nulIndex holds the sorted offsets of the NUL bytes in a source, nil when
+// there are none. Every query is a binary search: z[j]-j, the offset minus the
+// NULs before it, is the same along a run of adjacent NUL bytes and grows
+// from one run to the next.
+type nulIndex []int
+
+func newNULIndex(src []byte) nulIndex {
+	var z nulIndex
+	for i := 0; ; {
+		k := bytes.IndexByte(src[i:], 0)
+		if k < 0 {
+			return z
+		}
+		z = append(z, i+k)
+		i += k + 1
+	}
+}
+
+// from is the index of the first NUL at or after offset a.
+func (z nulIndex) from(a int) int {
+	return sort.Search(len(z), func(j int) bool { return z[j] >= a })
+}
+
+// count is the number of NUL bytes in [a, b).
+func (z nulIndex) count(a, b int) int {
+	if b <= a {
+		return 0
+	}
+	return z.from(b) - z.from(a)
+}
+
+// skip is i moved right past the NUL bytes that start at i.
+func (z nulIndex) skip(i int) int {
+	j := z.from(i)
+	if j == len(z) || z[j] != i {
+		return i
+	}
+	key := z[j] - j
+	k := j + sort.Search(len(z)-j, func(m int) bool { return z[j+m]-(j+m) > key })
+	return z[k-1] + 1
+}
+
+// back is e moved left past the NUL bytes that end just before e.
+func (z nulIndex) back(e int) int {
+	j := z.from(e) - 1
+	if j < 0 || z[j] != e-1 {
+		return e
+	}
+	key := z[j] - j
+	return z[sort.Search(j+1, func(m int) bool { return z[m]-m >= key })]
+}
+
+// nth is the offset just after the n-th non-NUL byte from start on (start
+// itself when n <= 0). It may lie past the source; callers clamp.
+func (z nulIndex) nth(start, n int) int {
+	if n <= 0 {
+		return start
+	}
+	j0 := z.from(start)
+	// the m-th NUL from j0 comes before the n-th non-NUL byte when fewer than n
+	// non-NUL bytes precede it
+	m := sort.Search(len(z)-j0, func(m int) bool { return z[j0+m]-start-m >= n })
+	return start + n + m
+}
+
+// endsWith reports whether src[s:e] without its NUL bytes ends with v.
+func (z nulIndex) endsWith(src []byte, s, e int, v string) bool {
+	k := len(v)
+	for i := e - 1; k > 0 && i >= s; i-- {
+		if src[i] == 0 {
+			continue
+		}
+		k--
+		if src[i] != v[k] {
+			return false
+		}
+	}
+	return k == 0
 }
 
 // name is a name and its range. A NUL inside the literal is in the source but

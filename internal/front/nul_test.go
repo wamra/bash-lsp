@@ -2,7 +2,10 @@ package front
 
 import (
 	"bytes"
+	"math/rand/v2"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/wamra/bash-lsp/tree"
 )
@@ -107,6 +110,104 @@ func TestLiteralRangeWithoutNULIsTheParsers(t *testing.T) {
 			}
 			if lit.Range.Start.Offset != c.start || lit.Range.End.Offset != c.end {
 				t.Errorf("%q (%v): literal range %d-%d, want %d-%d", c.src, d, lit.Range.Start.Offset, lit.Range.End.Offset, c.start, c.end)
+			}
+		}
+	}
+}
+
+// A NUL earlier in an assignment's name, before a line continuation, still
+// moves the value's start: the parser computed it from the lexer's name, which
+// has neither (a re-review asked whether a boundary byte between the NUL and
+// the value stopped the correction; the newline of `\<newline>` did).
+func TestValueAfterNULAndContinuationInName(t *testing.T) {
+	for _, d := range []Dialect{Bash, POSIX, Mksh} {
+		for _, s := range []string{"A\x00\\\nBCDE=1\n", "A\x00\\\nBCDE=12 B=3\n", "x=1 A\x00\\\nBCDE=1 echo\n"} {
+			checkNameRanges(t, s, d)
+		}
+	}
+	for _, s := range []string{"A\x00\\\nBCDE+=1\n", "declare A\x00\\\nBCDE=1\n", "local -i A\x00\\\nBCDE+=1\n"} {
+		checkNameRanges(t, s, Bash)
+	}
+	checkNameRanges(t, "typeset A\x00\\\nBCDE=1\n", Mksh)
+}
+
+// Lowering costs O(1) per node on a NUL-free source and O(log n) with NULs: a
+// re-review measured the word-start scan of each literal at 22.6 s for 256 KB
+// of `a${b}` and over 400 s for 2 MiB (about 0.2 s before that scan existed).
+// Each input is about 2 MiB, the file limit; the bound is generous. Under the
+// race detector a quarter of the size and no wall-clock bound.
+func TestLongWordWithNULsLowersInBoundedTime(t *testing.T) {
+	const bound = 5 * time.Second
+	size := 2 << 20
+	if raceBuild {
+		size /= 4
+	}
+	unit := strings.Repeat("a${b}", 12) + "aa\x00a" // 64 bytes, one NUL
+	for name, src := range map[string]string{
+		"no NUL":                 strings.Repeat("a${b}", size/5),
+		"NUL at word start":      "\x00" + strings.Repeat("a${b}", size/5-1),
+		"NUL on an earlier line": "x\x00y\n" + strings.Repeat("a${b}", size/5-1),
+		"NUL every 64 bytes":     strings.Repeat(unit, size/64),
+		"a NUL in every part":    strings.Repeat("a\x00${b}", size/6),
+		"NUL in a long name":     "A\x00" + strings.Repeat("B", size/2-2) + "=" + strings.Repeat("a${b}", size/10),
+	} {
+		done := make(chan time.Duration, 1)
+		go func() {
+			start := time.Now()
+			Parse("t.sh", []byte(src), Bash)
+			done <- time.Since(start)
+		}()
+		if raceBuild {
+			<-done
+			continue
+		}
+		select {
+		case d := <-done:
+			t.Logf("%s: %d bytes in %v", name, len(src), d.Round(time.Millisecond))
+		case <-time.After(bound):
+			t.Errorf("%s: %d bytes not lowered within %v", name, len(src), bound)
+		}
+	}
+}
+
+// The index answers what a byte-by-byte scan would.
+func TestNULIndexMatchesScan(t *testing.T) {
+	rnd := rand.New(rand.NewPCG(1, 2))
+	for range 300 {
+		src := make([]byte, rnd.IntN(40))
+		for i := range src {
+			if rnd.IntN(3) == 0 {
+				src[i] = 'a'
+			}
+		}
+		z := newNULIndex(src)
+		for a := 0; a <= len(src); a++ {
+			s := a
+			for s < len(src) && src[s] == 0 {
+				s++
+			}
+			e := a
+			for e > 0 && src[e-1] == 0 {
+				e--
+			}
+			if z.skip(a) != s || z.back(a) != e {
+				t.Fatalf("%q at %d: skip %d back %d, want %d %d", src, a, z.skip(a), z.back(a), s, e)
+			}
+			for n := 0; n <= len(src)-a+1; n++ {
+				i, k := a, n
+				for ; k > 0 && i < len(src); i++ {
+					if src[i] != 0 {
+						k--
+					}
+				}
+				if got := min(z.nth(a, n), len(src)); got != i {
+					t.Fatalf("%q: nth(%d, %d) = %d, want %d", src, a, n, got, i)
+				}
+			}
+			for b := a; b <= len(src); b++ {
+				if got, want := z.count(a, b), bytes.Count(src[a:b], []byte{0}); got != want {
+					t.Fatalf("%q: count(%d, %d) = %d, want %d", src, a, b, got, want)
+				}
 			}
 		}
 	}
