@@ -48,7 +48,10 @@ func (r Resolution) String() string {
 
 // Caller is the source end of an edge: the innermost named function around
 // the site, or the top level of the file Path when Func is nil. For a
-// RelAliases edge Func is the alias symbol.
+// RelAliases edge Func is the alias symbol. Path is always the file of the
+// site, so a function whose definitions lie in two files is two Callers
+// (one per file); the definitions of one file (both branches of an `if`)
+// share one.
 type Caller struct {
 	Path string
 	Func *Symbol

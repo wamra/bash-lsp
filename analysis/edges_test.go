@@ -341,3 +341,21 @@ func TestEdgesConcurrentQueries(t *testing.T) {
 		}
 	}
 }
+
+// A symbol with two definitions of which only one is visible from the caller
+// (x.sh and y.sh see each other, w.sh sees only y.sh): resolved, to that one.
+func TestEdgesOneDefinitionInViewOfTwo(t *testing.T) {
+	q := buildMem(t, map[string]string{
+		"w.sh": ". ./y.sh\nf\n",
+		"x.sh": ". ./y.sh\nf() { :; }\n",
+		"y.sh": "f() { :; }\n",
+	})
+	f := q.sym("y.sh", "f()", 0, 0)
+	if len(f.Decls) != 2 {
+		t.Fatalf("want one symbol with two definitions, got %d", len(f.Decls))
+	}
+	wantSame(t, q.edgeStrs(q.s.EdgesFrom(Caller{Path: q.abs("w.sh")})),
+		"w.sh:1 sources resolved/direct w.sh -> y.sh",
+		"w.sh:2 calls resolved/direct w.sh -> f@y.sh:1:1",
+	)
+}
