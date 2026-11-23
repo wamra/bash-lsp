@@ -107,22 +107,47 @@ This module's `go.mod` says `go 1.26.0`. `~/dev/code-index/go.mod`
 says `go 1.24.1`. A module cannot import one that needs a newer Go than its own
 `go` line, so linking bash-lsp into code-index needs a toolchain bump there.
 
-## Limitation: hosts that already hold 64 MiB of goroutine stacks
+## The stack guard: what a host can rely on, and its limits
 
 `parse` guards the parser's stack through its reader (design:
-`m2a-nesting-design.md`, "Mechanism" and "Limits a user can meet"). The guard
-reads the process's total goroutine stack memory. If the host process already
-holds 64 MiB or more of it, the guard cannot tell whether that memory is the
-parser's, so it falls back to counting frames: at most 65,536 frames, with a
-budget of 6,000,000 frames counted per file. In that regime a very long run of
-comment lines can be refused (`Skipped` is "nesting too deep to parse safely"):
-a comment block is refused from 12,000 to 55,000 lines on (sooner the longer
-its lines), and nesting from about 2,200 arithmetic parentheses. Alone in the
-process the limit is 32 MiB of parser stack, about 250,000 comment lines in one
-block. A host that parses untrusted files in a process with large goroutine
-stacks should expect such files to come back skipped, not crash it. The figures
-are the design note's, measured there; removing the limit needs a per-goroutine
-stack depth the Go runtime does not expose, or a patched parser.
+`m2a-nesting-design.md`, "Mechanism" and "Limits a user can meet"). A file
+that would use more than 32 MiB of parser stack comes back with `Skipped` set
+to "nesting too deep, or comment block too long, to parse safely" instead of
+overflowing the stack, which in Go ends the process.
+
+What a host can rely on:
+
+- `parse.File` may be called from any number of goroutines. A file that
+  parses alone parses beside any other file, however deep that one is: a
+  parse whose verdict could depend on another parse's stack is repeated
+  alone, under a package lock. So a call can wait for other calls.
+- The parser runs on a goroutine of its own. How deep the caller's stack is
+  does not matter, and a refused file leaves no large stack behind.
+- A refusal as such forces no collection. `parse` calls `runtime.GC` only
+  while a parse is being repeated alone, in two cases: the process's stack
+  memory has moved by 1 MiB or more since it last looked (it may then also
+  start 70 short-lived goroutines per P, to make the runtime drop the stacks
+  of finished goroutines), or, once per file, the reading is over the limit
+  by less than a 64 MiB stack would put it.
+
+What it assumes of the host:
+
+- `debug.SetMaxStack` is left at 64 MiB or more (the default is 1 GB). The
+  guard acts when the parser's stack has doubled to 64 MiB; under a lower
+  limit a deep file is a fatal stack overflow again.
+- The host's own goroutine stacks total less than about 32 MiB. The guard
+  reads the process's total stack memory and cannot tell the parser's share
+  from the host's. With 64 MiB or more held by the host, every parse runs
+  alone (one at a time) and the guard falls back to counting frames: at most
+  65,536, with a budget of 6,000,000 frames counted per file. There a
+  comment block is refused from 12,000 to 55,000 lines on (sooner the longer
+  its lines) and nesting from about 2,200 arithmetic parentheses, where
+  otherwise the limits are about 250,000 comment lines in one block and
+  8,000 parentheses. Between 32 and 64 MiB a parse gets what is left under
+  64 MiB before its frames are counted. Such a host should expect long
+  comment blocks to come back skipped, not crash it. The figures are the
+  design note's, measured there; removing the limit needs a per-goroutine
+  stack depth the Go runtime does not expose, or a patched parser.
 
 ## `bash-lsp ast` on deep trees
 

@@ -285,7 +285,7 @@ func holdStack(n int) (release func()) {
 		// The guard takes a process that held this much a second ago for
 		// one that still does (settleEvery). The tests do not wait.
 		lane.Lock()
-		floor, settled = 0, time.Time{}
+		floor, settledAt = 0, time.Time{}
 		lane.Unlock()
 	}
 }
@@ -396,7 +396,11 @@ func TestRefusalGivesTheStackBack(t *testing.T) {
 // they are parsed at once: together they pass maxStackMemory, alone none
 // does.
 func TestDeepAcceptedFilesTogether(t *testing.T) {
-	src := []byte(nested("echo ", "$(", "x", ")", "\n", 20000)())
+	depth := 20000
+	if raceBuild {
+		depth = 6000 // the race detector's frames are larger
+	}
+	src := []byte(nested("echo ", "$(", "x", ")", "\n", depth)())
 	if f := Parse("x.sh", src, Bash); f.Skipped != "" {
 		t.Fatalf("alone: skipped %q", f.Skipped)
 	}
@@ -599,5 +603,25 @@ func TestStacksOfFinishedGoroutines(t *testing.T) {
 	}
 	if left := g.stackMemory(); left >= maxStackMemory/2 {
 		t.Fatalf("%d bytes still held, of %d", left, held)
+	}
+}
+
+// A file that is refused again and again (edited while it is too deep) must
+// not cost a forced collection each time.
+func TestRefusalsForceNoCollections(t *testing.T) {
+	runtime.GC() // release the stacks earlier tests grew
+	runtime.GC()
+	deep := []byte(strings.Repeat("(", 200000) + "\n")
+	Parse("x.sh", deep, Bash) // the first may have to settle
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	for range 10 {
+		if f := Parse("x.sh", deep, Bash); f.Skipped != refusal {
+			t.Fatalf("not refused: %q", f.Skipped)
+		}
+	}
+	runtime.ReadMemStats(&after)
+	if n := after.NumForcedGC - before.NumForcedGC; n > 1 {
+		t.Fatalf("%d forced collections for 10 refusals", n)
 	}
 }

@@ -329,7 +329,7 @@ func BenchmarkAstManyComments(b *testing.B) {
 // The deepest trees the front end hands on (just under the lowerer's bound;
 // the parser's stack guard lets far deeper nesting through) must be safe for
 // every consumer: binding, symbols and both ast views recurse over the tree.
-// Run under a 64 MiB stack limit, a sixteenth of the default.
+// Run under a 64 MiB stack limit, an eighth of what a stack can reach by default.
 func TestDeepestTreesReachEveryConsumer(t *testing.T) {
 	defer debug.SetMaxStack(debug.SetMaxStack(64 << 20))
 	nest := func(open, close string, n int) string {

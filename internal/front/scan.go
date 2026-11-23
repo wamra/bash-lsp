@@ -76,7 +76,7 @@ const (
 	// alone, frames are counted instead of bytes and the count is rationed
 	// (maxProbeFrames): the limit is maxFrames frames in the parser, which
 	// is nesting some 2,200 levels deep (8,000 for `$(`), and a comment
-	// block is refused from 12,000 to 65,000 lines on, sooner the longer
+	// block is refused from 12,000 to 55,000 lines on, sooner the longer
 	// its lines. Between the two, the room left under maxStackMemory is
 	// what a parse gets before frames are counted.
 	maxFrames = maxStackMemory / 2 / maxFrameBytes
@@ -117,11 +117,11 @@ var errTooDeep = errors.New(refusal)
 var lane sync.RWMutex
 
 // floor is the reading of stackMetric the last settle ended on: the stacks
-// the process holds when no parse is running. settled is when that was.
+// the process holds when no parse is running. settledAt is when that was.
 // Both are guarded by lane, held alone.
 var (
-	floor   uint64
-	settled time.Time
+	floor     uint64
+	settledAt time.Time
 )
 
 // stackGuard is shared by every parser run over one file.
@@ -131,6 +131,8 @@ type stackGuard struct {
 	frames    int        // frames counted so far, over all runs
 	alone     bool       // lane is held alone: no other parse is running
 	contended bool       // a run sharing lane saw stackMetric high: no verdict
+	base      uint64     // alone: stackMetric when the current run started
+	collected bool       // alone: this file has had its one collection (tooDeep)
 }
 
 var pcsPool = sync.Pool{New: func() any {
@@ -179,17 +181,22 @@ func (g *stackGuard) stackMemory() uint64 {
 //
 // So: wait briefly; if the reading is still away from floor have the
 // collector finish, then empty the cache if there is still enough to
-// matter. This is the only forced collection in the package and it needs a
-// reading that moved: a file refused again and again (edited while it is
-// too deep) does not cause one each time, because its own stack is gone
-// when its goroutine is. In a process whose other stacks total
+// matter. The collection needs a reading that moved: a file refused again
+// and again (edited while it is too deep) does not cause one each time,
+// because its own stack is gone when its goroutine is. (tooDeep has the
+// package's other forced collection, and the same holds for it.) In a process whose other stacks total
 // maxStackMemory or more none of this changes the outcome (frames are
 // counted), so there it is done at most once per settleEvery.
 func (g *stackGuard) settle() {
-	if floor >= maxStackMemory && time.Since(settled) < settleEvery {
-		return // the rest of the process held that much a moment ago: frames are counted
-	}
+	g.base = g.reading()
+}
+
+// reading does what settle's comment says and returns stackMetric after it.
+func (g *stackGuard) reading() uint64 {
 	m := g.stackMemory()
+	if floor >= maxStackMemory && time.Since(settledAt) < settleEvery {
+		return m // the rest of the process held that much a moment ago: frames are counted
+	}
 	for i := 0; i < 200 && m >= floor+settleSlack; i++ {
 		if i < 100 {
 			runtime.Gosched()
@@ -199,7 +206,7 @@ func (g *stackGuard) settle() {
 		m = g.stackMemory()
 	}
 	if m < settleSlack || (m < floor+settleSlack && m+settleSlack > floor) {
-		return
+		return m
 	}
 	runtime.GC()
 	m = g.stackMemory()
@@ -214,7 +221,8 @@ func (g *stackGuard) settle() {
 			break // nothing more comes out
 		}
 	}
-	floor, settled = m, time.Now()
+	floor, settledAt = m, time.Now()
+	return m
 }
 
 // flushDeadStacks takes finished goroutines out of the runtime's per-P
@@ -294,7 +302,8 @@ func useStack(n int) byte {
 // tooDeep reports whether the calling goroutine, which is running the
 // parser, must stop. It is called from inside the parser.
 func (g *stackGuard) tooDeep() bool {
-	if g.stackMemory() < maxStackMemory {
+	m := g.stackMemory()
+	if m < maxStackMemory {
 		return false
 	}
 	if !g.alone {
@@ -308,15 +317,28 @@ func (g *stackGuard) tooDeep() bool {
 	// large stacks. Count this goroutine's frames: all of them are this
 	// run's, and inlined calls count too, so the count is never below the
 	// real one.
-	if g.spent() {
-		return true
+	if !g.spent() {
+		if g.buf == nil {
+			g.buf = pcsPool.Get().(*[]uintptr)
+		}
+		n := runtime.Callers(0, *g.buf)
+		g.frames += n
+		if n <= maxFrames {
+			return false
+		}
 	}
-	if g.buf == nil {
-		g.buf = pcsPool.Get().(*[]uintptr)
+	// One more thing can hold the reading up: the stacks this run has
+	// outgrown, which a collector in mid-cycle keeps until the cycle ends.
+	// If the reading has not risen by a whole 64 MiB stack since the run
+	// started, that may be all it is: have the collector finish, once per
+	// file, and look again. A run that really is on a 64 MiB stack has
+	// raised the reading by that much and is refused without.
+	if !g.collected && g.base < maxStackMemory && m < g.base+maxStackMemory-settleSlack {
+		g.collected = true
+		runtime.GC()
+		return g.stackMemory() >= maxStackMemory
 	}
-	n := runtime.Callers(0, *g.buf)
-	g.frames += n
-	return n > maxFrames
+	return true
 }
 
 // guardedReader hands one byte range to the parser and stops it when its

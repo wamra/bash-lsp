@@ -224,7 +224,9 @@ func TestNoCrashSubprocess(t *testing.T) {
 			}
 			// The cases named for it sit just under the limit: a guard that
 			// refuses them has become stricter than the design note says.
-			if (strings.HasPrefix(name, "accepted-") || name == "sustained-under-limit") && !parsed {
+			// (Not with the race detector: its frames are larger, so the
+			// same input passes the limit.)
+			if !raceBuild && (strings.HasPrefix(name, "accepted-") || name == "sustained-under-limit") && !parsed {
 				t.Fatalf("refused, want parsed:\n%s", firstLines(out, 12))
 			}
 		})
