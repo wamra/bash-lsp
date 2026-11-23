@@ -621,15 +621,15 @@ func (s *Snapshot) finishDynamic(r func(file int) *resolver) {
 				touched[b.Sym] = true
 			}
 		}
+		bySym := map[*Symbol][]Binding{}
+		for _, bs := range added {
+			for _, b := range bs {
+				bySym[b.Sym] = append(bySym[b.Sym], b)
+			}
+		}
 		for sym := range touched {
 			list := slices.DeleteFunc(slices.Clone(s.bySym[sym]), func(b Binding) bool { return replaced[b.Use] })
-			for _, bs := range added {
-				for _, b := range bs {
-					if b.Sym == sym {
-						list = append(list, b)
-					}
-				}
-			}
+			list = append(list, bySym[sym]...)
 			slices.SortStableFunc(list, func(a, b Binding) int {
 				if a.File != b.File {
 					return strings.Compare(a.File, b.File)
