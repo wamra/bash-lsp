@@ -74,3 +74,28 @@ func TestOnlyFrontImportsParser(t *testing.T) {
 		t.Fatal("no .go files found; the walk is not reaching the repo")
 	}
 }
+
+// TestAnalysisImportsNoInternal fails if a non-test file of package analysis
+// imports an internal/ package: library consumers get analysis without the
+// parser behind it.
+func TestAnalysisImportsNoInternal(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join("analysis", "*.go"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no analysis files (%v)", err)
+	}
+	for _, path := range files {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, imp := range f.Imports {
+			p, _ := strconv.Unquote(imp.Path.Value)
+			if strings.Contains(p, "/internal/") {
+				t.Errorf("%s imports %q: analysis may not import internal packages", filepath.ToSlash(path), p)
+			}
+		}
+	}
+}

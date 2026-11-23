@@ -12,9 +12,9 @@ import (
 	"strings"
 
 	"github.com/wamra/bash-lsp/analysis"
-	"github.com/wamra/bash-lsp/internal/front"
 	"github.com/wamra/bash-lsp/internal/lsp"
 	"github.com/wamra/bash-lsp/internal/workspace"
+	"github.com/wamra/bash-lsp/parse"
 	"github.com/wamra/bash-lsp/tree"
 )
 
@@ -205,6 +205,33 @@ func (v *astView) print(w io.Writer, depth int) {
 	}
 }
 
+// astMaxDepth is the deepest tree `ast` prints. A deeper one would print
+// hundreds of megabytes of indentation or fail inside encoding/json.
+const astMaxDepth = 1000
+
+// treeDepth is the number of levels of the tree under root, root included.
+// It walks with an explicit stack: the tree can be far deeper than is safe to
+// recurse over.
+func treeDepth(root *tree.Node) int {
+	type frame struct {
+		n *tree.Node
+		d int
+	}
+	max := 0
+	stack := []frame{{root, 1}}
+	for len(stack) > 0 {
+		f := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if f.d > max {
+			max = f.d
+		}
+		for _, c := range f.n.Children {
+			stack = append(stack, frame{c, f.d + 1})
+		}
+	}
+	return max
+}
+
 func cmdAst(args []string, stdout, stderr io.Writer) int {
 	pos, asJSON, err := parseArgs(args, true)
 	if err != nil {
@@ -217,13 +244,15 @@ func cmdAst(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	d := front.Detect(pos[0], src)
-	f := front.Parse(pos[0], src, d)
+	f := parse.File(pos[0], src)
 	if f.Skipped != "" {
 		return fail(stderr, fmt.Errorf("%s: %s", pos[0], f.Skipped))
 	}
+	if depth := treeDepth(f.Root); depth > astMaxDepth {
+		return fail(stderr, fmt.Errorf("tree too deep to print (depth %d)", depth))
+	}
 	if asJSON {
-		doc := astDoc{Path: filepath.ToSlash(pos[0]), Dialect: d.String(), Errors: []astError{}, Root: fileView(f).json()}
+		doc := astDoc{Path: filepath.ToSlash(pos[0]), Dialect: f.Dialect.String(), Errors: []astError{}, Root: fileView(f).json()}
 		for _, e := range f.Errors {
 			doc.Errors = append(doc.Errors, astError{e.Range.Start.Line, e.Range.Start.Col, e.Msg})
 		}

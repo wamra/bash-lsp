@@ -17,8 +17,8 @@ import (
 	"sync/atomic"
 
 	"github.com/wamra/bash-lsp/analysis"
-	"github.com/wamra/bash-lsp/internal/front"
 	"github.com/wamra/bash-lsp/internal/ignore"
+	"github.com/wamra/bash-lsp/parse"
 	"github.com/wamra/bash-lsp/tree"
 )
 
@@ -30,7 +30,7 @@ const (
 
 // DefaultMaxFileBytes is the file size limit when Limits.MaxFileBytes is zero.
 // It applies to open documents too.
-const DefaultMaxFileBytes = 2 << 20
+const DefaultMaxFileBytes = analysis.MaxFileBytes
 
 // Limits bound discovery. Zero values mean 2<<20 and 20000.
 type Limits struct {
@@ -316,9 +316,8 @@ func resolveExisting(dir string) string {
 }
 
 func parseEntry(path string, src []byte) *entry {
-	d := front.Detect(path, src)
-	f := front.Parse(path, src, d)
-	return &entry{path: path, hash: sha256.Sum256(src), dialect: d.String(), facts: analysis.Bind(f)}
+	f := parse.File(path, src)
+	return &entry{path: path, hash: sha256.Sum256(src), dialect: f.Dialect.String(), facts: analysis.Bind(f)}
 }
 
 // readConfig reads a small file the walk consults (.gitignore, .shellcheckrc):

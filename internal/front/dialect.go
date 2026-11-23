@@ -5,35 +5,21 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/wamra/bash-lsp/tree"
 )
 
-// Dialect is the shell language variant a file is parsed as.
-type Dialect uint8
+// Dialect is the shell language variant a file is parsed as. It is an alias of
+// tree.Dialect, which carries the type for library consumers.
+type Dialect = tree.Dialect
 
 const (
-	Bash Dialect = iota + 1
-	POSIX
-	Mksh
-	Bats
-	Zsh
+	Bash  = tree.Bash
+	POSIX = tree.POSIX
+	Mksh  = tree.Mksh
+	Bats  = tree.Bats
+	Zsh   = tree.Zsh
 )
-
-// String returns the dialect's conventional shell name.
-func (d Dialect) String() string {
-	switch d {
-	case Bash:
-		return "bash"
-	case POSIX:
-		return "sh"
-	case Mksh:
-		return "mksh"
-	case Bats:
-		return "bats"
-	case Zsh:
-		return "zsh"
-	}
-	return "Dialect(?)"
-}
 
 var shellDirective = regexp.MustCompile(`^\s*#\s*shellcheck\s+(?:.*\s)?shell=([A-Za-z0-9_.-]+)`)
 

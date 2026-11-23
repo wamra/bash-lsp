@@ -29,6 +29,7 @@ func variant(d Dialect) syntax.LangVariant {
 // statements after it; see resync.go.
 func Parse(path string, src []byte, d Dialect) *tree.File {
 	f := tree.NewFile(path, src)
+	f.Dialect = d
 	if d == Zsh {
 		f.Skipped = "zsh is not supported yet"
 		return f

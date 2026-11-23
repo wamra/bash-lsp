@@ -9,7 +9,6 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/wamra/bash-lsp/internal/front"
 	"github.com/wamra/bash-lsp/tree"
 )
 
@@ -44,7 +43,7 @@ const (
 // VarAttrs are the attributes a declaration gives a variable.
 type VarAttrs struct{ Local, Exported, Readonly, Integer, Array, Assoc, Nameref, Global bool }
 
-// Decl is one declaration.
+// Decl is one declaration. Read-only: shared between snapshots.
 type Decl struct {
 	Kind      DeclKind
 	Name      string
@@ -68,7 +67,7 @@ const (
 	UseVarWrite
 )
 
-// Use is one use of a name. ViaAlias: the use is the target named inside an alias definition.
+// Use is one use of a name. Read-only: shared between snapshots. ViaAlias: the use is the target named inside an alias definition.
 type Use struct {
 	Kind     UseKind
 	Name     string
@@ -87,7 +86,9 @@ type SourceRef struct {
 	Directive string
 }
 
-// FileFacts is everything Bind extracts from one file.
+// FileFacts is everything Bind extracts from one file. Read-only: shared
+// between snapshots (a snapshot built after an edit reuses the facts of the
+// files that did not change).
 type FileFacts struct {
 	Path    string
 	File    *tree.File
@@ -119,7 +120,7 @@ func Bind(f *tree.File) *FileFacts {
 	ff.Path = f.Path
 	ff.Root = &Scope{Kind: ScopeFile, Node: f.Root}
 	b := &binder{ff: ff, src: f.Src, wholeCmt: map[int]*tree.Node{}}
-	b.bats = front.Detect(f.Path, f.Src) == front.Bats
+	b.bats = f.Dialect == tree.Bats
 	for _, c := range f.Comments {
 		start := c.Range.Start
 		if start.Line == 1 && start.Offset+1 < len(f.Src) && f.Src[start.Offset+1] == '!' {

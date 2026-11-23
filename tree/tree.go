@@ -18,6 +18,34 @@ func (r Range) Contains(offset int) bool {
 	return r.Start.Offset <= offset && offset < r.End.Offset
 }
 
+// Dialect is the shell language variant a file is parsed as.
+type Dialect uint8
+
+const (
+	Bash Dialect = iota + 1
+	POSIX
+	Mksh
+	Bats
+	Zsh
+)
+
+// String returns the dialect's conventional shell name.
+func (d Dialect) String() string {
+	switch d {
+	case Bash:
+		return "bash"
+	case POSIX:
+		return "sh"
+	case Mksh:
+		return "mksh"
+	case Bats:
+		return "bats"
+	case Zsh:
+		return "zsh"
+	}
+	return "Dialect(?)"
+}
+
 // Kind identifies a node type.
 type Kind uint8
 
@@ -34,6 +62,8 @@ const (
 	KBlock
 	KSubshell
 	KPipeline
+	// KAndOr is one node for a whole `&&`/`||` chain: its children are the
+	// operands (KStmt nodes) in source order, and the operators are not recorded.
 	KAndOr
 	KDecl
 	KTest
@@ -124,7 +154,8 @@ type File struct {
 	Root     *Node   // Kind == KFile
 	Comments []*Node // every KComment, in source order
 	Errors   []SyntaxError
-	Skipped  string // non-empty reason when the file was not parsed (e.g. "zsh is not supported yet")
+	Skipped  string  // non-empty reason when the file was not parsed (e.g. "zsh is not supported yet")
+	Dialect  Dialect // the dialect the file was parsed as; set by every parse, including a skipped one
 
 	lines []int // byte offset of each line start, built once by NewFile
 }

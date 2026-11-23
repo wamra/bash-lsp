@@ -18,7 +18,8 @@ const (
 	Unresolved
 )
 
-// Symbol is one named thing: a function, an alias or a variable.
+// Symbol is one named thing: a function, an alias or a variable. Read-only:
+// shared between snapshots.
 type Symbol struct {
 	Kind  DeclKind
 	Name  string
@@ -645,12 +646,19 @@ func (s *Snapshot) Facts(path string) *FileFacts {
 // Paths lists every file, sorted.
 func (s *Snapshot) Paths() []string { return append([]string(nil), s.paths...) }
 
-// SourceEdges returns the resolved source commands of path.
+// SourceEdges returns the resolved source commands of path. The slice and each
+// edge's Targets are copies; the nodes an edge refers to are shared and
+// read-only.
 func (s *Snapshot) SourceEdges(path string) []SourceEdge {
-	if i, ok := s.idx[path]; ok {
-		return s.edges[i]
+	i, ok := s.idx[path]
+	if !ok {
+		return nil
 	}
-	return nil
+	out := append([]SourceEdge(nil), s.edges[i]...)
+	for j := range out {
+		out[j].Targets = append([]string(nil), out[j].Targets...)
+	}
+	return out
 }
 
 // Visible lists, sorted, the files whose declarations path can see. It always

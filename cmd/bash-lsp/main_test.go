@@ -349,52 +349,71 @@ func TestDeepestTreesReachEveryConsumer(t *testing.T) {
 				t.Fatal(err)
 			}
 			start := time.Now()
-			// The text view of 3,900 nested loops is 366 MB: count it, keep none.
-			view := &scanWriter{want: []string{"after_all", "ErrorGap"}, seen: map[string]bool{}}
-			var errb bytes.Buffer
-			if code := run([]string{"ast", path}, strings.NewReader(""), view, &errb); code != 0 {
-				t.Fatalf("ast: exit %d: %s", code, errb.String())
-			}
-			if view.seen["ErrorGap"] || !view.seen["after_all"] {
-				t.Fatal("the text view lacks the tree")
+			// `ast` refuses these trees (deeper than astMaxDepth) in both views;
+			// binding and symbols still have to walk them.
+			for _, args := range [][]string{{"ast", path}, {"ast", "--json", path}} {
+				code, out, errs := runCode(t, args...)
+				if code != 1 || out != "" || !strings.Contains(errs, "tree too deep to print (depth ") {
+					t.Fatalf("%v: exit %d, %d bytes of output, stderr %q", args, code, len(out), errs)
+				}
 			}
 			syms := runOK(t, "symbols", "--json", dir)
 			wantLines(t, syms, "after_all")
 			if name != "cmdsubst" {
 				wantLines(t, syms, "inner_most")
 			}
-			t.Logf("%d bytes of source: ast %d bytes, symbols %d bytes, %v", len(src), view.n, len(syms), time.Since(start).Round(time.Millisecond))
-			if name != "brace" {
-				return
-			}
-			// The JSON view indents by depth, so it is quadratic in it, and
-			// encoding/json stops at 10,000 levels: it may give up, cleanly.
-			start = time.Now()
-			code, out, errs := runCode(t, "ast", "--json", path)
-			if code != 0 && !strings.Contains(errs, "exceeded max depth") {
-				t.Fatalf("ast --json: exit %d: %s", code, errs)
-			}
-			t.Logf("ast --json: exit %d, %d bytes, %v", code, len(out), time.Since(start).Round(time.Millisecond))
+			t.Logf("%d bytes of source: symbols %d bytes, %v", len(src), len(syms), time.Since(start).Round(time.Millisecond))
 		})
 	}
 }
 
-// scanWriter counts what is written and notes which of want appeared.
-type scanWriter struct {
-	n    int
-	want []string
-	seen map[string]bool
-	tail []byte // the end of the previous write, for a match across two
-}
-
-func (w *scanWriter) Write(p []byte) (int, error) {
-	w.n += len(p)
-	buf := append(w.tail, p...)
-	for _, s := range w.want {
-		if bytes.Contains(buf, []byte(s)) {
-			w.seen[s] = true
+// Both ast views walk a tree just under astMaxDepth without trouble.
+func TestAstDeepButUnderTheLimit(t *testing.T) {
+	defer debug.SetMaxStack(debug.SetMaxStack(64 << 20))
+	path := filepath.Join(t.TempDir(), "deep.sh")
+	src := strings.Repeat("{\n", 300) + "inner_most() { :; }\n" + strings.Repeat("}\n", 300)
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"ast", path}, {"ast", "--json", path}} {
+		code, out, errs := runCode(t, args...)
+		if code != 0 || !strings.Contains(out, "inner_most") {
+			t.Fatalf("%v: exit %d: %s", args, code, errs)
 		}
 	}
-	w.tail = append([]byte(nil), buf[max(0, len(buf)-16):]...)
-	return len(p), nil
+}
+
+// A tree deeper than astMaxDepth is refused before anything is printed.
+func TestAstTooDeep(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "deep.sh")
+	// Each `{ ` nests a block: about three tree levels per brace.
+	body := strings.Repeat("{ ", 600) + "true" + strings.Repeat("; }", 600) + "\n"
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"ast", p}, {"ast", "--json", p}} {
+		var out, errb bytes.Buffer
+		code := run(args, strings.NewReader(""), &out, &errb)
+		if code != 1 {
+			t.Fatalf("%v: exit %d", args, code)
+		}
+		if out.Len() != 0 {
+			t.Fatalf("%v: printed %d bytes", args, out.Len())
+		}
+		if !strings.Contains(errb.String(), "tree too deep to print (depth ") {
+			t.Fatalf("%v: stderr %q", args, errb.String())
+		}
+	}
+}
+
+func TestAstShallowStillPrints(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "ok.sh")
+	if err := os.WriteFile(p, []byte("{ { true; }; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := run([]string{"ast", p}, strings.NewReader(""), &out, &errb); code != 0 || out.Len() == 0 {
+		t.Fatalf("exit %d stderr %q", code, errb.String())
+	}
 }
