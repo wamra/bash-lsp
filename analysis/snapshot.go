@@ -26,7 +26,20 @@ type Symbol struct {
 	Decls []*Decl // every declaration that is this symbol, in (path, offset) order
 	Func  string  // for a local variable: its function; "" otherwise
 	File  string  // for a local variable: its file; "" for globals and functions
+	// Private is the kind of scope a variable declared in a subshell, command
+	// substitution, pipeline stage, process substitution or coproc is confined
+	// to; 0 otherwise. Such a symbol also has Func (when inside a function) and File set.
+	Private ScopeKind
 }
+
+// Reason strings of a Binding.
+const (
+	ReasonDirect         = "direct"
+	ReasonAlias          = "alias"
+	ReasonOutsideClosure = "name-match-outside-closure"
+	ReasonNotFound       = "not-found"
+	ReasonEnvironment    = "environment"
+)
 
 // Binding ties one Use to the symbol it names.
 type Binding struct {
@@ -117,6 +130,14 @@ type localKey struct {
 
 type posKey struct{ file, offset int }
 
+// privKey names a variable declared in a private scope: the scope itself
+// (one object per subshell, command substitution, pipeline stage, ...) and its name.
+type privKey struct {
+	file int
+	sc   *Scope
+	name string
+}
+
 // Snapshot is an immutable analysed workspace: facts, the source graph,
 // visibility and every name binding.
 type Snapshot struct {
@@ -134,6 +155,7 @@ type Snapshot struct {
 
 	funcSyms, aliasSyms, varSyms map[string][]*Symbol
 	localSyms                    map[localKey]*Symbol
+	privSyms                     map[privKey]*Symbol
 	envSyms                      map[string]*Symbol
 	tempSyms                     map[posKey]*Symbol
 	locals                       []map[*tree.Node]map[string]bool // file -> function body -> names declared local
@@ -148,7 +170,7 @@ type Snapshot struct {
 func Build(files map[string]*FileFacts, opt Options, generation uint64) *Snapshot {
 	s := &Snapshot{gen: generation, root: opt.Root, idx: map[string]int{},
 		funcSyms: map[string][]*Symbol{}, aliasSyms: map[string][]*Symbol{}, varSyms: map[string][]*Symbol{},
-		localSyms: map[localKey]*Symbol{}, envSyms: map[string]*Symbol{}, tempSyms: map[posKey]*Symbol{},
+		localSyms: map[localKey]*Symbol{}, privSyms: map[privKey]*Symbol{}, envSyms: map[string]*Symbol{}, tempSyms: map[posKey]*Symbol{},
 		declSym: map[*Decl]*Symbol{}, declFile: map[*Decl]int{}, bySym: map[*Symbol][]Binding{}}
 	for p, ff := range files {
 		if ff != nil {
@@ -399,7 +421,7 @@ func (s *Snapshot) collectSymbols() {
 		sorted[i] = ds
 		for _, d := range ds {
 			s.declFile[d] = i
-			if fn := funcBody(d.Scope); d.Kind == DeclVariable && d.Attrs.Local && fn != nil {
+			if fn := funcBody(d.Scope); d.Kind == DeclVariable && d.Attrs.Local && fn != nil && privateScope(d.Scope) == nil {
 				if s.locals[i] == nil {
 					s.locals[i] = map[*tree.Node]map[string]bool{}
 				}
@@ -426,6 +448,16 @@ func (s *Snapshot) collectSymbols() {
 					sym := &Symbol{Kind: DeclVariable, Name: d.Name, Decls: []*Decl{d}}
 					s.declSym[d] = sym
 					s.tempSyms[posKey{i, d.NameRange.Start.Offset}] = sym
+				case privateScope(d.Scope) != nil:
+					ps := privateScope(d.Scope)
+					k := privKey{i, ps, d.Name}
+					sym := s.privSyms[k]
+					if sym == nil {
+						sym = &Symbol{Kind: DeclVariable, Name: d.Name, Func: d.Scope.Func, File: s.paths[i], Private: ps.Kind}
+						s.privSyms[k] = sym
+					}
+					sym.Decls = append(sym.Decls, d)
+					s.declSym[d] = sym
 				case fn != nil && s.locals[i][fn][d.Name]:
 					k := localKey{i, fn, d.Name}
 					sym := s.localSyms[k]
@@ -565,11 +597,22 @@ func (s *Snapshot) bindAll() {
 }
 
 func (s *Snapshot) bindVar(out []Binding, file int, u *Use) []Binding {
-	b := Binding{Use: u, File: s.paths[file], Res: Resolved, Reason: "direct"}
+	b := Binding{Use: u, File: s.paths[file], Res: Resolved, Reason: ReasonDirect}
 	if u.Kind == UseVarWrite {
 		if sym := s.tempSyms[posKey{file, u.Range.Start.Offset}]; sym != nil {
 			b.Sym = sym
 			return append(out, b)
+		}
+	}
+	// Innermost private scope with a declaration of the name wins (rules S1, S2); the walk stops at the function boundary.
+	if len(s.privSyms) > 0 {
+		for sc := u.Scope; sc != nil && sc.Kind != ScopeFunction && sc.Kind != ScopeFile; sc = sc.Parent {
+			if sc.Kind.Private() {
+				if sym := s.privSyms[privKey{file, sc, u.Name}]; sym != nil {
+					b.Sym = sym
+					return append(out, b)
+				}
+			}
 		}
 	}
 	if fn := funcBody(u.Scope); fn != nil && s.locals[file][fn][u.Name] {
@@ -588,7 +631,7 @@ func (s *Snapshot) bindVar(out []Binding, file int, u *Use) []Binding {
 		sym = &Symbol{Kind: DeclVariable, Name: u.Name}
 		s.envSyms[u.Name] = sym
 	}
-	b.Sym, b.Res, b.Reason = sym, Unresolved, "not-found"
+	b.Sym, b.Res, b.Reason = sym, Unresolved, ReasonEnvironment
 	return append(out, b)
 }
 
@@ -608,10 +651,10 @@ func (s *Snapshot) resolveCall(file int, name string, depth int) (syms []*Symbol
 }
 
 func (s *Snapshot) bindCall(out []Binding, file int, u *Use) []Binding {
-	b := Binding{Use: u, File: s.paths[file], Res: Resolved, Reason: "direct"}
+	b := Binding{Use: u, File: s.paths[file], Res: Resolved, Reason: ReasonDirect}
 	if syms, followed := s.resolveCall(file, u.Name, 0); len(syms) > 0 {
 		if followed {
-			b.Reason = "alias"
+			b.Reason = ReasonAlias
 		}
 		for _, sym := range syms {
 			b.Sym = sym
@@ -623,7 +666,7 @@ func (s *Snapshot) bindCall(out []Binding, file int, u *Use) []Binding {
 		return out
 	}
 	if s.incomplete[file] || (len(s.edges[file]) == 0 && !s.sourced[file]) {
-		b.Res, b.Reason = Candidate, "name-match-outside-closure"
+		b.Res, b.Reason = Candidate, ReasonOutsideClosure
 		for _, sym := range s.funcSyms[u.Name] {
 			b.Sym = sym
 			out = append(out, b)

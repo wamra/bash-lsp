@@ -180,7 +180,7 @@ func TestHoverVariableForms(t *testing.T) {
 	}
 	wantLines(t, md, "declare -rx CFG=1", "Global, declared in `conf.sh:1`", "Attributes: exported, readonly", "Value: `1`")
 	md, _ = q.hover("main.sh", "$HOME", 0, 2)
-	if !strings.Contains(md, "Environment variable (not assigned in this workspace)") || strings.Contains(md, "Value:") {
+	if !strings.Contains(md, "Not assigned in this workspace; read from the environment.") || strings.Contains(md, "Value:") {
 		t.Fatalf("%q", md)
 	}
 	md, _ = q.hover("main.sh", "$MULTI", 0, 2)

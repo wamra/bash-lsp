@@ -21,7 +21,30 @@ const (
 	ScopeSubshell
 	ScopeCmdSubst
 	ScopePipeline
+	ScopeProcSubst // `<( )` and `>( )` body
+	ScopeCoproc    // `coproc` body
 )
+
+// Private reports whether a variable declared directly in a scope of this kind
+// is visible only inside that scope (and scopes nested in it): a subshell, a
+// command substitution, a pipeline stage, a process substitution or a coproc.
+func (k ScopeKind) Private() bool {
+	return k == ScopeSubshell || k == ScopeCmdSubst || k == ScopePipeline || k == ScopeProcSubst || k == ScopeCoproc
+}
+
+// privateScope returns the nearest enclosing private scope of sc within its
+// function (the walk stops at a function or file scope), nil when there is none.
+func privateScope(sc *Scope) *Scope {
+	for ; sc != nil; sc = sc.Parent {
+		if sc.Kind.Private() {
+			return sc
+		}
+		if sc.Kind == ScopeFunction || sc.Kind == ScopeFile {
+			return nil
+		}
+	}
+	return nil
+}
 
 // Scope is a lexical scope. Func is the name of the enclosing function, "" at file level.
 type Scope struct {
@@ -161,6 +184,17 @@ func (b *binder) visit(n *tree.Node, sc *Scope) {
 		b.children(n, child(sc, ScopeSubshell, n))
 	case tree.KCmdSubst:
 		b.children(n, child(sc, ScopeCmdSubst, n))
+	case tree.KProcSubst:
+		b.children(n, child(sc, ScopeProcSubst, n))
+	case tree.KCoproc:
+		cs := child(sc, ScopeCoproc, n)
+		for _, c := range n.Children {
+			if c.Kind == tree.KStmt {
+				b.visit(c, cs)
+			} else {
+				b.visit(c, sc)
+			}
+		}
 	case tree.KPipeline:
 		for _, stage := range n.Children {
 			b.children(stage, child(sc, ScopePipeline, stage))

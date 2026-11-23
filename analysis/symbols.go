@@ -43,7 +43,11 @@ func (s *Snapshot) sortedDecls(file int) []*Decl {
 	return ds
 }
 
-func atFileLevel(d *Decl) bool { return d.Scope == nil || d.Scope.Func == "" }
+// atFileLevel reports whether d is declared at file level: outside every
+// function and outside every private scope (a subshell variable is not a global).
+func atFileLevel(d *Decl) bool {
+	return d.Scope == nil || (d.Scope.Func == "" && privateScope(d.Scope) == nil)
+}
 
 // DocumentSymbols lists the functions, aliases and file-level variables of
 // path in source order; each function definition carries its own locals as

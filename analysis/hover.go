@@ -54,7 +54,7 @@ func (s *Snapshot) Hover(path string, offset int) (markdown string, rng tree.Ran
 		sym = h.binds[0].Sym
 		rng = h.binds[0].Use.Range
 		for _, b := range h.binds {
-			if b.Sym == sym && b.Reason == "alias" {
+			if b.Sym == sym && b.Reason == ReasonAlias {
 				via = b.Use.Name
 			}
 		}
@@ -309,7 +309,7 @@ func (s *Snapshot) hoverVariable(sym *Symbol) string {
 	var sb strings.Builder
 	if len(sym.Decls) == 0 {
 		sb.WriteString(fence(sym.Name))
-		sb.WriteString("Environment variable (not assigned in this workspace)\n")
+		sb.WriteString("Not assigned in this workspace; read from the environment.\n")
 		return sb.String()
 	}
 	d := sym.Decls[0]
@@ -317,6 +317,8 @@ func (s *Snapshot) hoverVariable(sym *Symbol) string {
 	switch {
 	case d.Temp:
 		sb.WriteString("Set for one command only, at " + s.spot(d) + "\n")
+	case sym.Private != 0:
+		fmt.Fprintf(&sb, "Visible only inside its %s in `%s`\n", privateName(sym.Private), s.rel(sym.File))
 	case sym.Func != "":
 		fmt.Fprintf(&sb, "Local to `%s` in `%s`\n", sym.Func, s.rel(sym.File))
 	default:
@@ -348,6 +350,21 @@ func (s *Snapshot) hoverVariable(sym *Symbol) string {
 		sb.WriteString("Value: `" + d.Literal + "`\n")
 	}
 	return sb.String()
+}
+
+// privateName names a private scope kind for hover.
+func privateName(k ScopeKind) string {
+	switch k {
+	case ScopeCmdSubst:
+		return "command substitution"
+	case ScopePipeline:
+		return "pipeline stage"
+	case ScopeProcSubst:
+		return "process substitution"
+	case ScopeCoproc:
+		return "coproc"
+	}
+	return "subshell"
 }
 
 // attrNames lists the attributes that are set, excluding scope.
