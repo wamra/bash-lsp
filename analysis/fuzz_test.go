@@ -23,6 +23,10 @@ func FuzzBind(f *testing.F) {
 		"echo \"héllo ✓\" $(( é + yy )) ${arr[ñ]}\n",
 		"x=${arr[$((i+1))]} y=$(( ${z:-3} ** 2 ))\n",
 		"( (( n++ )) ); echo $n; f() { (( g-- )); }\n",
+		"eval \"f \\\"$x\\\"\"; trap 'log \"a b\"' EXIT\n",
+		"bash -c 'g $((i+1))'; sh -ec \"h ${v:-1}\"\n",
+		"cmd=f\n\"$cmd\" x; ${cmd} y\n",
+		"eval \"x; \\\n  f\"; eval \\f\n",
 	} {
 		f.Add([]byte(s))
 	}
@@ -74,6 +78,8 @@ func FuzzEdges(f *testing.F) {
 		"eval 'f'\"; g\" b\\ c $'x' \"$(h)\" \"\\$(k)\"\n",
 		"eval \"",
 		"trap '",
+		"eval \"x; \\\n  f\"\neval \\f\neval f\\\noo\neval \"x; \\\r\nf\"\n",
+		"k() { :; }\nunset -fv -- k\nk\n/bin/sh -c 'k'\n",
 	} {
 		f.Add([]byte(s))
 	}
@@ -96,9 +102,22 @@ func FuzzEdges(f *testing.F) {
 		for _, u := range ff.Uses {
 			if u.Kind == UseCall {
 				check("call use "+u.Name, u.Range)
+				if u.NamesTarget() && string(src[u.Range.Start.Offset:u.Range.End.Offset]) != u.Name {
+					t.Fatalf("call use %q (via %d) claims its range spells it, text %q", u.Name, u.Via, src[u.Range.Start.Offset:u.Range.End.Offset])
+				}
 			}
 		}
 		s := Build(map[string]*FileFacts{p: ff}, Options{Root: "/ws"}, 1)
+		for _, bs := range s.bindings {
+			for _, b := range bs {
+				if u := b.Use; u.Kind == UseCall && u.NamesTarget() {
+					check("binding "+u.Name, u.Range)
+					if string(src[u.Range.Start.Offset:u.Range.End.Offset]) != u.Name {
+						t.Fatalf("binding %q (via %d): range text %q", u.Name, u.Via, src[u.Range.Start.Offset:u.Range.End.Offset])
+					}
+				}
+			}
+		}
 		for _, e := range s.Edges() {
 			if e.Site.Path == p {
 				check("edge "+e.Reason, e.Site.Range)

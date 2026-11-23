@@ -180,7 +180,8 @@ func (s *Snapshot) bodyEffects(sym *Symbol) (reads, writes []string, exits bool)
 			return r.Start.Offset >= d.Node.Range.Start.Offset && r.Start.Offset < d.Node.Range.End.Offset
 		}
 		for _, u := range s.facts[f].Uses {
-			if u.Kind == UseCall && u.Via != ViaVariable && u.Name == "exit" && in(u.Range) {
+			// a `bash -c` body runs in a child and a trap action later: neither exits from the function
+			if u.Kind == UseCall && u.Via != ViaVariable && u.Via != ViaShellC && u.Via != ViaTrap && u.Name == "exit" && in(u.Range) {
 				exits = true
 			}
 		}

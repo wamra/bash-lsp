@@ -17,6 +17,10 @@ const (
 	ReasonVariableUnknown  = "variable-unknown"
 	ReasonExpansion        = "expansion"
 	ReasonDynamicScope     = "dynamic-scope" // variable reads only; never an edge
+	// ReasonUnsetInView: an edge to a function whose name some file in the
+	// site's visibility closure removes with `unset -f` (ruling R41). Order
+	// is not tracked, so such an edge is never resolved.
+	ReasonUnsetInView = "unset-in-view"
 )
 
 // Via says how a UseCall names its target when it is not a plain command
@@ -42,9 +46,10 @@ const (
 	ViaValue
 )
 
-// NamesTarget reports whether the text of a use's range spells the name of
-// what it binds to.
-func (v Via) NamesTarget() bool { return v != ViaVariable }
+// NamesTarget reports whether the text of u's range is exactly u.Name: false
+// for a ViaVariable word (`"$cmd"`), and for a name written with quotes,
+// escapes or line continuations (`eval \f`, `eval f\<newline>oo`).
+func (u *Use) NamesTarget() bool { return u.Via != ViaVariable && !u.inexact }
 
 // reason is the binding and edge reason of a call made this way, "" for ViaNone.
 func (v Via) reason() string {
@@ -133,6 +138,15 @@ func dynamicName(name string) bool {
 	return name == "eval" || name == "trap" || shells[name] || strings.IndexByte(name, '/') >= 0
 }
 
+// isShell reports whether name is one of shells, by basename when it is a
+// path (`/bin/sh`, `/usr/bin/env` is not).
+func isShell(name string) bool {
+	if i := strings.LastIndexByte(name, '/'); i >= 0 {
+		name = name[i+1:]
+	}
+	return shells[name]
+}
+
 // dynamicCall looks at a command whose name is the literal name: eval, trap
 // and shells get their string parsed; a path or a shell's script operand is
 // an invocation (file level only). depth is the string depth of m (0: file).
@@ -151,7 +165,7 @@ func (b *binder) dynamicCall(n *tree.Node, name string, args []*tree.Node, sc *S
 		if a := trapAction(args); a != nil {
 			b.fragment(ViaTrap, []*tree.Node{a}, n, sc, m, depth)
 		}
-	case shells[name]:
+	case isShell(name):
 		w, cmd := shellOperand(args)
 		switch {
 		case w == nil:
@@ -251,10 +265,12 @@ func shellOperand(args []*tree.Node) (w *tree.Node, cmd bool) {
 // dynamic site for a command name that is an expansion, and the strings
 // inside it, one level deeper.
 func (b *binder) fragment(via Via, args []*tree.Node, n *tree.Node, sc *Scope, m *fragMap, depth int) {
-	if depth >= maxStringDepth {
+	est := fragmentSize(args, m.src)
+	if depth >= maxStringDepth || est > b.fragLeft {
 		b.ff.Dynamic = append(b.ff.Dynamic, DynamicRef{Range: b.fileRange(m, args[0].Range.Start.Offset, args[len(args)-1].Range.End.Offset), Scope: sc, Node: n})
 		return
 	}
+	b.fragLeft -= est
 	fm := buildFragment(args, m)
 	f := parse.Fragment(fm.src, b.ff.File.Dialect)
 	if f.Root == nil {
@@ -279,8 +295,10 @@ func (b *binder) fragment(via Via, args []*tree.Node, n *tree.Node, sc *Scope, m
 			if name == "source" || name == "." || name == "alias" {
 				return true // not resolved inside strings
 			}
-			u := b.use(UseCall, name, b.fileRange(fm, words[0].Range.Start.Offset, words[0].Range.End.Offset), sc, n)
+			a, e := words[0].Range.Start.Offset, words[0].Range.End.Offset
+			u := b.use(UseCall, name, b.fileRange(fm, a, e), sc, n)
 			u.Via = via
+			u.inexact = !fm.verbatim(a, e, len(name))
 			b.dynamicCall(n, name, words[1:], sc, fm, depth+1)
 		case !ok && hasExpansion(words[0]):
 			b.ff.Dynamic = append(b.ff.Dynamic, DynamicRef{Range: b.fileRange(fm, words[0].Range.Start.Offset, words[0].Range.End.Offset), Scope: sc, Node: n})
@@ -288,6 +306,54 @@ func (b *binder) fragment(via Via, args []*tree.Node, n *tree.Node, sc *Scope, m
 		return true
 	})
 }
+
+// fragmentSize is an upper bound on the length of the text buildFragment
+// makes for words: literal bytes count once, every other part counts as a
+// placeholder, plus the joining spaces. Bind compares it with what is left
+// of the per-file budget (MaxFileBytes in all, across every string and
+// nesting level) before building anything.
+func fragmentSize(words []*tree.Node, src []byte) int {
+	n := len(words)
+	for _, w := range words {
+		for _, p := range w.Children {
+			s, e := p.Range.Start.Offset, p.Range.End.Offset
+			switch p.Kind {
+			case tree.KLit, tree.KSglQuoted:
+				n += max(0, e-s)
+			case tree.KDblQuoted:
+				for _, q := range p.Children {
+					if q.Kind == tree.KLit {
+						n += max(0, q.Range.End.Offset-q.Range.Start.Offset)
+					} else {
+						n += len(placeholder)
+					}
+				}
+			default:
+				n += len(placeholder)
+			}
+		}
+	}
+	return n
+}
+
+// verbatim reports whether the n bytes of m at [a, e) are copied 1:1 from
+// consecutive file bytes, so the file text of the mapped range is the same
+// as m's text there.
+func (m *fragMap) verbatim(a, e, n int) bool {
+	if e-a != n || a < 0 || e > len(m.src) || a >= e {
+		return false
+	}
+	start := m.off(a)
+	for i := a; i < e; i++ {
+		if m.off(i) != start+(i-a) {
+			return false
+		}
+	}
+	return m.end(e) == start+n
+}
+
+// crlfAt reports whether src has CR LF at i.
+func crlfAt(src []byte, i int) bool { return i+1 < len(src) && src[i] == '\r' && src[i+1] == '\n' }
 
 // placeholder stands for an expansion of the enclosing level inside a string
 // body: its value is known only when that level runs, so it is one opaque
@@ -311,6 +377,10 @@ func buildFragment(words []*tree.Node, m *fragMap) *fragMap {
 		add(src[i+w-1], m.off(i), m.end(i+w))
 		prev = m.end(i + w)
 	}
+	crlf := func(i int) { // the CR LF at i, which the parser left out of both Lits
+		one(i, 1)
+		one(i+1, 1)
+	}
 	opaque := func(s, e int) {
 		for k := 0; k < len(placeholder)-1; k++ {
 			add(placeholder[k], m.off(s), m.off(s))
@@ -327,6 +397,14 @@ func buildFragment(words []*tree.Node, m *fragMap) *fragMap {
 			switch {
 			case p.Kind == tree.KLit && !p.Recovered:
 				for i := s; i < e; i++ { // unquoted: a backslash quotes the next byte
+					if src[i] == '\\' && i+1 == e && crlfAt(src, e) {
+						one(i, 1)
+						crlf(e)
+						continue
+					}
+					if src[i] == '\\' && i+1 == e && e < len(src) && src[e] == '\n' {
+						continue // a line continuation the parser left between two Lits
+					}
 					if src[i] == '\\' && i+1 < e {
 						if src[i+1] != '\n' {
 							one(i, 2)
@@ -348,6 +426,14 @@ func buildFragment(words []*tree.Node, m *fragMap) *fragMap {
 						continue
 					}
 					for i := qs; i < qe; i++ { // double quotes: \ quotes only $ ` " \ and newline
+						if src[i] == '\\' && i+1 == qe && crlfAt(src, qe) {
+							one(i, 1) // bash: `\<CR>` is no continuation, the parser's split is undone
+							crlf(qe)
+							continue
+						}
+						if src[i] == '\\' && i+1 == qe && qe < len(src) && src[qe] == '\n' {
+							continue // the parser splits the Lit at a line continuation
+						}
 						if src[i] == '\\' && i+1 < qe && strings.IndexByte("$`\"\\\n", src[i+1]) >= 0 {
 							if src[i+1] != '\n' {
 								one(i, 2)
@@ -427,6 +513,36 @@ func soleParam(w *tree.Node, src []byte) string {
 	return p.Name
 }
 
+// unsetArgs records the literal names of `unset -f NAME...` (options may be
+// combined, `-fv`; `--` ends them). Plain `unset NAME` is not recorded.
+func (b *binder) unsetArgs(args []*tree.Node) {
+	funcs := false
+	for i, w := range args {
+		t, ok := literalText(w)
+		if !ok {
+			continue
+		}
+		if t == "--" {
+			args = args[i+1:]
+			break
+		}
+		if len(t) > 1 && t[0] == '-' {
+			funcs = funcs || strings.IndexByte(t, 'f') > 0
+			continue
+		}
+		args = args[i:]
+		break
+	}
+	if !funcs {
+		return
+	}
+	for _, w := range args {
+		if t, ok := literalText(w); ok && t != "" && t[0] != '-' {
+			b.ff.Unsets = append(b.ff.Unsets, t)
+		}
+	}
+}
+
 // --- Build side ---
 
 // dynSite is a dynamic edge's site: a DynamicRef of the facts
@@ -444,6 +560,36 @@ type invokeSite struct {
 	target string
 }
 
+// valueKey is one literal-value binding: the assignment and the function.
+type valueKey struct {
+	d   *Decl
+	sym *Symbol
+}
+
+// unsetInView reports whether some file visible from file has `unset -f name`.
+func (s *Snapshot) unsetInView(file int, name string) bool {
+	for _, f := range s.unsetBy[name] {
+		if s.visible[file].has(f) {
+			return true
+		}
+	}
+	return false
+}
+
+// applyUnset relabels the edges of recs (all with sites in file) whose
+// target function is named by an `unset -f` in view:
+// candidate/unset-in-view, whatever they were (ruling R41).
+func (s *Snapshot) applyUnset(recs []edgeRec, file int) {
+	if len(s.unsetBy) == 0 {
+		return
+	}
+	for k := range recs {
+		if d := recs[k].to; d != nil && d.Kind == DeclFunction && s.unsetInView(file, d.Name) {
+			recs[k].res, recs[k].reason = Candidate, codeUnsetInView
+		}
+	}
+}
+
 // tgtDynamic marks an edgeRec of rel RelCalls whose at indexes the file's
 // dynSites instead of its bindings.
 const tgtDynamic = -2
@@ -451,12 +597,22 @@ const tgtDynamic = -2
 var (
 	codeVariableUnknown = reasonCode(ReasonVariableUnknown)
 	codeExpansion       = reasonCode(ReasonExpansion)
+	codeUnsetInView     = reasonCode(ReasonUnsetInView)
 )
 
 // prepareDynamic starts the dynamic sites of every file from its facts.
 func (s *Snapshot) prepareDynamic() {
 	s.dyn = make([][]dynSite, len(s.paths))
-	s.valueSeen = map[*Decl]bool{}
+	s.valueSeen = map[valueKey]bool{}
+	s.valueUse = map[*Decl]*Use{}
+	s.unsetBy = map[string][]int{}
+	for i, ff := range s.facts {
+		for _, name := range ff.Unsets {
+			if !slices.Contains(s.unsetBy[name], i) {
+				s.unsetBy[name] = append(s.unsetBy[name], i)
+			}
+		}
+	}
 	for i, ff := range s.facts {
 		for _, d := range ff.Dynamic {
 			s.dyn[i] = append(s.dyn[i], dynSite{rng: d.Range, sc: d.Scope, reason: codeExpansion})
@@ -524,18 +680,24 @@ func (s *Snapshot) bindVariableCall(out []Binding, file int, u *Use) []Binding {
 		out = append(out, b)
 	}
 	for _, l := range lits {
-		if s.valueSeen[l.d] {
-			continue
-		}
-		s.valueSeen[l.d] = true
 		df := s.declFile[l.d]
-		vr, ok := valueRange(l.d, s.facts[df].File)
+		vu, ok := s.valueUse[l.d]
 		if !ok {
+			f := s.facts[df].File
+			if vr, ok := valueRange(l.d, f); ok {
+				vu = &Use{Kind: UseCall, Via: ViaValue, Name: l.d.Literal, Range: vr, Scope: l.d.Scope, Node: l.d.Node,
+					inexact: string(f.Src[vr.Start.Offset:vr.End.Offset]) != l.d.Literal}
+			}
+			s.valueUse[l.d] = vu
+		}
+		if vu == nil {
 			continue
 		}
-		vu := &Use{Kind: UseCall, Via: ViaValue, Name: l.d.Literal, Range: vr, Scope: l.d.Scope, Node: l.d.Node}
-		for _, f := range l.syms {
-			s.extra = append(s.extra, Binding{Use: vu, File: s.paths[df], Sym: f, Res: Candidate, Reason: ReasonVariableConstant})
+		for _, f := range l.syms { // per (declaration, symbol): the same literal can reach different symbols from different closures
+			if k := (valueKey{l.d, f}); !s.valueSeen[k] {
+				s.valueSeen[k] = true
+				s.extra = append(s.extra, Binding{Use: vu, File: s.paths[df], Sym: f, Res: Candidate, Reason: ReasonVariableConstant})
+			}
 		}
 	}
 	return out
@@ -643,7 +805,7 @@ func (s *Snapshot) finishDynamic(r func(file int) *resolver) {
 			}
 		}
 	}
-	s.extra, s.valueSeen = nil, nil
+	s.extra, s.valueSeen, s.valueUse = nil, nil, nil
 	s.invokes = make([][]invokeSite, len(s.paths))
 	for i, ff := range s.facts {
 		if len(ff.Invokes) == 0 {

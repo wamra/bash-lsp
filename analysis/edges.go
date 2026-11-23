@@ -95,7 +95,7 @@ type edgeRec struct {
 
 // reasonNames are the reasons an edge can carry, by edgeRec.reason.
 var reasonNames = []string{"", ReasonDirect, ReasonAlias, ReasonOutsideClosure, ReasonNotFound, ReasonConditional,
-	ReasonVariableConstant, ReasonStringEval, ReasonStringTrap, ReasonStringShellC, ReasonVariableUnknown, ReasonExpansion}
+	ReasonVariableConstant, ReasonStringEval, ReasonStringTrap, ReasonStringShellC, ReasonVariableUnknown, ReasonExpansion, ReasonUnsetInView}
 
 func reasonCode(r string) uint8 {
 	for i, n := range reasonNames {
@@ -144,6 +144,7 @@ func (s *Snapshot) fileEdges(out []edgeRec, file int) []edgeRec {
 	out = s.appendCallEdges(out, file)
 	out = s.appendDynamicEdges(out, file)
 	recs := out[start:]
+	s.applyUnset(recs, file)
 	cmp := func(a, b edgeRec) int {
 		if d := s.recOffset(file, &a) - s.recOffset(file, &b); d != 0 {
 			return d
@@ -207,7 +208,7 @@ func (s *Snapshot) edgeOf(file int, r *edgeRec) Edge {
 		return e
 	}
 	se := &s.edges[file][r.at]
-	if d := s.funcDeclAt(file, se.Ref.Range.Start.Offset); d != nil {
+	if d := s.funcDeclAround(file, se.Ref.Node); d != nil {
 		e.From.Func = s.declSym[d]
 	}
 	e.Site = Location{Path: s.paths[file], Range: se.Ref.Range}
@@ -386,17 +387,19 @@ func (s *Snapshot) appendSourceEdges(out []edgeRec, file int) []edgeRec {
 	return out
 }
 
-// funcDeclAt returns the innermost function declaration of file whose node
-// contains offset, nil when there is none.
-func (s *Snapshot) funcDeclAt(file, offset int) *Decl {
-	var best *Decl
-	for _, d := range s.funcDecls[file] {
-		r := d.Node.Range
-		if r.Start.Offset <= offset && offset < r.End.Offset && (best == nil || r.Start.Offset >= best.Node.Range.Start.Offset) {
-			best = d
+// funcDeclAround returns the declaration of the innermost named function
+// whose node encloses n (n itself included), nil when there is none. It
+// walks parent links and finds the declaration by binary search, instead of
+// scanning every function of the file.
+func (s *Snapshot) funcDeclAround(file int, n *tree.Node) *Decl {
+	for ; n != nil; n = n.Parent {
+		if n.Kind == tree.KFuncDecl && n.Name != "" {
+			if d := s.funcDeclOf(file, n); d != nil {
+				return d
+			}
 		}
 	}
-	return best
+	return nil
 }
 
 // CallerAt returns the caller a site at offset of path belongs to: the
@@ -408,8 +411,10 @@ func (s *Snapshot) CallerAt(path string, offset int) Caller {
 		return Caller{}
 	}
 	c := Caller{Path: path}
-	if d := s.funcDeclAt(file, offset); d != nil {
-		c.Func = s.declSym[d]
+	if f := s.facts[file].File; f != nil && f.Root != nil && offset >= 0 && offset < len(f.Src) {
+		if d := s.funcDeclAround(file, f.NodeAt(offset)); d != nil {
+			c.Func = s.declSym[d]
+		}
 	}
 	return c
 }

@@ -120,6 +120,7 @@ type Use struct {
 	Node     *tree.Node
 	ViaAlias bool
 	Via      Via
+	inexact  bool // the range text is not exactly Name (see NamesTarget)
 }
 
 // SourceRef is a `source`/`.` (or bats `load`) command. Directive is the path
@@ -143,6 +144,7 @@ type FileFacts struct {
 	Sources []SourceRef
 	Dynamic []DynamicRef // command names that are expansions with no known target
 	Invokes []InvokeRef  // executions of a file by literal path
+	Unsets  []string     // function names removed by `unset -f NAME` (literal names; order not kept)
 }
 
 var (
@@ -166,6 +168,7 @@ type binder struct {
 	declGlobal   map[string]int    // declarations in view, by where they bind (see isDeclared)
 	declLocal    map[localDecl]int
 	declPriv     map[privDecl]int
+	fragLeft     int // bytes of string-body text the file may still parse (dynamic.go)
 }
 
 // Bind walks f once, carrying a scope stack, and returns its facts.
@@ -178,7 +181,7 @@ func Bind(f *tree.File) *FileFacts {
 	ff.Path = f.Path
 	ff.Root = &Scope{Kind: ScopeFile, Node: f.Root}
 	b := &binder{ff: ff, src: f.Src, wholeCmt: map[int]*tree.Node{}, assoc: map[string]bool{}, names: map[string]string{},
-		declGlobal: map[string]int{}, declLocal: map[localDecl]int{}, declPriv: map[privDecl]int{}}
+		declGlobal: map[string]int{}, declLocal: map[localDecl]int{}, declPriv: map[privDecl]int{}, fragLeft: MaxFileBytes}
 	b.bats = f.Dialect == tree.Bats
 	for _, c := range f.Comments {
 		start := c.Range.Start
@@ -478,7 +481,10 @@ func (b *binder) call(n *tree.Node, sc *Scope) {
 				b.callChildren(n, sc, len(words) > 0)
 				return
 			}
-			b.use(UseCall, name, words[0].Range, sc, n)
+			u := b.use(UseCall, name, words[0].Range, sc, n)
+			if s, e := words[0].Range.Start.Offset, words[0].Range.End.Offset; s < 0 || e > len(b.src) || s > e || string(b.src[s:e]) != name {
+				u.inexact = true
+			}
 			if dynamicName(name) {
 				b.dynamicCall(n, name, words[1:], sc, &fragMap{src: b.src}, 0)
 			}
@@ -527,6 +533,8 @@ func (b *binder) builtin(n *tree.Node, name string, words []*tree.Node, sc *Scop
 			b.aliasArg(n, w, sc)
 		}
 		return true
+	case "unset":
+		b.unsetArgs(args)
 	case "read":
 		b.readNames(n, args, sc, "read", "pdnNtui")
 	case "mapfile", "readarray":

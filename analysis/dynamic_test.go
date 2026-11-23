@@ -2,9 +2,12 @@ package analysis
 
 import (
 	"fmt"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/wamra/bash-lsp/internal/front"
 )
 
 // siteStr is "rel res/reason «site text» -> target" with the site text read
@@ -326,4 +329,156 @@ func (q *qworld) resReason(file, needle string, occ, off int) string {
 		q.t.Fatalf("%s %q: %d bindings", file, needle, len(bs))
 	}
 	return bs[0].Res.String() + "/" + bs[0].Reason
+}
+
+// callNames lists "name«range text»" of every call use of m.sh.
+func (q *qworld) callNames(file string) []string {
+	q.t.Helper()
+	ff := q.s.Facts(q.abs(file))
+	out := []string{}
+	for _, u := range ff.Uses {
+		if u.Kind == UseCall {
+			out = append(out, fmt.Sprintf("%s«%s»", u.Name, ff.File.Src[u.Range.Start.Offset:u.Range.End.Offset]))
+		}
+	}
+	return out
+}
+
+func TestStringLineContinuationInDoubleQuotes(t *testing.T) {
+	// bash 3.2: backslash-newline inside double quotes is removed (checked:
+	// `eval "echo a; \<nl>  f"` runs f). Backslash-CR-LF is not a
+	// continuation: in double quotes `\<CR>` stays, eval then runs a command
+	// named <CR> and f on the next line (checked on /bin/bash 3.2:
+	// "line 3: \r: command not found", then F).
+	q := buildMem(t, map[string]string{
+		"a.sh": "eval \"x; \\\n  f\"\n",
+		"b.sh": "eval \"x; \\\nf\"\n",
+		"c.sh": "eval \"echo \\\n; f\"\n",
+		"d.sh": "bash -c \"x; \\\n  f\"\n",
+		"e.sh": "eval \"x; \\\r\nf\"\n",
+	})
+	wantSame(t, q.callNames("a.sh"), "eval«eval»", "x«x»", "f«f»")
+	wantSame(t, q.callNames("b.sh"), "eval«eval»", "x«x»", "f«f»")
+	wantSame(t, q.callNames("c.sh"), "eval«eval»", "echo«echo»", "f«f»")
+	wantSame(t, q.callNames("d.sh"), "bash«bash»", "x«x»", "f«f»")
+	wantContains(t, q.callNames("e.sh"), "f«f»")
+}
+
+func TestStringBodySizeCap(t *testing.T) {
+	// The reviewer's shape: `eval "$a$a…"` filling the file cap. Each `$a`
+	// would become a 7-byte placeholder; over MaxFileBytes the string is a
+	// dynamic/expansion site and is not parsed.
+	n := (MaxFileBytes - 8) / 2
+	src := []byte("eval \"" + strings.Repeat("$a", n) + "\"\n")
+	base := []byte("echo \"" + strings.Repeat("$a", n) + "\"\n")
+	bind := func(b []byte) (*FileFacts, uint64) {
+		var m0, m1 runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&m0)
+		ff := Bind(front.Parse("/ws/f.sh", b, front.Bash))
+		runtime.ReadMemStats(&m1)
+		return ff, m1.TotalAlloc - m0.TotalAlloc
+	}
+	_, baseAlloc := bind(base)
+	ff, alloc := bind(src)
+	if len(ff.Dynamic) != 1 {
+		t.Fatalf("want one dynamic site, got %d", len(ff.Dynamic))
+	}
+	for _, u := range ff.Uses {
+		if u.Kind == UseCall && u.Via != ViaNone {
+			t.Fatalf("string was parsed: %+v", u)
+		}
+	}
+	if alloc > 2*baseAlloc {
+		t.Fatalf("eval allocated %d bytes, echo %d", alloc, baseAlloc)
+	}
+}
+
+func TestUnsetInView(t *testing.T) {
+	q := buildMem(t, map[string]string{
+		"lib.sh":  "k() { :; }\nunset -f k\n",
+		"main.sh": "source ./lib.sh\nk\nalias kk=k\nkk\neval k\nc=k\n\"$c\"\nh() { :; }\nh\n",
+		"v.sh":    "k() { :; }\nunset k\nk\nunset -fv -- j\nj() { :; }\nj\n",
+	})
+	wantSame(t, q.fileEdges("main.sh"),
+		"main.sh:2 calls candidate/unset-in-view «k» -> k@lib.sh:1",
+		"main.sh:3 aliases candidate/unset-in-view «k» -> k@lib.sh:1",
+		"main.sh:4 calls candidate/unset-in-view «kk» -> k@lib.sh:1",
+		"main.sh:5 calls candidate/unset-in-view «k» -> k@lib.sh:1",
+		"main.sh:7 calls candidate/unset-in-view «\"$c\"» -> k@lib.sh:1",
+		"main.sh:9 calls resolved/direct «h» -> h@main.sh:8",
+	)
+	// Plain `unset k` (no -f) is not covered; `unset -fv -- j` is.
+	wantSame(t, q.fileEdges("v.sh"),
+		"v.sh:3 calls resolved/direct «k» -> k@v.sh:1",
+		"v.sh:6 calls candidate/unset-in-view «j» -> j@v.sh:5",
+	)
+	if !slices.Contains(reasonNames, ReasonUnsetInView) {
+		t.Fatal("unset-in-view not registered")
+	}
+}
+
+func TestHoverExitNotFromChildOrTrap(t *testing.T) {
+	q := buildMem(t, map[string]string{
+		"m.sh": "g() { bash -c 'exit 1'; }\nh() { trap 'exit 2' INT; }\ne() { eval 'exit 3'; }\n",
+	})
+	for _, c := range []struct {
+		fn   string
+		want bool
+	}{{"g()", false}, {"h()", false}, {"e()", true}} {
+		md, _ := q.hover("m.sh", c.fn, 0, 0)
+		if got := strings.Contains(md, "Calls `exit`"); got != c.want {
+			t.Errorf("%s: Calls exit = %v, want %v:\n%s", c.fn, got, c.want, md)
+		}
+	}
+}
+
+func TestValueBindingPerSymbol(t *testing.T) {
+	// lib.sh's literal is seen from two closures with different build_release
+	// symbols: each gets the literal as a reference, whatever the file order.
+	q := buildMem(t, map[string]string{
+		"lib.sh": "cmd=build_release\n",
+		"u1.sh":  "build_release() { :; }\n",
+		"u2.sh":  "build_release() { :; }\n",
+		"m1.sh":  "source ./lib.sh\nsource ./u1.sh\n\"$cmd\"\n",
+		"m2.sh":  "source ./lib.sh\nsource ./u2.sh\n\"$cmd\"\n",
+	})
+	wantContains(t, q.refs("u1.sh", "build_release", 0, 0), "lib.sh:1", "m1.sh:3")
+	wantContains(t, q.refs("u2.sh", "build_release", 0, 0), "lib.sh:1", "m2.sh:3")
+}
+
+func TestNamesTarget(t *testing.T) {
+	q := buildMem(t, map[string]string{
+		"m.sh": "f() { :; }\nfoo() { :; }\neval \\f\neval f\\\noo\neval f\n\"$c\"\nc=f\n",
+	})
+	ff := q.s.Facts(q.abs("m.sh"))
+	got := []string{}
+	for _, u := range ff.Uses {
+		if u.Kind == UseCall && u.Via != ViaNone {
+			got = append(got, fmt.Sprintf("%s«%s»=%v", u.Name, ff.File.Src[u.Range.Start.Offset:u.Range.End.Offset], u.NamesTarget()))
+		}
+	}
+	wantSame(t, got, "f«\\f»=false", "foo«f\\\noo»=false", "f«f»=true", "c«\"$c\"»=false")
+}
+
+func TestPathQualifiedShells(t *testing.T) {
+	q := buildMem(t, map[string]string{
+		"m.sh": "f() { :; }\n/bin/sh -c 'f'\n/bin/bash -ec f\n",
+	})
+	wantSame(t, q.fileEdges("m.sh"),
+		"m.sh:2 calls candidate/string-shell-c «f» -> f@m.sh:1",
+		"m.sh:3 calls candidate/string-shell-c «f» -> f@m.sh:1",
+	)
+}
+
+func TestDynamicScopeReasonIsNoEdgeReason(t *testing.T) {
+	if slices.Contains(reasonNames, ReasonDynamicScope) {
+		t.Fatal("dynamic-scope registered as an edge reason")
+	}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("reasonCode(dynamic-scope) did not panic")
+		}
+	}()
+	reasonCode(ReasonDynamicScope)
 }

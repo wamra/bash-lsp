@@ -386,10 +386,10 @@ func TestEdgesMutualRecursionBuiltinWrappersUnset(t *testing.T) {
 	// `builtin cd` and `command cd` bypass the function: no self-edge.
 	wantSame(t, q.edgeStrs(q.s.EdgesTo(q.sym("c.sh", "cd()", 0, 0))),
 		"c.sh:5 calls resolved/direct c.sh -> cd@c.sh:1:1")
-	// Binding is flow-insensitive (a call above its definition binds too), so
-	// `unset -f` does not remove the edge; this pins today's behaviour.
+	// Ruling R41: `unset -f k` in view makes calls to k candidate/unset-in-view
+	// (order-free); see TestEdgesUnsetInView.
 	wantSame(t, q.edgeStrs(q.s.EdgesTo(q.sym("u.sh", "k()", 0, 0))),
-		"u.sh:3 calls resolved/direct u.sh -> k@u.sh:1:1")
+		"u.sh:3 calls candidate/unset-in-view u.sh -> k@u.sh:1:1")
 }
 
 func TestEdgesPipelineProcSubstCoprocDefinitions(t *testing.T) {
@@ -428,4 +428,14 @@ func TestEdgesEditThenRebuildWithPrev(t *testing.T) {
 	if !slices.Contains(got, "main.sh:23 calls resolved/direct main.sh -> log@lib/util.sh:3:1") {
 		t.Fatalf("edit not reflected: %v", got)
 	}
+}
+
+func TestEdgesSourceInsideFunctionCaller(t *testing.T) {
+	q := buildMem(t, map[string]string{
+		"lib.sh": "x() { :; }\n",
+		"m.sh":   "f() {\n  g() {\n    source ./lib.sh\n  }\n}\n",
+	})
+	g := q.sym("m.sh", "g()", 0, 0)
+	wantSame(t, q.edgeStrs(q.s.EdgesFrom(Caller{Path: q.abs("m.sh"), Func: g})),
+		"m.sh:3 sources resolved/direct m.sh:g -> lib.sh")
 }
