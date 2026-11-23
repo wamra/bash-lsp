@@ -39,8 +39,10 @@ type lowerer struct {
 	valueFrom int
 }
 
-// maxDepth bounds the lowerer's recursion. A statement nested deeper is
-// dropped and reported, so the tree handed to analysis is at most about
+// maxDepth bounds the lowerer's recursion, counted in lowering levels: each
+// statement, word, word part and if or elif clause inside another is one, so
+// a user-level construct costs one to four (bench/results/
+// lowerer-depth-m2a-final.txt). A statement nested deeper is dropped and reported, so the tree handed to analysis is at most about
 // 3*maxDepth nodes deep (a level adds a statement, its command and a block at
 // most) and every recursive walk over it (tree.Node.Walk, Bind, hover, the
 // ast view) stays within a few megabytes of stack. The parser has already
@@ -48,6 +50,9 @@ type lowerer struct {
 // recurses on. The whole-file scans over the parser's tree do not recurse
 // (visit.go).
 const maxDepth = 4000
+
+// loweringLimitError is the error of a statement dropped at maxDepth.
+var loweringLimitError = fmt.Sprintf("statement not analysed: nested more than %d levels deep, counting each statement, word, word part (expansion, quote or literal) and if or elif clause inside another", maxDepth)
 
 // tooDeep is the panic value of a lowering that crossed maxDepth.
 type tooDeep struct{}
@@ -122,7 +127,7 @@ func (l *lowerer) safeStmt(s *syntax.Stmt) (n *tree.Node) {
 			at := l.f.PosAt(l.cursor)
 			msg := "internal error lowering statement"
 			if _, ok := r.(tooDeep); ok {
-				msg = fmt.Sprintf("statement nested deeper than %d levels: not analysed", maxDepth)
+				msg = loweringLimitError
 			}
 			l.errs = append(l.errs, tree.SyntaxError{Range: tree.Range{Start: at, End: at}, Msg: msg})
 		}
