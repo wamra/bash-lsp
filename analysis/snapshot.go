@@ -154,12 +154,13 @@ type Snapshot struct {
 	bindings [][]Binding // per file, in use-offset order
 	bySym    map[*Symbol][]Binding
 
-	dyn       [][]dynSite       // per file, dynamic edge sites (dynamic.go)
-	invokes   [][]invokeSite    // per file, resolved invocations
-	extra     []Binding         // during Build: literal-value bindings to merge
-	valueSeen map[valueKey]bool // during Build: literal-value bindings made
-	valueUse  map[*Decl]*Use    // during Build: the literal-value use of an assignment
-	unsetBy   map[string][]int  // function name -> files with `unset -f` of it
+	dyn       [][]dynSite                 // per file, dynamic edge sites (dynamic.go)
+	invokes   [][]invokeSite              // per file, resolved invocations
+	extra     []Binding                   // during Build: literal-value bindings to merge
+	valueSeen map[valueKey]bool           // during Build: literal-value bindings made
+	valueUse  map[*Decl]*Use              // during Build: the literal-value use of an assignment
+	varVals   map[varValuesKey]*varValues // during Build: per variable symbol and file, what "$cmd" calls may run
+	unsetBy   map[string][]int            // function name -> files with `unset -f` of it
 
 	recs     []edgeRec // every edge, compact, grouped by file and sorted (see edges.go)
 	recAt    []int     // file i's edges are recs[recAt[i]:recAt[i+1]]

@@ -606,6 +606,7 @@ func (s *Snapshot) prepareDynamic() {
 	s.dyn = make([][]dynSite, len(s.paths))
 	s.valueSeen = map[valueKey]bool{}
 	s.valueUse = map[*Decl]*Use{}
+	s.varVals = map[varValuesKey]*varValues{}
 	s.unsetBy = map[string][]int{}
 	for i, ff := range s.facts {
 		for _, name := range ff.Unsets {
@@ -644,34 +645,19 @@ func (s *Snapshot) bindVariableCall(out []Binding, file int, u *Use, priv *Symbo
 	}
 	vars := s.bindVar(nil, file, &Use{Kind: UseVarRead, Name: u.Name, Range: u.Range, Scope: u.Scope}, priv)
 	var targets []*Symbol
-	type lit struct {
-		d    *Decl
-		syms []*Symbol
-	}
-	var lits []lit
+	vals := make([]*varValues, 0, len(vars))
 	for _, vb := range vars {
 		if vb.Res != Resolved || vb.Sym == nil {
 			return unknown()
 		}
-		for _, d := range vb.Sym.Decls {
-			if !s.visible[file].has(s.declFile[d]) || d.Temp {
-				continue
-			}
-			if d.Implicit == "" && d.Node != nil && d.Node.Kind == tree.KAssign && !s.assigns(d) {
-				continue // `local cmd`: declares, assigns nothing
-			}
-			if !s.plainLiteral(d) {
-				return unknown()
-			}
-			fs := s.pickAll(s.funcSyms[d.Literal], file)
-			if len(fs) == 0 {
-				return unknown()
-			}
-			lits = append(lits, lit{d, fs})
-			for _, f := range fs {
-				if !slices.Contains(targets, f) {
-					targets = append(targets, f)
-				}
+		v := s.valuesOf(vb.Sym, file)
+		if v.unknown {
+			return unknown()
+		}
+		vals = append(vals, v)
+		for _, f := range v.targets {
+			if !slices.Contains(targets, f) {
+				targets = append(targets, f)
 			}
 		}
 	}
@@ -683,6 +669,75 @@ func (s *Snapshot) bindVariableCall(out []Binding, file int, u *Use, priv *Symbo
 		b.Sym = t
 		out = append(out, b)
 	}
+	for _, v := range vals {
+		if !v.valuesBound {
+			v.valuesBound = true
+			s.bindValues(v.lits)
+		}
+	}
+	return out
+}
+
+// varValues is what the declarations in view of one variable symbol from
+// one file hold, for "$cmd" calls (bindVariableCall): unknown, or the
+// literal assignments with the functions each names, and those functions in
+// order of first appearance. Computed once per (symbol, file) in a Build: a
+// scan per call cost O(calls x assignments), 9.3 s for 128 KiB of
+// `cmd=f; "$cmd";`.
+type varValues struct {
+	unknown     bool
+	lits        []varLit
+	targets     []*Symbol
+	valuesBound bool // bindValues has run on lits
+}
+
+type varLit struct {
+	d    *Decl
+	syms []*Symbol
+}
+
+type varValuesKey struct {
+	sym  *Symbol
+	file int
+}
+
+// valuesOf returns the varValues of sym seen from file.
+func (s *Snapshot) valuesOf(sym *Symbol, file int) *varValues {
+	k := varValuesKey{sym, file}
+	if v := s.varVals[k]; v != nil {
+		return v
+	}
+	v := &varValues{}
+	s.varVals[k] = v
+	for _, d := range sym.Decls {
+		if !s.visible[file].has(s.declFile[d]) || d.Temp {
+			continue
+		}
+		if d.Implicit == "" && d.Node != nil && d.Node.Kind == tree.KAssign && !s.assigns(d) {
+			continue // `local cmd`: declares, assigns nothing
+		}
+		if !s.plainLiteral(d) {
+			v.unknown = true
+			return v
+		}
+		fs := s.pickAll(s.funcSyms[d.Literal], file)
+		if len(fs) == 0 {
+			v.unknown = true
+			return v
+		}
+		v.lits = append(v.lits, varLit{d, fs})
+		for _, f := range fs {
+			if !slices.Contains(v.targets, f) {
+				v.targets = append(v.targets, f)
+			}
+		}
+	}
+	return v
+}
+
+// bindValues adds the literal-value bindings of lits: each literal is a
+// Candidate/variable-constant use of the functions it names.
+func (s *Snapshot) bindValues(lits []varLit) {
 	for _, l := range lits {
 		df := s.declFile[l.d]
 		vu, ok := s.valueUse[l.d]
@@ -704,7 +759,6 @@ func (s *Snapshot) bindVariableCall(out []Binding, file int, u *Use, priv *Symbo
 			}
 		}
 	}
-	return out
 }
 
 // assigns reports whether the assignment node of d has `=` after the name.
@@ -809,7 +863,7 @@ func (s *Snapshot) finishDynamic(r func(file int) *resolver) {
 			}
 		}
 	}
-	s.extra, s.valueSeen, s.valueUse = nil, nil, nil
+	s.extra, s.valueSeen, s.valueUse, s.varVals = nil, nil, nil, nil
 	s.invokes = make([][]invokeSite, len(s.paths))
 	for i, ff := range s.facts {
 		if len(ff.Invokes) == 0 {
@@ -840,7 +894,12 @@ func (s *Snapshot) dynamicScope(added map[int][]Binding, replaced map[*Use]bool)
 		file int
 		fn   *tree.Node
 	}
+	// callersOf maps a definition to the functions around the resolved plain
+	// calls that reach it. Filled per symbol in one pass over its calls (each
+	// call's targets listed once): per definition, the pass cost
+	// O(definitions^2) for one call of a name defined many times.
 	callersOf := map[*Decl][]callerLocal{}
+	swept := map[*Symbol]bool{}
 	var scratch []edgeRec
 	for f, bs := range s.bindings {
 		for k := range bs {
@@ -853,24 +912,31 @@ func (s *Snapshot) dynamicScope(added map[int][]Binding, replaced map[*Use]bool)
 			if g == nil {
 				continue
 			}
-			cs, ok := callersOf[g]
-			if !ok {
-				for _, cb := range s.bySym[s.declSym[g]] {
+			if gs := s.declSym[g]; !swept[gs] {
+				swept[gs] = true
+				for _, cb := range s.bySym[gs] {
 					cu := cb.Use
 					if cu.Kind != UseCall || cu.Via != ViaNone || cu.ViaAlias || cb.Res != Resolved {
 						continue
 					}
 					cf := s.idx[cb.File]
 					scratch = s.appendTargets(scratch[:0], cf, edgeRec{}, &cb)
-					if !slices.ContainsFunc(scratch, func(r edgeRec) bool { return r.res == Resolved && r.to == g }) {
-						continue
-					}
-					if d := s.callerOfScope(cf, cu.Scope); d != nil {
-						cs = append(cs, callerLocal{cf, d.Node})
+					var d *Decl
+					for k, r := range scratch {
+						if r.res != Resolved || r.to == nil || s.declSym[r.to] != gs ||
+							slices.ContainsFunc(scratch[:k], func(q edgeRec) bool { return q.res == Resolved && q.to == r.to }) {
+							continue
+						}
+						if d == nil {
+							if d = s.callerOfScope(cf, cu.Scope); d == nil {
+								break
+							}
+						}
+						callersOf[r.to] = append(callersOf[r.to], callerLocal{cf, d.Node})
 					}
 				}
-				callersOf[g] = cs
 			}
+			cs := callersOf[g]
 			var syms []*Symbol
 			for _, c := range cs {
 				if !s.locals[c.file][c.fn][u.Name] {
