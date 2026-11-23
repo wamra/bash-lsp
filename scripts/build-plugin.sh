@@ -8,8 +8,9 @@ VERSION="${2:-$(git -C "$ROOT" describe --tags --always --dirty 2>/dev/null || e
 P="$ROOT/plugin"
 
 # OUT is deleted and rebuilt, so refuse anything that is not a previous
-# staging: /, ., .., $HOME, the repo root, or an existing non-empty directory
-# without .claude-plugin/ (and any existing non-directory).
+# staging: /, ., .., $HOME, the repo root, the plugin source tree (which holds
+# .claude-plugin/ itself), or an existing non-empty directory without
+# .claude-plugin/ (and any existing non-directory).
 refuse() { echo "build-plugin.sh: refusing to replace $OUT: $1" >&2; exit 2; }
 physical() { (cd "$1" 2>/dev/null && pwd -P); }
 case "$OUT" in
@@ -21,6 +22,8 @@ if [ -e "$OUT" ] || [ -L "$OUT" ]; then
   for p in / "$(physical "$HOME")" "$(physical "$ROOT")" "$(pwd -P)" "$(physical ..)"; do
     [ "$real" != "$p" ] || refuse "it is $p"
   done
+  src="$(physical "$P")"
+  case "$real/" in "$src"/*) refuse "it is the plugin source tree $P" ;; esac
   if [ -n "$(ls -A "$OUT")" ] && [ ! -d "$OUT/.claude-plugin" ]; then
     refuse "a non-empty directory that is not a previous staging (no .claude-plugin/)"
   fi
