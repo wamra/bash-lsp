@@ -389,6 +389,7 @@ func TestStringBodySizeCap(t *testing.T) {
 			t.Fatalf("string was parsed: %+v", u)
 		}
 	}
+	t.Logf("eval allocated %d bytes, echo %d", alloc, baseAlloc)
 	if alloc > 2*baseAlloc {
 		t.Fatalf("eval allocated %d bytes, echo %d", alloc, baseAlloc)
 	}
