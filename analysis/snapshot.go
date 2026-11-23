@@ -222,40 +222,147 @@ func (s *Snapshot) sharesVisibility(p *Snapshot) bool {
 
 // computeVisibility fills visible and incomplete. Visible(A) is everything
 // reached from any file that reaches A (A included).
+//
+// It works on the condensation of the source graph (strongly connected
+// components, so a cycle is one node): the files a component reaches are the
+// union of what its successors reach, and what a component sees is what it
+// reaches plus everything seen by components that reach it. Both are computed
+// in one pass each over the component DAG, O((files + edges) * files / 64),
+// instead of one traversal per file. Files of one component share a bitset;
+// visible sets are never modified after Build.
 func (s *Snapshot) computeVisibility(adj [][]int, unresolved []bool) {
 	n := len(s.paths)
-	reach := make([]bitset, n)
-	for i := 0; i < n; i++ {
+	comp, nc := sccs(adj)
+	members := make([][]int, nc)
+	for f, c := range comp {
+		members[c] = append(members[c], f)
+	}
+	// Tarjan emits a component after every component it can reach, so an edge
+	// between components always runs from a higher index to a lower one.
+	vis := make([]bitset, nc)
+	for c := 0; c < nc; c++ {
 		b := newBitset(n)
-		stack := []int{i}
-		b.set(i)
-		for len(stack) > 0 {
-			x := stack[len(stack)-1]
-			stack = stack[:len(stack)-1]
-			for _, y := range adj[x] {
-				if !b.has(y) {
-					b.set(y)
-					stack = append(stack, y)
+		for _, f := range members[c] {
+			b.set(f)
+		}
+		for _, f := range members[c] {
+			for _, y := range adj[f] {
+				if d := comp[y]; d != c {
+					b.or(vis[d]) // vis[d] holds only what d reaches here
 				}
 			}
 		}
-		reach[i] = b
+		vis[c] = b
+	}
+	// vis[c] is now reach(c). Add it to every successor, highest component
+	// first: every component that reaches c has a higher index, so vis[c] is
+	// final (reach(c) plus what its predecessors see) when it is pushed on.
+	seen := make([]int, nc)
+	for c := range seen {
+		seen[c] = -1
+	}
+	for c := nc - 1; c >= 0; c-- {
+		for _, f := range members[c] {
+			for _, y := range adj[f] {
+				if d := comp[y]; d != c && seen[d] != c {
+					seen[d] = c
+					vis[d].or(vis[c])
+				}
+			}
+		}
 	}
 	s.visible = make([]bitset, n)
-	for i := range s.visible {
-		s.visible[i] = newBitset(n)
+	for f := range s.visible {
+		s.visible[f] = vis[comp[f]]
 	}
-	for r := 0; r < n; r++ {
-		reach[r].each(func(a int) { s.visible[a].or(reach[r]) })
+	mask := newBitset(n)
+	any := false
+	for f, u := range unresolved {
+		if u {
+			mask.set(f)
+			any = true
+		}
 	}
 	s.incomplete = make([]bool, n)
-	for a := 0; a < n; a++ {
-		s.visible[a].each(func(f int) {
-			if unresolved[f] {
-				s.incomplete[a] = true
-			}
-		})
+	if !any {
+		return
 	}
+	inc := make([]bool, nc)
+	for c, b := range vis {
+		for i := range b {
+			if b[i]&mask[i] != 0 {
+				inc[c] = true
+				break
+			}
+		}
+	}
+	for f := range s.incomplete {
+		s.incomplete[f] = inc[comp[f]]
+	}
+}
+
+// sccs returns the strongly connected component of every node of adj and the
+// number of components. Components are numbered in the order Tarjan's
+// algorithm completes them: reverse topological order of the condensation.
+func sccs(adj [][]int) (comp []int, nc int) {
+	n := len(adj)
+	comp = make([]int, n)
+	index := make([]int, n)
+	low := make([]int, n)
+	onStack := make([]bool, n)
+	for i := range index {
+		index[i], comp[i] = -1, -1
+	}
+	var stack []int
+	type frame struct{ v, next int }
+	next := 0
+	for root := 0; root < n; root++ {
+		if index[root] != -1 {
+			continue
+		}
+		call := []frame{{root, 0}}
+		index[root], low[root] = next, next
+		next++
+		stack = append(stack, root)
+		onStack[root] = true
+		for len(call) > 0 {
+			fr := &call[len(call)-1]
+			v := fr.v
+			if fr.next < len(adj[v]) {
+				w := adj[v][fr.next]
+				fr.next++
+				if index[w] == -1 {
+					index[w], low[w] = next, next
+					next++
+					stack = append(stack, w)
+					onStack[w] = true
+					call = append(call, frame{w, 0})
+				} else if onStack[w] && index[w] < low[v] {
+					low[v] = index[w]
+				}
+				continue
+			}
+			if low[v] == index[v] {
+				for {
+					w := stack[len(stack)-1]
+					stack = stack[:len(stack)-1]
+					onStack[w] = false
+					comp[w] = nc
+					if w == v {
+						break
+					}
+				}
+				nc++
+			}
+			call = call[:len(call)-1]
+			if len(call) > 0 {
+				if p := call[len(call)-1].v; low[v] < low[p] {
+					low[p] = low[v]
+				}
+			}
+		}
+	}
+	return comp, nc
 }
 
 // collectSymbols groups every declaration into symbols.

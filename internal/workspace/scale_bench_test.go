@@ -162,3 +162,26 @@ func TestReusedOverlayIgnoresDiskChanges(t *testing.T) {
 		t.Fatal("file removed from disk must vanish when its overlay closes")
 	}
 }
+
+// BenchmarkSetOverlayGraphEdit1000 is the graph edit of bench/scale_ws.py: an
+// edit in the middle of the chain that alternately adds and removes a `source`
+// line, so the source graph changes on every iteration.
+func BenchmarkSetOverlayGraphEdit1000(b *testing.B) {
+	dir := b.TempDir()
+	chainWorkspace(b, dir, 1000, 20)
+	w, err := Open(dir, Limits{})
+	if err != nil {
+		b.Fatal(err)
+	}
+	p := filepath.Join(w.Root(), "s0500.sh")
+	src, _ := os.ReadFile(p)
+	edge := "source ./s0250.sh\n"
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		text := src
+		if i%2 == 0 {
+			text = append(append([]byte{}, src...), edge...)
+		}
+		w.SetOverlay(p, i+1, text)
+	}
+}
