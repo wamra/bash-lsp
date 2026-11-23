@@ -45,3 +45,46 @@ func benchParseBind(b *testing.B, src []byte) {
 func BenchmarkParseBindFunctions2000(b *testing.B) { benchParseBind(b, bigFunctions(2000)) }
 func BenchmarkParseBindComments40000(b *testing.B) { benchParseBind(b, commentLines(40000)) }
 func BenchmarkParseBindComments10000(b *testing.B) { benchParseBind(b, commentLines(10000)) }
+
+// chainFiles binds, in memory, the source chain of bench/gen_workspace.py:
+// file i sources file i-1 and function i_k calls function (i-1)_k.
+func chainFiles(root string, files, funcs int) map[string]*FileFacts {
+	out := map[string]*FileFacts{}
+	for i := 0; i < files; i++ {
+		var b strings.Builder
+		b.WriteString("#!/usr/bin/env bash\n")
+		if i > 0 {
+			fmt.Fprintf(&b, "source ./s%04d.sh\n", i-1)
+		}
+		for k := 0; k < funcs; k++ {
+			fmt.Fprintf(&b, "# Function %d_%d.\nf%d_%d() {\n  local a=\"$1\"\n", i, k, i, k)
+			if i > 0 {
+				fmt.Fprintf(&b, "  f%d_%d \"$a\"\n", i-1, k)
+			}
+			b.WriteString("  echo \"$a\"\n}\n\n")
+		}
+		p := fmt.Sprintf("%s/s%04d.sh", root, i)
+		out[p] = Bind(front.Parse(p, []byte(b.String()), front.Bash))
+	}
+	return out
+}
+
+// BenchmarkBuildEdgesChain1000 is the edge table alone, on the 1,000-file chain.
+func BenchmarkBuildEdgesChain1000(b *testing.B) {
+	s := Build(chainFiles("/ws", 1000, 20), Options{Root: "/ws"}, 1)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		s.buildEdges(len(s.recs))
+	}
+}
+
+// BenchmarkBuildChain1000 is a whole Build of the 1,000-file chain with the
+// previous snapshot given, as after a body edit.
+func BenchmarkBuildChain1000(b *testing.B) {
+	files := chainFiles("/ws", 1000, 20)
+	prev := Build(files, Options{Root: "/ws"}, 1)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		prev = Build(files, Options{Root: "/ws", Prev: prev}, uint64(i+2))
+	}
+}

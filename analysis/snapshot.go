@@ -40,6 +40,7 @@ const (
 	ReasonOutsideClosure = "name-match-outside-closure"
 	ReasonNotFound       = "not-found"
 	ReasonEnvironment    = "environment"
+	ReasonConditional    = "conditional-definition"
 )
 
 // Binding ties one Use to the symbol it names.
@@ -70,27 +71,6 @@ type Options struct {
 
 // maxAliasDepth bounds alias chains.
 const maxAliasDepth = 8
-
-// bashWords are the bash builtins and reserved words: a call to one of them
-// with no function of that name in view is not a missing definition.
-var bashWords = map[string]bool{}
-
-func init() {
-	for _, w := range []string{
-		// builtins
-		".", ":", "[", "alias", "bg", "bind", "break", "builtin", "caller", "cd", "command", "compgen",
-		"complete", "compopt", "continue", "declare", "dirs", "disown", "echo", "enable", "eval", "exec",
-		"exit", "export", "false", "fc", "fg", "getopts", "hash", "help", "history", "jobs", "kill", "let",
-		"local", "logout", "mapfile", "popd", "printf", "pushd", "pwd", "read", "readarray", "readonly",
-		"return", "set", "shift", "shopt", "source", "suspend", "test", "times", "trap", "true", "type",
-		"typeset", "ulimit", "umask", "unalias", "unset", "wait",
-		// reserved words
-		"!", "case", "coproc", "do", "done", "elif", "else", "esac", "fi", "for", "function", "if", "in",
-		"select", "then", "time", "until", "while", "{", "}", "[[", "]]",
-	} {
-		bashWords[w] = true
-	}
-}
 
 type bitset []uint64
 
@@ -162,9 +142,14 @@ type Snapshot struct {
 	locals                       []map[*tree.Node]map[string]bool // file -> function body -> names declared local
 	declSym                      map[*Decl]*Symbol
 	declFile                     map[*Decl]int
+	funcDecls, aliasDecls        [][]*Decl // per file, function and alias declarations in offset order
 
 	bindings [][]Binding // per file, in use-offset order
 	bySym    map[*Symbol][]Binding
+
+	recs    []edgeRec // every edge, compact, grouped by file and sorted (see edges.go)
+	recAt   []int     // file i's edges are recs[recAt[i]:recAt[i+1]]
+	graphIx graphIndex
 }
 
 // Build analyses files (keyed by absolute path) into a Snapshot.
@@ -226,6 +211,11 @@ func Build(files map[string]*FileFacts, opt Options, generation uint64) *Snapsho
 	}
 	s.collectSymbols()
 	s.bindAll()
+	hint := 0
+	if opt.Prev != nil {
+		hint = len(opt.Prev.recs) + len(opt.Prev.recs)/8
+	}
+	s.buildEdges(hint)
 	return s
 }
 
@@ -406,6 +396,7 @@ func funcBody(sc *Scope) *tree.Node {
 func (s *Snapshot) collectSymbols() {
 	n := len(s.paths)
 	s.locals = make([]map[*tree.Node]map[string]bool, n)
+	s.funcDecls, s.aliasDecls = make([][]*Decl, n), make([][]*Decl, n)
 	sorted := make([][]*Decl, n)
 	total := 0
 	for _, ff := range s.facts {
@@ -414,6 +405,7 @@ func (s *Snapshot) collectSymbols() {
 	s.declFile = make(map[*Decl]int, total)
 	s.declSym = make(map[*Decl]*Symbol, total)
 	byOffset := func(a, b *Decl) int { return a.NameRange.Start.Offset - b.NameRange.Start.Offset }
+	nfunc, totalFuncs := make([]int, n), 0
 	for i, ff := range s.facts {
 		ds := append([]*Decl(nil), ff.Decls...)
 		if !slices.IsSortedFunc(ds, byOffset) {
@@ -422,6 +414,10 @@ func (s *Snapshot) collectSymbols() {
 		sorted[i] = ds
 		for _, d := range ds {
 			s.declFile[d] = i
+			if d.Kind == DeclFunction {
+				nfunc[i]++
+				totalFuncs++
+			}
 			if fn := funcBody(d.Scope); d.Kind == DeclVariable && d.Attrs.Local && fn != nil && privateScope(d.Scope) == nil {
 				if s.locals[i] == nil {
 					s.locals[i] = map[*tree.Node]map[string]bool{}
@@ -434,14 +430,19 @@ func (s *Snapshot) collectSymbols() {
 		}
 	}
 	funcs, aliases, vars := map[string][]declEntry{}, map[string][]declEntry{}, map[string][]declEntry{}
+	funcSlab := make([]*Decl, totalFuncs) // one allocation for every file's function list
 	for i, ds := range sorted {
+		s.funcDecls[i] = funcSlab[:0:nfunc[i]]
+		funcSlab = funcSlab[nfunc[i]:]
 		for _, d := range ds {
 			e := declEntry{i, d}
 			switch d.Kind {
 			case DeclFunction:
 				funcs[d.Name] = append(funcs[d.Name], e)
+				s.funcDecls[i] = append(s.funcDecls[i], d)
 			case DeclAlias:
 				aliases[d.Name] = append(aliases[d.Name], e)
+				s.aliasDecls[i] = append(s.aliasDecls[i], d)
 			case DeclVariable:
 				fn := funcBody(d.Scope)
 				switch {
@@ -666,7 +667,7 @@ func (s *Snapshot) bindCall(out []Binding, file int, u *Use) []Binding {
 		}
 		return out
 	}
-	if bashWords[u.Name] {
+	if IsBuiltin(u.Name) {
 		return out
 	}
 	if s.incomplete[file] || (len(s.edges[file]) == 0 && !s.sourced[file]) {

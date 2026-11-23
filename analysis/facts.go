@@ -46,6 +46,17 @@ func privateScope(sc *Scope) *Scope {
 	return nil
 }
 
+// confining returns the innermost private scope (see ScopeKind.Private) of
+// sc or its ancestors, function scopes included; nil when there is none.
+func confining(sc *Scope) *Scope {
+	for ; sc != nil; sc = sc.Parent {
+		if sc.Kind.Private() {
+			return sc
+		}
+	}
+	return nil
+}
+
 // Scope is a lexical scope. Func is the name of the enclosing function, "" at file level.
 type Scope struct {
 	Kind   ScopeKind
@@ -80,6 +91,12 @@ type Decl struct {
 	Literal   string // DeclVariable: assigned value when it is a single literal or fully-literal quoted string, else ""
 	Implicit  string // "" for assignments/declare; else the builtin that declares it: "read", "mapfile", "readarray", "getopts", "printf -v", "for", "select"
 	Temp      bool   // true for an assignment prefixed to a command (`X=1 cmd`): it lives only for that command and must not be offered as a definition for later reads
+	// Confined, for a DeclFunction: the innermost subshell, command
+	// substitution, pipeline stage, process substitution or coproc body
+	// around the definition (a function body is no boundary: a function
+	// defined in another's body is global once that body runs); nil when there
+	// is none. A call outside it cannot be sure to reach this definition.
+	Confined *Scope
 }
 
 // UseKind says how a name is used.
@@ -189,7 +206,7 @@ func (b *binder) visit(n *tree.Node, sc *Scope) {
 	case tree.KFuncDecl:
 		if n.Name != "" {
 			b.ff.Decls = append(b.ff.Decls, &Decl{Kind: DeclFunction, Name: n.Name, NameRange: n.NameRange,
-				Scope: b.ff.Root, Doc: b.docAbove(n.Range.Start.Line), Node: n})
+				Scope: b.ff.Root, Doc: b.docAbove(n.Range.Start.Line), Node: n, Confined: confining(sc)})
 		}
 		fs := child(sc, ScopeFunction, n)
 		fs.Func = n.Name
