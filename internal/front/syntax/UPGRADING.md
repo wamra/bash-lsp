@@ -86,7 +86,12 @@ repository owner's decision.
     counted for this reason); and an `io.Reader` wrapper, which is a false
     positive of matching interface calls by method name. A new upstream recursion that is not
     counted fails this test: count it, make it a loop, or show it is bounded
-    and add it to the list with the reason.
+    and add it to the list with the reason. The test works per function, not
+    per call: a function that calls `enterNode` on one path and recurses on
+    another passes. `arithmExprValue` is such a function since item 3 of the
+    patch (its other paths reach themselves only through `arithmExpr`, which
+    counts). When upstream changes a function that calls `enterNode`, read
+    the change.
   - `bash-lsp_test.go`: the limit and its error text, the input that hung,
     and the stack a block of comments uses.
 - `go test ./internal/front`:

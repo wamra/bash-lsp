@@ -49,17 +49,14 @@ func fill(prefix, unit, suffix string) string {
 	return prefix + strings.Repeat(unit, n) + suffix
 }
 
-// nestingError is the parser's text for input nested past its limit
-// (maxNesting in internal/front/syntax).
-const nestingError = "nesting is deeper than 10000 levels"
-
 // Each of these drove the recursive-descent parser past Go's stack limit (a
 // fatal error no recover() catches; review finding C1) before it counted its
-// own nesting. Now it stops at 10,000 levels with a syntax error like any
-// other: the file is not skipped, and the error carries the parser's text.
+// own nesting. Now it stops at 10,000 levels with a syntax error that
+// carries the parser's text. These files hold nothing else, so they are
+// skipped, unless resync finds a statement on a later line.
 // TestNoCrashSubprocess runs the same shapes, and more, under a 64 MiB stack
 // limit.
-func TestDeepNestingIsASyntaxError(t *testing.T) {
+func TestDeepNestingIsSkipped(t *testing.T) {
 	cases := map[string]string{
 		"paren":       strings.Repeat("(", 200000) + "\n",
 		"cmdsubst":    "echo " + strings.Repeat("$(", 500000) + "\n",
@@ -110,18 +107,47 @@ func TestDeepNestingIsASyntaxError(t *testing.T) {
 	for name, src := range cases {
 		t.Run(name, func(t *testing.T) {
 			f := Parse("x.sh", []byte(src), Bash)
-			if f.Skipped != "" {
-				t.Fatalf("skipped: %q", f.Skipped)
-			}
 			if len(f.Errors) == 0 || f.Errors[0].Msg != nestingError {
 				t.Fatalf("first error is not the nesting error: %v", firstErrors(f, 3))
 			}
 			if hasErr(f, "parser failure") {
 				t.Fatalf("parser failure: %v", firstErrors(f, 3))
 			}
+			checkSkipped(t, f)
 			checkInvariants(t, f)
 		})
 	}
+}
+
+// checkSkipped fails unless f is skipped exactly when a nesting error left
+// it without a statement, and then has no statements at all.
+func checkSkipped(t *testing.T, f *tree.File) {
+	t.Helper()
+	if f.Skipped != "" {
+		if f.Skipped != nestingError || len(f.Root.Children) != 0 || !errorWith(f.Errors, nestingError) {
+			t.Fatalf("skipped %q with %d statements, errors %v", f.Skipped, len(f.Root.Children), firstErrors(f, 3))
+		}
+		return
+	}
+	if nothingBut(f.Root.Children, tree.KErrorGap) && errorWith(f.Errors, nestingError) {
+		t.Fatalf("not skipped, with no statement and errors %v", firstErrors(f, 3))
+	}
+}
+
+// A file that is nothing but too much nesting is skipped, with the parser's
+// text and nothing else: no level count of our own, one error.
+func TestRefusalMessage(t *testing.T) {
+	f := Parse("x.sh", []byte(strings.Repeat("$(", 100000)+"\n"), Bash)
+	if f.Skipped != nestingError {
+		t.Fatalf("Skipped = %q, want %q", f.Skipped, nestingError)
+	}
+	if len(f.Errors) != 1 || f.Errors[0].Msg != nestingError {
+		t.Fatalf("errors %v, want one %q", firstErrors(f, 3), nestingError)
+	}
+	if len(f.Root.Children) != 0 {
+		t.Fatal("a skipped file has no statements")
+	}
+	checkInvariants(t, f)
 }
 
 func firstErrors(f *tree.File, n int) []tree.SyntaxError {
@@ -131,9 +157,9 @@ func firstErrors(f *tree.File, n int) []tree.SyntaxError {
 	return f.Errors
 }
 
-// A nesting error is an ordinary syntax error: one diagnostic at the place
-// the limit was passed, the statements before it analysed, the lines after
-// it recovered.
+// Beside other code a nesting error is an ordinary syntax error: one
+// diagnostic at the place the limit was passed, the statements before it
+// analysed, the lines after it recovered. The file is not skipped.
 func TestNestingErrorKeepsTheRestOfTheFile(t *testing.T) {
 	src := "before() { :; }\necho " + strings.Repeat("$(", 100000) + "\nafter() { :; }\n"
 	f := Parse("x.sh", []byte(src), Bash)
@@ -173,6 +199,7 @@ var limits = []struct {
 	ok                                int
 }{
 	{"paren", "", "(", "a", ")", "\n", 10000},
+	{"subshell", "", "( ", "a", " )", "\n", 9999},
 	{"cmdsubst", "echo ", "$(", "a", ")", "\n", 4999},
 	{"brace", "", "{ ", "a", "; }", "\n", 9999},
 	{"procsubst", "cat ", "<(", "a", ")", "\n", 4999},
@@ -188,6 +215,15 @@ var limits = []struct {
 	{"arith-not", "echo $((", "!", "1", "", "))\n", 9997},
 	{"arith-plus", "echo $((", "1+", "1", "", "))\n", 9997},
 	{"arith-comma", "echo $((", "1,", "1", "", "))\n", 9997},
+	{"arith-subscript", "echo $((", "a[", "1", "]", "))\n", 9997},
+	{"arith-in-arith", "echo ", "$((", "1", "))", "\n", 4999},
+	{"assign-subscript", "", "a[", "1", "]", "=1\n", 9999},
+	{"param-replace", "echo ", "${a/", "a", "}", "\n", 9998},
+	{"dq-param", "echo ", `"${a:-`, "a", `}"`, "\n", 4999},
+	{"func-braces", "", "function f { ", ":", "; }", "\n", 4999},
+	{"if-cond", "", "if ", ":", "; then :; fi", "\n", 9999},
+	{"case-word", "case ", "$(case ", "a", " in a) ;; esac)", " in a) ;; esac\n", 4999},
+	{"pipe-subshell", "", "a | ( ", "a", " )", "\n", 4999},
 	{"let-ternary", "let ", "a?", "1", ":1", "\n", 9998},
 	{"test-not", "[[ ", "! ", "a", "", " ]]\n", 9997},
 	{"test-paren", "[[ ", "( ", "a", " )", " ]]\n", 9997},
@@ -221,9 +257,10 @@ func TestNestingLimit(t *testing.T) {
 				t.Fatalf("%d levels: skipped %q, errors %v", l.ok, f.Skipped, firstErrors(f, 3))
 			}
 			f := Parse("x.sh", []byte(atLimit(i, l.ok+1)), Bash)
-			if f.Skipped != "" || len(f.Errors) == 0 || f.Errors[0].Msg != nestingError {
+			if len(f.Errors) == 0 || f.Errors[0].Msg != nestingError {
 				t.Fatalf("%d levels: skipped %q, errors %v, want %q", l.ok+1, f.Skipped, firstErrors(f, 3), nestingError)
 			}
+			checkSkipped(t, f)
 		})
 	}
 }

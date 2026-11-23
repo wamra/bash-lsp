@@ -244,6 +244,12 @@ func costCases() map[string]string {
 		// and never close them: resync parses the tail again from every one
 		// of them, deep.
 		"resync-sustained": fill("echo '\n"+strings.Repeat("echo "+strings.Repeat("$(", 20)+"\n", 50), " a", "\n"),
+		// The same with braces, the slowest construct to parse, held just
+		// under the nesting limit and taken past it at the end of the file:
+		// every one of resync's parses runs to the nesting error.
+		"resync-at-limit": fill("echo '\n"+strings.Repeat("{ {\n", 50)+strings.Repeat("{ ", 9800), "a;", strings.Repeat("{ ", 200)+"\n"),
+		// And without the last 200: every parse runs to the end of the file.
+		"resync-under-limit": fill("echo '\n"+strings.Repeat("{ {\n", 50)+strings.Repeat("{ ", 9800), "a;", "\n"),
 	}
 }
 

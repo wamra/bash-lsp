@@ -120,6 +120,8 @@ func crashCases() map[string]func() string {
 		},
 		"sustained-under-limit": func() string { return costCases()["sustained-under-limit"] },
 		"resync-sustained":      func() string { return costCases()["resync-sustained"] },
+		"resync-at-limit":       func() string { return costCases()["resync-at-limit"] },
+		"resync-under-limit":    func() string { return costCases()["resync-under-limit"] },
 		// One comment line was one parser frame until the lexer's self-call
 		// became a loop: 2 MiB of them took 256 MiB of stack.
 		"comments-2MiB":      func() string { return strings.Repeat("#\n", 1<<20) },
@@ -189,7 +191,10 @@ func parseAndWalk(src []byte) string {
 		panic(fmt.Sprintf("tree depth %d over the lowerer's bound", d))
 	}
 	if f.Skipped != "" {
-		panic("skipped: " + f.Skipped)
+		if f.Skipped != nestingError || len(f.Root.Children) != 0 || !errorWith(f.Errors, nestingError) {
+			panic(fmt.Sprintf("skipped %q with %d statements, errors %v", f.Skipped, len(f.Root.Children), f.Errors))
+		}
+		return "result: skipped: " + f.Skipped
 	}
 	return fmt.Sprintf("result: parsed: %d statements, %d nodes, %d errors, nesting error: %v", len(f.Root.Children), nodes, len(f.Errors), hasErr(f, nestingError))
 }
@@ -230,7 +235,7 @@ func TestNoCrashSubprocess(t *testing.T) {
 			if err != nil {
 				t.Fatalf("child failed: %v\n%s", err, firstLines(out, 12))
 			}
-			if !strings.Contains(out, "result: parsed: ") {
+			if !strings.Contains(out, "result: parsed: ") && !strings.Contains(out, "result: skipped: "+nestingError) {
 				t.Fatalf("child printed no result:\n%s", firstLines(out, 12))
 			}
 			// The cases named for it sit at the parser's limit, not past it.

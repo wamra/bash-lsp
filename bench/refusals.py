@@ -3,10 +3,11 @@ Collects shell files (by extension or shebang) under each ROOT, read-only, at
 most --cap in total shared evenly between the roots (a root given with --all
 is scanned whole and does not count toward the cap), skipping anything over
 2 MiB; runs `BINARY ast --json FILE` on each and reports every file with the
-syntax error "nesting is deeper than 10000 levels" (nesting_errors), every
-file whose tree `ast` will not print because it is deeper than 1,000 levels
-(too_deep_to_print) and every file on which the binary crashed. Prints one
-JSON object.
+syntax error "nesting is deeper than 10000 levels": skipped because it left
+no statement (refused), or analysed around the error (nesting_errors). Also
+reports every file whose tree `ast` will not print because it is deeper than
+1,000 levels (too_deep_to_print) and every file on which the binary crashed.
+Prints one JSON object.
 Usage: uv run --no-project python refusals.py BINARY [--cap N] [--all ROOT]... ROOT..."""
 import concurrent.futures, datetime, json, os, re, subprocess, sys
 
@@ -54,12 +55,14 @@ def check(p):
         return "nesting-error" if any(e["msg"] == NESTING for e in errors) else "parsed"
     if r.returncode < 0 or "goroutine" in r.stderr:
         return "crashed"
+    if NESTING in r.stderr:
+        return "refused"
     if TOO_DEEP in r.stderr:
         return "too-deep-to-print"
     return "skipped-other"  # zsh, unreadable
 
-per_root, nesting, too_deep, crashed = {}, [], [], []
-totals = {"parsed": 0, "nesting-error": 0, "too-deep-to-print": 0, "crashed": 0, "skipped-other": 0}
+per_root, refused, nesting, too_deep, crashed = {}, [], [], [], []
+totals = {"parsed": 0, "refused": 0, "nesting-error": 0, "too-deep-to-print": 0, "crashed": 0, "skipped-other": 0}
 for root in whole + roots:
     files = shell_files(root, 1 << 30 if root in whole else cap // len(roots))
     with concurrent.futures.ThreadPoolExecutor(8) as ex:
@@ -68,6 +71,7 @@ for root in whole + roots:
     per_root[root] = {"scanned": len(files), **counts}
     for k in totals:
         totals[k] += counts[k]
+    refused += [p for p, r in zip(files, results) if r == "refused"]
     nesting += [p for p, r in zip(files, results) if r == "nesting-error"]
     too_deep += [p for p, r in zip(files, results) if r == "too-deep-to-print"]
     crashed += [p for p, r in zip(files, results) if r == "crashed"]
@@ -75,7 +79,7 @@ repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 commit = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=repo, text=True).strip()
 print(json.dumps({"date": datetime.datetime.now().astimezone().isoformat(timespec="seconds"), "commit": commit,
                   "cap": cap, "max_bytes": MAX, "scanned": sum(v["scanned"] for v in per_root.values()),
-                  "nesting_errors": totals["nesting-error"], "too_deep_to_print": totals["too-deep-to-print"],
+                  "refused": totals["refused"], "nesting_errors": totals["nesting-error"], "too_deep_to_print": totals["too-deep-to-print"],
                   "crashed": totals["crashed"], "parsed": totals["parsed"],
                   "skipped_other": totals["skipped-other"], "roots": per_root,
-                  "nesting_error_paths": nesting, "too_deep_to_print_paths": too_deep, "crashed_paths": crashed}, indent=1))
+                  "refused_paths": refused, "nesting_error_paths": nesting, "too_deep_to_print_paths": too_deep, "crashed_paths": crashed}, indent=1))
