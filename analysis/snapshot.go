@@ -154,9 +154,10 @@ type Snapshot struct {
 	valueUse  map[*Decl]*Use    // during Build: the literal-value use of an assignment
 	unsetBy   map[string][]int  // function name -> files with `unset -f` of it
 
-	recs    []edgeRec // every edge, compact, grouped by file and sorted (see edges.go)
-	recAt   []int     // file i's edges are recs[recAt[i]:recAt[i+1]]
-	graphIx graphIndex
+	recs     []edgeRec // every edge, compact, grouped by file and sorted (see edges.go)
+	recAt    []int     // file i's edges are recs[recAt[i]:recAt[i+1]]
+	graphIx  graphIndex
+	graphAdj graphAdj
 }
 
 // Build analyses files (keyed by absolute path) into a Snapshot.
