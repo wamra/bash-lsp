@@ -116,3 +116,49 @@ func BenchmarkSetOverlayChain1000(b *testing.B) {
 		w.SetOverlay(p, i+1, append(append([]byte{}, src...), fmt.Sprintf("# edit %d\n", i)...))
 	}
 }
+
+// An overlay that reused the disk entry's facts must keep answering from the
+// overlay text when the file changes on disk or disappears (Refresh).
+func TestReusedOverlayIgnoresDiskChanges(t *testing.T) {
+	root := t.TempDir()
+	src := []byte("#!/usr/bin/env bash\nfoo() { :; }\n")
+	p := filepath.Join(root, "a.sh")
+	if err := os.WriteFile(p, src, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w := open(t, root)
+	p = w.Canon(p)
+	w.SetOverlay(p, 1, src) // reuses the disk facts
+	names := func() []string {
+		var out []string
+		ff := w.Snapshot().Facts(p)
+		if ff == nil {
+			return nil
+		}
+		for _, d := range ff.Decls {
+			out = append(out, d.Name)
+		}
+		return out
+	}
+	want := func(what string, got []string, exp ...string) {
+		t.Helper()
+		if strings.Join(got, ",") != strings.Join(exp, ",") {
+			t.Fatalf("%s: got %v, want %v", what, got, exp)
+		}
+	}
+	want("after open", names(), "foo")
+	if err := os.WriteFile(p, []byte("#!/usr/bin/env bash\nbar() { :; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w.Refresh(p)
+	want("disk changed", names(), "foo")
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	w.Refresh(p)
+	want("disk removed", names(), "foo")
+	w.CloseOverlay(p)
+	if w.Snapshot().Facts(p) != nil {
+		t.Fatal("file removed from disk must vanish when its overlay closes")
+	}
+}

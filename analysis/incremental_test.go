@@ -68,6 +68,9 @@ func TestBuildReusesVisibilityOnlyWhenGraphUnchanged(t *testing.T) {
 	opt.Prev = first
 	fourth := Build(memFiles(root, broken), opt, 4)
 	fresh = Build(memFiles(root, broken), Options{Root: root}, 4)
+	if fourth.sharesVisibility(first) {
+		t.Fatal("a newly unresolved source reused the earlier visibility")
+	}
 	if !reflect.DeepEqual(fourth.incomplete, fresh.incomplete) || !fresh.incomplete[0] {
 		t.Fatalf("incomplete flags %v, fresh %v", fourth.incomplete, fresh.incomplete)
 	}
