@@ -139,12 +139,16 @@ func Serve(in io.Reader, out io.Writer, logw io.Writer, version string) error {
 }
 
 func (s *server) dispatch(body []byte) {
-	if !json.Valid(body) {
-		s.c.reply(nil, nil, &rpcError{codeParseError, "parse error: invalid JSON"})
-		return
-	}
+	// Unmarshal validates the syntax itself and reports a failure of it as a
+	// *json.SyntaxError, so a separate json.Valid pass over a large body (a
+	// didOpen carries the whole document) is not needed to tell the two apart.
 	var m message
 	if err := json.Unmarshal(body, &m); err != nil {
+		var syn *json.SyntaxError
+		if errors.As(err, &syn) {
+			s.c.reply(nil, nil, &rpcError{codeParseError, "parse error: invalid JSON"})
+			return
+		}
 		s.c.reply(nil, nil, &rpcError{codeInvalidRequest, "invalid request: " + err.Error()})
 		return
 	}

@@ -669,6 +669,8 @@ func TestMalformedMessagesKeepSessionAlive(t *testing.T) {
 		code int
 	}{
 		{`{not json`, -32700},
+		{`{"jsonrpc":"2.0","id":1`, -32700},
+		{`{"jsonrpc":"2.0"} trailing`, -32700},
 		{`[1,2,3]`, -32600},
 		{`{"jsonrpc":"2.0","id":"s","method":42}`, -32600},
 	} {
