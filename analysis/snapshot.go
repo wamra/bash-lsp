@@ -131,6 +131,12 @@ type localKey struct {
 
 type posKey struct{ file, offset int }
 
+// privEntry is a private symbol and the scope it belongs to.
+type privEntry struct {
+	sc  *Scope
+	sym *Symbol
+}
+
 // privKey names a variable declared in a private scope: the scope itself
 // (one object per subshell, command substitution, pipeline stage, ...) and its name.
 type privKey struct {
@@ -157,6 +163,7 @@ type Snapshot struct {
 	funcSyms, aliasSyms, varSyms map[string][]*Symbol
 	localSyms                    map[localKey]*Symbol
 	privSyms                     map[privKey]*Symbol
+	privByFile                   [][]privEntry // per file, every private symbol, in the order collectSymbols made them
 	envSyms                      map[string]*Symbol
 	tempSyms                     map[posKey]*Symbol
 	locals                       []map[*tree.Node]map[string]bool // file -> function body -> names declared local
@@ -394,6 +401,9 @@ func funcBody(sc *Scope) *tree.Node {
 	if sc == nil || sc.Func == "" {
 		return nil
 	}
+	if sc.body != nil {
+		return sc.body
+	}
 	for ; sc != nil; sc = sc.Parent {
 		if sc.Kind == ScopeFunction {
 			return sc.Node
@@ -406,6 +416,7 @@ func funcBody(sc *Scope) *tree.Node {
 func (s *Snapshot) collectSymbols() {
 	n := len(s.paths)
 	s.locals = make([]map[*tree.Node]map[string]bool, n)
+	s.privByFile = make([][]privEntry, n)
 	sorted := make([][]*Decl, n)
 	total := 0
 	for _, ff := range s.facts {
@@ -456,6 +467,7 @@ func (s *Snapshot) collectSymbols() {
 					if sym == nil {
 						sym = &Symbol{Kind: DeclVariable, Name: d.Name, Func: d.Scope.Func, File: s.paths[i], Private: ps.Kind}
 						s.privSyms[k] = sym
+						s.privByFile[i] = append(s.privByFile[i], privEntry{ps, sym})
 					}
 					sym.Decls = append(sym.Decls, d)
 					s.declSym[d] = sym
@@ -578,12 +590,17 @@ func (s *Snapshot) bindAll() {
 	s.bindings = make([][]Binding, len(s.paths))
 	for i, ff := range s.facts {
 		out := make([]Binding, 0, len(ff.Uses))
-		for _, u := range ff.Uses {
+		priv := s.privateOf(i, ff)
+		for j, u := range ff.Uses {
 			switch u.Kind {
 			case UseCall:
 				out = s.bindCall(out, i, u)
 			case UseVarRead, UseVarWrite:
-				out = s.bindVar(out, i, u)
+				var ps *Symbol
+				if priv != nil {
+					ps = priv[j]
+				}
+				out = s.bindVar(out, i, u, ps)
 			}
 		}
 		byUse := func(a, b Binding) int { return a.Use.Range.Start.Offset - b.Use.Range.Start.Offset }
@@ -597,7 +614,71 @@ func (s *Snapshot) bindAll() {
 	}
 }
 
-func (s *Snapshot) bindVar(out []Binding, file int, u *Use) []Binding {
+// privateOf returns, for each use of ff, the symbol of the innermost private
+// scope around it that declares its name (rules S1, S2), nil when none; nil
+// for a file without private symbols. Bind numbered each scope with the uses
+// recorded while it was open, so a scope encloses use j exactly when
+// first <= j < last, and the enclosing scopes of a name form a stack swept once
+// in use order: linear, where a walk up the scope chain per use cost
+// O(depth) each (review C1: 45 s for 2 MiB of reads 3,900 subshells deep).
+// The walk passes through function scopes, looking only at private scopes,
+// so a function defined inside a subshell reads that subshell's variables.
+func (s *Snapshot) privateOf(file int, ff *FileFacts) []*Symbol {
+	es := s.privByFile[file]
+	if len(es) == 0 {
+		return nil
+	}
+	if !ff.Root.closed { // not numbered by Bind: walk the chain per use
+		out := make([]*Symbol, len(ff.Uses))
+		for j, u := range ff.Uses {
+			for sc := u.Scope; sc != nil && sc.Kind != ScopeFile; sc = sc.Parent {
+				if sym := s.privSyms[privKey{file, sc, u.Name}]; sym != nil && sc.Kind.Private() {
+					out[j] = sym
+					break
+				}
+			}
+		}
+		return out
+	}
+	es = slices.Clone(es)
+	// Outer scopes first where two open together.
+	slices.SortStableFunc(es, func(a, b privEntry) int {
+		if a.sc.first != b.sc.first {
+			return a.sc.first - b.sc.first
+		}
+		return b.sc.last - a.sc.last
+	})
+	out := make([]*Symbol, len(ff.Uses))
+	open := map[string][]privEntry{}
+	k := 0
+	for j, u := range ff.Uses {
+		for ; k < len(es) && es[k].sc.first <= j; k++ {
+			e := es[k]
+			st := open[e.sym.Name]
+			for len(st) > 0 && st[len(st)-1].sc.last <= e.sc.first {
+				st = st[:len(st)-1]
+			}
+			open[e.sym.Name] = append(st, e)
+		}
+		if u.Kind != UseVarRead && u.Kind != UseVarWrite {
+			continue
+		}
+		st, ok := open[u.Name]
+		if !ok {
+			continue
+		}
+		for len(st) > 0 && st[len(st)-1].sc.last <= j {
+			st = st[:len(st)-1]
+		}
+		open[u.Name] = st
+		if len(st) > 0 {
+			out[j] = st[len(st)-1].sym
+		}
+	}
+	return out
+}
+
+func (s *Snapshot) bindVar(out []Binding, file int, u *Use, priv *Symbol) []Binding {
 	b := Binding{Use: u, File: s.paths[file], Res: Resolved, Reason: ReasonDirect}
 	if u.Kind == UseVarWrite {
 		if sym := s.tempSyms[posKey{file, u.Range.Start.Offset}]; sym != nil {
@@ -605,19 +686,12 @@ func (s *Snapshot) bindVar(out []Binding, file int, u *Use) []Binding {
 			return append(out, b)
 		}
 	}
-	// Innermost private scope with a declaration of the name wins (rules S1, S2).
-	// The walk passes through function scopes, looking only at private scopes,
-	// so a function defined inside a subshell reads that subshell's variables;
-	// the enclosing function's locals are not visible to a nested function.
-	if len(s.privSyms) > 0 {
-		for sc := u.Scope; sc != nil && sc.Kind != ScopeFile; sc = sc.Parent {
-			if sc.Kind.Private() {
-				if sym := s.privSyms[privKey{file, sc, u.Name}]; sym != nil {
-					b.Sym = sym
-					return append(out, b)
-				}
-			}
-		}
+	// Innermost private scope with a declaration of the name wins (rules S1,
+	// S2; privateOf). The enclosing function's locals are not visible to a
+	// nested function.
+	if priv != nil {
+		b.Sym = priv
+		return append(out, b)
 	}
 	if fn := funcBody(u.Scope); fn != nil && s.locals[file][fn][u.Name] {
 		b.Sym = s.localSyms[localKey{file, fn, u.Name}]

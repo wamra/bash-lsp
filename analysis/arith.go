@@ -12,7 +12,8 @@ import (
 // expression's source text instead: the operator after a name says whether it
 // is a write. Nested `$x`, `${x}`, `$(cmd)`, `$((..))` and `<(..)` keep going
 // through the existing expansion path; their byte ranges are masked here so
-// nothing is counted twice. Every scan is one linear pass over the bytes.
+// nothing is counted twice. Every scan is one linear pass over the bytes; bracket
+// pairs come from one table built per file (matchBracket).
 
 type span struct{ s, e int }
 
@@ -59,21 +60,46 @@ func isIdentStart(c byte) bool { return c == '_' || (c|0x20 >= 'a' && c|0x20 <= 
 func isIdentChar(c byte) bool  { return isIdentStart(c) || isDigit(c) }
 
 // matchBracket returns the index of the `]` that closes the `[` at open, or -1
-// when it does not close before limit.
+// when it does not close before limit. The depth count runs over raw bytes
+// from open on, so the answer is the `]` a bracket stack over the whole
+// source pairs with open: the table of those pairs is built once, on the first
+// call, and each call is a binary search (a scan per call made a run of `a[`
+// quadratic, review C1).
 func (b *binder) matchBracket(open, limit int) int {
-	depth := 0
-	for i := open; i < limit && i < len(b.src); i++ {
-		switch b.src[i] {
-		case '[':
-			depth++
-		case ']':
-			depth--
-			if depth == 0 {
-				return i
-			}
-		}
+	if !b.bracketsBuilt {
+		b.buildBrackets()
+	}
+	k, ok := slices.BinarySearch(b.bracketOpen, int32(open))
+	if !ok {
+		return -1
+	}
+	if cl := int(b.bracketClose[k]); cl >= 0 && cl < limit {
+		return cl
 	}
 	return -1
+}
+
+// buildBrackets pairs every `[` in the source with its `]` in one pass; an
+// unclosed `[` gets -1 and a `]` with nothing open is ignored.
+func (b *binder) buildBrackets() {
+	b.bracketsBuilt = true
+	var stack []int32
+	for i := 0; ; {
+		k := bytes.IndexAny(b.src[i:], "[]")
+		if k < 0 {
+			break
+		}
+		i += k
+		if b.src[i] == '[' {
+			stack = append(stack, int32(len(b.bracketOpen)))
+			b.bracketOpen = append(b.bracketOpen, int32(i))
+			b.bracketClose = append(b.bracketClose, -1)
+		} else if len(stack) > 0 {
+			b.bracketClose[stack[len(stack)-1]] = int32(i)
+			stack = stack[:len(stack)-1]
+		}
+		i++
+	}
 }
 
 // blankEnd returns the index after the blanks at i: spaces, tabs, newlines,
@@ -170,17 +196,45 @@ func (b *binder) arithAccess(start, end, lo, limit int) (read, write bool) {
 // isDeclared reports whether a declaration of name is already in view at sc,
 // by the rules the snapshot binds with: a private scope on the way up (passing
 // function scopes), a local of the enclosing function, then any plain one.
+//
+// sc is the scope being visited, so the private scopes in view are the open
+// ones: privOpen holds them without a walk up the chain.
 func (b *binder) isDeclared(name string, sc *Scope) bool {
 	b.startTracking()
-	for s := sc; s != nil && s.Kind != ScopeFile; s = s.Parent {
-		if s.Kind.Private() && b.declPriv[privDecl{s, name}] > 0 {
-			return true
-		}
+	if inView(b.privOpen, name, func(s *Scope) bool { return b.declPriv[privDecl{s, name}] > 0 }) {
+		return true
 	}
 	if fn := funcBody(sc); fn != nil && b.declLocal[localDecl{fn, name}] > 0 {
 		return true
 	}
 	return b.declGlobal[name] > 0
+}
+
+// inView reports whether open[name] holds an open scope for which ok holds.
+// Closed scopes, and scopes ok rejects, are dropped from the top as they are
+// met: a scope Bind has left never opens again, and one ok rejects is pushed
+// again when it gains a declaration (push). Each push is popped once.
+func inView(open map[string][]*Scope, name string, ok func(*Scope) bool) bool {
+	st := open[name]
+	for len(st) > 0 && (st[len(st)-1].closed || !ok(st[len(st)-1])) {
+		st = st[:len(st)-1]
+	}
+	open[name] = st
+	return len(st) > 0
+}
+
+// push records that ps, the innermost private scope open, gained a
+// declaration of name. The closed scopes above it go first, so the open
+// scopes on the stack stay in the order they were opened.
+func push(open map[string][]*Scope, name string, ps *Scope) {
+	st := open[name]
+	for len(st) > 0 && st[len(st)-1].closed {
+		st = st[:len(st)-1]
+	}
+	if len(st) == 0 || st[len(st)-1] != ps {
+		st = append(st, ps)
+	}
+	open[name] = st
 }
 
 type privDecl struct {
@@ -214,7 +268,12 @@ func (b *binder) noteDecl(d *Decl, delta int) {
 	}
 	switch fn := funcBody(d.Scope); {
 	case privateScope(d.Scope) != nil:
-		b.declPriv[privDecl{privateScope(d.Scope), d.Name}] += delta
+		ps := privateScope(d.Scope)
+		k := privDecl{ps, d.Name}
+		b.declPriv[k] += delta
+		if delta > 0 && b.declPriv[k] == 1 {
+			push(b.privOpen, d.Name, ps)
+		}
 	case fn != nil && d.Attrs.Local:
 		b.declLocal[localDecl{fn, d.Name}] += delta
 	default:
@@ -493,6 +552,7 @@ func (b *binder) noteInteger(d *Decl) {
 	switch fn := funcBody(d.Scope); {
 	case privateScope(d.Scope) != nil:
 		b.ints[intKey{sc: privateScope(d.Scope), name: d.Name}] = true
+		push(b.intOpen, d.Name, privateScope(d.Scope))
 	case fn != nil && d.Attrs.Local:
 		b.ints[intKey{fn: fn, name: d.Name}] = true
 	default:
@@ -513,10 +573,8 @@ func (b *binder) isInteger(name string, sc *Scope) bool {
 	if len(b.ints) == 0 {
 		return false
 	}
-	for s := sc; s != nil && s.Kind != ScopeFile; s = s.Parent {
-		if s.Kind.Private() && b.ints[intKey{sc: s, name: name}] {
-			return true
-		}
+	if inView(b.intOpen, name, func(*Scope) bool { return true }) {
+		return true
 	}
 	if fn := funcBody(sc); fn != nil && b.ints[intKey{fn: fn, name: name}] {
 		return true

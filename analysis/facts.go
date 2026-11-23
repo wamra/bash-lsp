@@ -52,6 +52,12 @@ type Scope struct {
 	Parent *Scope
 	Node   *tree.Node
 	Func   string
+
+	// Set by Bind, so that no lookup walks the scope chain (review C1: a walk
+	// per use or assignment cost O(depth) each, up to 45 s for 2 MiB):
+	body        *tree.Node // the KFuncDecl node of the nearest function scope, nil outside one
+	first, last int        // the uses Bind recorded while this scope was open are FileFacts.Uses[first:last]
+	closed      bool       // Bind has left the scope
 }
 
 // DeclKind says what a Decl declares.
@@ -109,6 +115,9 @@ type SourceRef struct {
 	Word      *tree.Node
 	Range     tree.Range
 	Directive string
+
+	loop      *tree.Node // the innermost `for` over the variable a bare `$name` word names, nil when none
+	loopKnown bool       // loop was set by Bind
 }
 
 // FileFacts is everything Bind extracts from one file. Read-only: shared
@@ -144,6 +153,13 @@ type binder struct {
 	declGlobal   map[string]int    // declarations in view, by where they bind (see isDeclared)
 	declLocal    map[localDecl]int
 	declPriv     map[privDecl]int
+	privOpen     map[string][]*Scope     // per name, private scopes with a tracked declaration of it; the open ones are the scopes in view
+	intOpen      map[string][]*Scope     // the same for integer-attribute declarations
+	loops        map[string][]*tree.Node // per name, the `for` loops over it that enclose the node being visited
+
+	bracketsBuilt bool    // bracketOpen and bracketClose are filled (matchBracket)
+	bracketOpen   []int32 // offset of every `[` in src, ascending
+	bracketClose  []int32 // offset of the `]` that closes bracketOpen[k], -1 when none
 }
 
 // Bind walks f once, carrying a scope stack, and returns its facts.
@@ -156,7 +172,8 @@ func Bind(f *tree.File) *FileFacts {
 	ff.Path = f.Path
 	ff.Root = &Scope{Kind: ScopeFile, Node: f.Root}
 	b := &binder{ff: ff, src: f.Src, wholeCmt: map[int]*tree.Node{}, assoc: map[string]bool{}, names: map[string]string{},
-		declGlobal: map[string]int{}, declLocal: map[localDecl]int{}, declPriv: map[privDecl]int{}}
+		declGlobal: map[string]int{}, declLocal: map[localDecl]int{}, declPriv: map[privDecl]int{},
+		privOpen: map[string][]*Scope{}, intOpen: map[string][]*Scope{}, loops: map[string][]*tree.Node{}}
 	b.bats = f.Dialect == tree.Bats
 	for _, c := range f.Comments {
 		start := c.Range.Start
@@ -171,6 +188,7 @@ func Bind(f *tree.File) *FileFacts {
 	if f.Root != nil {
 		b.children(f.Root, ff.Root)
 	}
+	ff.Root.last, ff.Root.closed = len(ff.Uses), true
 	return ff
 }
 
@@ -180,9 +198,22 @@ func (b *binder) children(n *tree.Node, sc *Scope) {
 	}
 }
 
-func child(sc *Scope, k ScopeKind, n *tree.Node) *Scope {
-	return &Scope{Kind: k, Parent: sc, Node: n, Func: sc.Func}
+// open makes a scope of kind k under sc, opened now.
+func (b *binder) open(sc *Scope, k ScopeKind, n *tree.Node) *Scope {
+	s := &Scope{Kind: k, Parent: sc, Node: n, Func: sc.Func, body: sc.body, first: len(b.ff.Uses)}
+	if k == ScopeFunction {
+		s.body = n
+	}
+	return s
 }
+
+// within visits the children of n in s, a scope just opened, and closes it.
+func (b *binder) within(n *tree.Node, s *Scope) {
+	b.children(n, s)
+	b.close(s)
+}
+
+func (b *binder) close(s *Scope) { s.last, s.closed = len(b.ff.Uses), true }
 
 func (b *binder) visit(n *tree.Node, sc *Scope) {
 	switch n.Kind {
@@ -191,27 +222,34 @@ func (b *binder) visit(n *tree.Node, sc *Scope) {
 			b.ff.Decls = append(b.ff.Decls, &Decl{Kind: DeclFunction, Name: n.Name, NameRange: n.NameRange,
 				Scope: b.ff.Root, Doc: b.docAbove(n.Range.Start.Line), Node: n})
 		}
-		fs := child(sc, ScopeFunction, n)
+		fs := b.open(sc, ScopeFunction, n)
 		fs.Func = n.Name
-		b.children(n, fs)
+		b.within(n, fs)
 	case tree.KSubshell:
-		b.children(n, child(sc, ScopeSubshell, n))
+		b.within(n, b.open(sc, ScopeSubshell, n))
 	case tree.KCmdSubst:
-		b.children(n, child(sc, ScopeCmdSubst, n))
+		b.within(n, b.open(sc, ScopeCmdSubst, n))
 	case tree.KProcSubst:
-		b.children(n, child(sc, ScopeProcSubst, n))
+		b.within(n, b.open(sc, ScopeProcSubst, n))
 	case tree.KCoproc:
-		cs := child(sc, ScopeCoproc, n)
+		// The body is the last child; the scope is opened for it alone, so
+		// that it is the innermost open scope of every use inside it.
+		var cs *Scope
 		for _, c := range n.Children {
-			if c.Kind == tree.KStmt {
-				b.visit(c, cs)
-			} else {
+			if c.Kind != tree.KStmt {
 				b.visit(c, sc)
+				continue
 			}
+			if cs == nil {
+				cs = b.open(sc, ScopeCoproc, n)
+			}
+			cs.closed = false
+			b.visit(c, cs)
+			b.close(cs)
 		}
 	case tree.KPipeline:
 		for _, stage := range n.Children {
-			b.children(stage, child(sc, ScopePipeline, stage))
+			b.within(stage, b.open(sc, ScopePipeline, stage))
 		}
 	case tree.KParamExp:
 		b.paramExp(n, sc)
@@ -238,6 +276,10 @@ func (b *binder) visit(n *tree.Node, sc *Scope) {
 				impl = "select"
 			}
 			b.variable(n.Name, n.NameRange, n, sc, VarAttrs{}, "", impl)
+			b.loops[n.Name] = append(b.loops[n.Name], n)
+			b.children(n, sc)
+			b.loops[n.Name] = b.loops[n.Name][:len(b.loops[n.Name])-1]
+			break
 		}
 		b.children(n, sc)
 	case tree.KCall:
@@ -492,8 +534,14 @@ func (b *binder) builtin(n *tree.Node, name string, words []*tree.Node, sc *Scop
 		if len(args) == 0 {
 			return true
 		}
-		b.ff.Sources = append(b.ff.Sources, SourceRef{Node: n, Word: args[0], Range: args[0].Range,
-			Directive: b.directiveAbove(n.Range.Start.Line)})
+		ref := SourceRef{Node: n, Word: args[0], Range: args[0].Range,
+			Directive: b.directiveAbove(n.Range.Start.Line), loopKnown: true}
+		if parts := wordParts(args[0]); len(parts) == 1 && parts[0].Kind == tree.KParamExp {
+			if ls := b.loops[parts[0].Name]; len(ls) > 0 {
+				ref.loop = ls[len(ls)-1]
+			}
+		}
+		b.ff.Sources = append(b.ff.Sources, ref)
 		return true
 	case "alias":
 		for _, w := range args {

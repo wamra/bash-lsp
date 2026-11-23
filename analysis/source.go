@@ -235,11 +235,13 @@ func (r *resolver) loopGlob(ref SourceRef) []string {
 	if t := norm(r.text(parts[0])); t != "$"+name && t != "${"+name+"}" {
 		return nil
 	}
-	var loop *tree.Node
-	for p := ref.Node.Parent; p != nil; p = p.Parent {
-		if p.Kind == tree.KFor && p.Name == name {
-			loop = p
-			break
+	loop := ref.loop // Bind tracked the loops: no walk up the tree per reference
+	if !ref.loopKnown {
+		for p := ref.Node.Parent; p != nil; p = p.Parent {
+			if p.Kind == tree.KFor && p.Name == name {
+				loop = p
+				break
+			}
 		}
 	}
 	if loop == nil {

@@ -206,7 +206,7 @@ func FuzzParse(f *testing.F) {
 		})
 	}
 	// Small versions of the shapes that once overflowed the stack or ran
-	// quadratically (deep_test.go); the fuzzer mutates them toward the limits.
+	// quadratically (each input must parse within parseBudget) (deep_test.go); the fuzzer mutates them toward the limits.
 	for _, seed := range []string{
 		"((((((\n", "echo $($($($(\n", "{ { { { \n", "cat <(<(<(\n", `echo "$("$("$(` + "\n",
 		"echo $[$[$[\n", "echo $((a?a?a?1:2:3:4))\n", "let a?a?a?1:2:3:4\n", "[[ ! ! ! a ]]\n",
@@ -220,7 +220,34 @@ func FuzzParse(f *testing.F) {
 		f.Add([]byte(seed))
 	}
 	f.Fuzz(func(t *testing.T, src []byte) {
-		file := Parse("f.sh", src, Bash)
+		var file *tree.File
+		parseWithinBudget(t, len(src), func() { file = Parse("f.sh", src, Bash) })
 		checkInvariants(t, file)
 	})
+}
+
+// parseBudget is the time Parse may take on one fuzz input of n bytes:
+// generous (a 64 KiB input parses in a few milliseconds), so that only a
+// super-linear cost trips it.
+func parseBudget(n int) time.Duration {
+	b := 100*time.Millisecond + time.Duration(n)*2*time.Microsecond
+	if raceBuild {
+		b *= 10
+	}
+	return b
+}
+
+// parseWithinBudget runs fn and fails t when the best of three runs takes
+// longer than parseBudget (a fuzz worker shares the machine with the others).
+func parseWithinBudget(t *testing.T, n int, fn func()) {
+	t.Helper()
+	best := time.Duration(1<<63 - 1)
+	for range 3 {
+		start := time.Now()
+		fn()
+		if best = min(best, time.Since(start)); best <= parseBudget(n) {
+			return
+		}
+	}
+	t.Fatalf("Parse took %v on %d bytes, over its budget of %v", best, n, parseBudget(n))
 }
