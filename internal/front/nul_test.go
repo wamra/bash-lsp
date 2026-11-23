@@ -9,7 +9,7 @@ import (
 // The lexer drops NUL bytes from a literal's value but its positions still
 // span them: a name range must hold the name's bytes and nothing else.
 func TestNameRangeExcludesNUL(t *testing.T) {
-	for _, s := range []string{"((A\x00[0]++", "((\x00A\x00[0]++\n", "echo ${A\x00[0]}\n", "A\x00=1\n", "for \x00i\x00 in a; do :; done\n"} {
+	for _, s := range []string{"((A\x00[0]++", "((\x00A\x00[0]++\n", "echo ${A\x00[0]}\n", "A\x00=1\n", "for \x00i\x00 in a; do :; done\n", "((0[0\x00A[0]++]", "echo ${A\x00B[0]}\n", "for A\x00B in a; do :; done\n"} {
 		src := []byte(s)
 		f := Parse("/ws/f.sh", src, Bash)
 		var walk func(n *tree.Node)

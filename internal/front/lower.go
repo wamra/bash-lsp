@@ -297,12 +297,12 @@ func (l *lowerer) command(c syntax.Command) *tree.Node {
 			kids = append(kids, l.assign(a))
 		}
 		n := l.mk(tree.KDecl, c.Pos(), c.End(), kids...)
-		n.Name, n.NameRange = c.Variant.Value, l.rng(c.Variant.ValuePos, c.Variant.ValueEnd)
+		n.Name, n.NameRange = l.name(c.Variant.Value, c.Variant.ValuePos, c.Variant.ValueEnd)
 		return n
 	case *syntax.FuncDecl:
 		n := l.mk(tree.KFuncDecl, c.Position, syntax.Pos{}, l.stmt(c.Body))
 		if c.Name != nil {
-			n.Name, n.NameRange = c.Name.Value, l.rng(c.Name.ValuePos, c.Name.ValueEnd)
+			n.Name, n.NameRange = l.name(c.Name.Value, c.Name.ValuePos, c.Name.ValueEnd)
 		}
 		return n
 	case *syntax.TestDecl: // bats: @test "description" { ... }
@@ -455,7 +455,7 @@ func (l *lowerer) forClause(c *syntax.ForClause) *tree.Node {
 		}
 		kids = append(kids, body)
 		n = l.mk(tree.KFor, c.ForPos, c.End(), kids...)
-		n.Name, n.NameRange = loop.Name.Value, l.rng(loop.Name.ValuePos, loop.Name.ValueEnd)
+		n.Name, n.NameRange = l.name(loop.Name.Value, loop.Name.ValuePos, loop.Name.ValueEnd)
 	case *syntax.CStyleLoop:
 		var kids []*tree.Node
 		kids = append(kids, l.arith(loop.Init)...)
@@ -489,7 +489,7 @@ func (l *lowerer) assign(a *syntax.Assign) *tree.Node {
 	}
 	n := l.mk(tree.KAssign, a.Pos(), a.End(), kids...)
 	if a.Name != nil {
-		n.Name, n.NameRange = a.Name.Value, l.rng(a.Name.ValuePos, a.Name.ValueEnd)
+		n.Name, n.NameRange = l.name(a.Name.Value, a.Name.ValuePos, a.Name.ValueEnd)
 	}
 	l.missing(n, rparen, ")")
 	return n
@@ -650,7 +650,7 @@ func (l *lowerer) part1(p syntax.WordPart) *tree.Node {
 		}
 		n := l.mk(tree.KParamExp, p.Pos(), p.End(), kids...)
 		if p.Param != nil {
-			n.Name, n.NameRange = p.Param.Value, l.rng(p.Param.ValuePos, p.Param.ValueEnd)
+			n.Name, n.NameRange = l.name(p.Param.Value, p.Param.ValuePos, p.Param.ValueEnd)
 		}
 		if !p.Short {
 			l.missing(n, p.Rbrace, "}")
@@ -757,7 +757,7 @@ func (l *lowerer) declCall(c *syntax.CallExpr) *tree.Node {
 		kids = append(kids, l.declArg(w))
 	}
 	n := l.mk(tree.KDecl, c.Args[0].Pos(), c.End(), kids...)
-	n.Name, n.NameRange = kw.Value, l.rng(kw.ValuePos, kw.ValueEnd)
+	n.Name, n.NameRange = l.name(kw.Value, kw.ValuePos, kw.ValueEnd)
 	return n
 }
 
@@ -800,4 +800,17 @@ func (l *lowerer) declArg(w *syntax.Word) *tree.Node {
 		}
 	}
 	return l.mk(tree.KAssign, syntax.Pos{}, syntax.Pos{}, l.word(w))
+}
+
+// name is a name and its range. A NUL inside the literal is in the source but
+// not in the lexer's value; then the name is the source bytes, so that the
+// range holds exactly the name (such a name is never a valid identifier).
+func (l *lowerer) name(value string, a, b syntax.Pos) (string, tree.Range) {
+	r := l.rng(a, b)
+	if r.Start.Offset < r.End.Offset && r.End.Offset <= len(l.f.Src) {
+		if text := l.f.Src[r.Start.Offset:r.End.Offset]; string(text) != value {
+			return string(text), r
+		}
+	}
+	return value, r
 }
