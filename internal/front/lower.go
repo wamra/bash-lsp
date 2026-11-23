@@ -780,7 +780,8 @@ var declKeywords = map[string]bool{"local": true, "declare": true, "typeset": tr
 
 var identPrefix = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*`)
 
-// plainLit returns the text of a word that is a single unquoted literal.
+// plainLit returns the literal of a word that is a single unquoted literal
+// with a known position, and whether it is one.
 func plainLit(w *syntax.Word) (*syntax.Lit, bool) {
 	if len(w.Parts) != 1 {
 		return nil, false

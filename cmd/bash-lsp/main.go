@@ -240,12 +240,6 @@ func nodeDepths(root *tree.Node) (map[*tree.Node]int, int) {
 	return depths, max
 }
 
-// treeDepth is the number of levels of the node tree under root, root included.
-func treeDepth(root *tree.Node) int {
-	_, d := nodeDepths(root)
-	return d
-}
-
 // viewDepth is the number of levels of what `ast` prints: the node tree with
 // each comment one level under the node it is printed under.
 func viewDepth(f *tree.File) int {

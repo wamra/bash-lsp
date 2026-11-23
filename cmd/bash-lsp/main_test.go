@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/wamra/bash-lsp/parse"
+	"github.com/wamra/bash-lsp/tree"
 )
 
 func TestVersion(t *testing.T) {
@@ -472,4 +473,10 @@ func TestAstDepthThreshold(t *testing.T) {
 			}
 		})
 	}
+}
+
+// treeDepth is the number of levels of the node tree under root, root included.
+func treeDepth(root *tree.Node) int {
+	_, d := nodeDepths(root)
+	return d
 }
