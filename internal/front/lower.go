@@ -1,0 +1,553 @@
+package front
+
+import (
+	"sort"
+	"strings"
+
+	"mvdan.cc/sh/v3/syntax"
+
+	"github.com/wamra/bash-lsp/tree"
+)
+
+// lowerer turns mvdan nodes into tree nodes. Every parser offset is shifted by
+// base.Offset and converted with f.PosAt, so a tail parsed separately lands at
+// its true place in the whole file.
+type lowerer struct {
+	f      *tree.File
+	base   tree.Pos
+	errs   []tree.SyntaxError
+	cursor int // largest absolute end offset produced so far: "nearest valid position"
+}
+
+// lowerStmts lowers a statement list parsed from f.Src[base.Offset:]. A
+// statement whose lowering panics is dropped and reported rather than taking
+// the whole file down. Callers use the returned errors to extend File.Errors.
+func lowerStmts(f *tree.File, base tree.Pos, stmts []*syntax.Stmt) ([]*tree.Node, []tree.SyntaxError) {
+	l := &lowerer{f: f, base: base, cursor: base.Offset}
+	var out []*tree.Node
+	for _, s := range stmts {
+		if n := l.safeStmt(s); n != nil {
+			out = append(out, n)
+		}
+	}
+	return out, l.errs
+}
+
+func (l *lowerer) safeStmt(s *syntax.Stmt) (n *tree.Node) {
+	defer func() {
+		if r := recover(); r != nil {
+			n = nil
+			at := l.f.PosAt(l.cursor)
+			l.errs = append(l.errs, tree.SyntaxError{Range: tree.Range{Start: at, End: at}, Msg: "internal error lowering statement"})
+		}
+	}()
+	return l.stmt(s)
+}
+
+// lowerComments lowers every comment reachable from the parsed file, in source order.
+func lowerComments(f *tree.File, base tree.Pos, af *syntax.File) (out []*tree.Node) {
+	defer func() { _ = recover() }() // a partial tree after a hard error may hold nil nodes
+	l := &lowerer{f: f, base: base}
+	syntax.Walk(af, func(n syntax.Node) bool {
+		if c, ok := n.(*syntax.Comment); ok && c != nil && c.Hash.IsValid() {
+			text := strings.TrimRight(c.Text, "\r")
+			start := l.pos(c.Hash)
+			out = append(out, &tree.Node{
+				Kind:  tree.KComment,
+				Range: tree.Range{Start: start, End: l.f.PosAt(start.Offset + 1 + len(text))},
+				Value: strings.TrimSpace(text),
+			})
+		}
+		return true
+	})
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Range.Start.Offset < out[j].Range.Start.Offset })
+	return out
+}
+
+func (l *lowerer) pos(p syntax.Pos) tree.Pos {
+	return l.f.PosAt(l.base.Offset + int(p.Offset()))
+}
+
+// mk builds a node. A missing (invalid or recovered) start falls back to the
+// first child, then to the cursor; a missing end to the last child's end.
+func (l *lowerer) mk(k tree.Kind, start, end syntax.Pos, kids ...*tree.Node) *tree.Node {
+	n := &tree.Node{Kind: k}
+	for _, c := range kids {
+		if c != nil {
+			c.Parent = n
+			n.Children = append(n.Children, c)
+		}
+	}
+	switch {
+	case start.IsValid():
+		n.Range.Start = l.pos(start)
+	case len(n.Children) > 0:
+		n.Range.Start = n.Children[0].Range.Start
+	default:
+		n.Range.Start = l.f.PosAt(l.cursor)
+	}
+	if end.IsValid() {
+		n.Range.End = l.pos(end)
+	} else {
+		n.Range.End = n.Range.Start
+		for _, c := range n.Children {
+			if c.Range.End.Offset > n.Range.End.Offset {
+				n.Range.End = c.Range.End
+			}
+		}
+	}
+	if n.Range.End.Offset < n.Range.Start.Offset {
+		n.Range.End = n.Range.Start
+	}
+	// A parent always covers its children (a heredoc body, for one, lies past
+	// the end the parser reports for the enclosing pipeline stage).
+	for _, c := range n.Children {
+		if c.Range.Start.Offset < n.Range.Start.Offset {
+			n.Range.Start = c.Range.Start
+		}
+		if c.Range.End.Offset > n.Range.End.Offset {
+			n.Range.End = c.Range.End
+		}
+	}
+	if n.Range.End.Offset > l.cursor {
+		l.cursor = n.Range.End.Offset
+	}
+	return n
+}
+
+// missing marks n recovered and reports `missing <tok>` at n's end, when p is a
+// position the parser invented.
+func (l *lowerer) missing(n *tree.Node, p syntax.Pos, tok string) {
+	if !p.IsRecovered() {
+		return
+	}
+	n.Recovered = true
+	l.errs = append(l.errs, tree.SyntaxError{Range: tree.Range{Start: n.Range.End, End: n.Range.End}, Msg: "missing " + tok})
+}
+
+func (l *lowerer) rng(a, b syntax.Pos) tree.Range {
+	return tree.Range{Start: l.pos(a), End: l.pos(b)}
+}
+
+func (l *lowerer) stmts(list []*syntax.Stmt) []*tree.Node {
+	out := make([]*tree.Node, 0, len(list))
+	for _, s := range list {
+		out = append(out, l.stmt(s))
+	}
+	return out
+}
+
+// group wraps a statement list in a synthetic KBlock spanning its statements.
+func (l *lowerer) group(list []*syntax.Stmt) *tree.Node {
+	return l.mk(tree.KBlock, syntax.Pos{}, syntax.Pos{}, l.stmts(list)...)
+}
+
+func (l *lowerer) stmt(s *syntax.Stmt) *tree.Node {
+	var kids []*tree.Node
+	if s.Cmd != nil {
+		kids = append(kids, l.command(s.Cmd))
+	}
+	for _, r := range s.Redirs {
+		kids = append(kids, l.redirect(r))
+	}
+	if s.Position.IsRecovered() {
+		n := l.mk(tree.KStmt, syntax.Pos{}, syntax.Pos{}, kids...)
+		l.missing(n, s.Position, "command")
+		return n
+	}
+	end := s.End()
+	n := l.mk(tree.KStmt, s.Position, end, kids...)
+	return n
+}
+
+func (l *lowerer) command(c syntax.Command) *tree.Node {
+	switch c := c.(type) {
+	case *syntax.CallExpr:
+		var kids []*tree.Node
+		for _, a := range c.Assigns {
+			kids = append(kids, l.assign(a))
+		}
+		for _, w := range c.Args {
+			kids = append(kids, l.word(w))
+		}
+		return l.mk(tree.KCall, syntax.Pos{}, syntax.Pos{}, kids...)
+	case *syntax.DeclClause:
+		var kids []*tree.Node
+		for _, a := range c.Args {
+			kids = append(kids, l.assign(a))
+		}
+		n := l.mk(tree.KDecl, c.Pos(), c.End(), kids...)
+		n.Name, n.NameRange = c.Variant.Value, l.rng(c.Variant.ValuePos, c.Variant.ValueEnd)
+		return n
+	case *syntax.FuncDecl:
+		n := l.mk(tree.KFuncDecl, c.Position, syntax.Pos{}, l.stmt(c.Body))
+		if c.Name != nil {
+			n.Name, n.NameRange = c.Name.Value, l.rng(c.Name.ValuePos, c.Name.ValueEnd)
+		}
+		return n
+	case *syntax.TestDecl: // bats: @test "description" { ... }
+		n := l.mk(tree.KFuncDecl, c.Position, syntax.Pos{}, l.stmt(c.Body))
+		n.Name = l.literalText(c.Description)
+		if len(c.Description.Parts) > 0 {
+			n.NameRange = l.rng(c.Description.Pos(), c.Description.End())
+		}
+		return n
+	case *syntax.IfClause:
+		return l.ifClause(c, true)
+	case *syntax.WhileClause:
+		n := l.mk(tree.KWhile, c.WhilePos, c.End(), l.group(c.Cond), l.group(c.Do))
+		l.missing(n, c.DoPos, "do")
+		l.missing(n, c.DonePos, "done")
+		return n
+	case *syntax.ForClause:
+		return l.forClause(c)
+	case *syntax.CaseClause:
+		kids := []*tree.Node{l.word(c.Word)}
+		for _, it := range c.Items {
+			var ik []*tree.Node
+			for _, p := range it.Patterns {
+				ik = append(ik, l.word(p))
+			}
+			ik = append(ik, l.stmts(it.Stmts)...)
+			// Pos() panics without patterns; a pattern-less item only follows a hard error.
+			if len(it.Patterns) == 0 {
+				continue
+			}
+			kids = append(kids, l.mk(tree.KBlock, it.Pos(), it.End(), ik...))
+		}
+		n := l.mk(tree.KCase, c.Case, c.End(), kids...)
+		l.missing(n, c.In, "in")
+		l.missing(n, c.Esac, "esac")
+		return n
+	case *syntax.Block:
+		n := l.mk(tree.KBlock, c.Lbrace, c.End(), l.stmts(c.Stmts)...)
+		l.missing(n, c.Rbrace, "}")
+		return n
+	case *syntax.Subshell:
+		n := l.mk(tree.KSubshell, c.Lparen, c.End(), l.stmts(c.Stmts)...)
+		l.missing(n, c.Rparen, ")")
+		return n
+	case *syntax.BinaryCmd:
+		switch c.Op {
+		case syntax.Pipe, syntax.PipeAll:
+			var kids []*tree.Node
+			for _, s := range pipeStages(c) {
+				kids = append(kids, l.stmt(s))
+			}
+			return l.mk(tree.KPipeline, syntax.Pos{}, syntax.Pos{}, kids...)
+		default: // && and ||: binary, X then Y
+			return l.mk(tree.KAndOr, syntax.Pos{}, syntax.Pos{}, l.stmt(c.X), l.stmt(c.Y))
+		}
+	case *syntax.ArithmCmd:
+		n := l.mk(tree.KArith, c.Left, c.End(), l.arith(c.X)...)
+		l.missing(n, c.Right, "))")
+		return n
+	case *syntax.TestClause:
+		n := l.mk(tree.KTest, c.Left, c.End(), l.test(c.X)...)
+		l.missing(n, c.Right, "]]")
+		return n
+	case *syntax.LetClause:
+		var kids []*tree.Node
+		for _, e := range c.Exprs {
+			kids = append(kids, l.arith(e)...)
+		}
+		return l.mk(tree.KLet, c.Let, syntax.Pos{}, kids...)
+	case *syntax.TimeClause:
+		var kids []*tree.Node
+		if c.Stmt != nil {
+			kids = append(kids, l.stmt(c.Stmt))
+		}
+		return l.mk(tree.KTime, c.Time, c.End(), kids...)
+	case *syntax.CoprocClause:
+		var kids []*tree.Node
+		if c.Name != nil {
+			kids = append(kids, l.word(c.Name))
+		}
+		kids = append(kids, l.stmt(c.Stmt))
+		return l.mk(tree.KCoproc, c.Coproc, syntax.Pos{}, kids...)
+	}
+	// Unknown command type: keep a placeholder so statement structure survives.
+	return l.mk(tree.KCall, c.Pos(), c.End())
+}
+
+// pipeStages flattens an unparenthesised `a | b | c` into its stages.
+func pipeStages(c *syntax.BinaryCmd) []*syntax.Stmt {
+	var out []*syntax.Stmt
+	for _, s := range []*syntax.Stmt{c.X, c.Y} {
+		if b, ok := s.Cmd.(*syntax.BinaryCmd); ok && (b.Op == syntax.Pipe || b.Op == syntax.PipeAll) && len(s.Redirs) == 0 && !s.Negated && !s.Background {
+			out = append(out, pipeStages(b)...)
+		} else {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func (l *lowerer) ifClause(c *syntax.IfClause, top bool) *tree.Node {
+	kids := []*tree.Node{l.group(c.Cond), l.group(c.Then)}
+	if e := c.Else; e != nil {
+		if e.ThenPos.IsValid() || e.ThenPos.IsRecovered() { // elif
+			kids = append(kids, l.ifClause(e, false))
+		} else { // plain else
+			kids = append(kids, l.group(e.Then))
+		}
+	}
+	n := l.mk(tree.KIf, c.Position, c.End(), kids...)
+	l.missing(n, c.ThenPos, "then")
+	if top { // elif/else clauses share the top clause's FiPos
+		l.missing(n, c.FiPos, "fi")
+	}
+	return n
+}
+
+func (l *lowerer) forClause(c *syntax.ForClause) *tree.Node {
+	open, closeTok := "do", "done"
+	if c.Braces {
+		open, closeTok = "{", "}"
+	}
+	body := l.mk(tree.KBlock, c.DoPos, c.End(), l.stmts(c.Do)...)
+	var n *tree.Node
+	switch loop := c.Loop.(type) {
+	case *syntax.WordIter:
+		var kids []*tree.Node
+		for _, w := range loop.Items {
+			kids = append(kids, l.word(w))
+		}
+		kids = append(kids, body)
+		n = l.mk(tree.KFor, c.ForPos, c.End(), kids...)
+		n.Name, n.NameRange = loop.Name.Value, l.rng(loop.Name.ValuePos, loop.Name.ValueEnd)
+	case *syntax.CStyleLoop:
+		var kids []*tree.Node
+		kids = append(kids, l.arith(loop.Init)...)
+		kids = append(kids, l.arith(loop.Cond)...)
+		kids = append(kids, l.arith(loop.Post)...)
+		kids = append(kids, body)
+		n = l.mk(tree.KCStyleFor, c.ForPos, c.End(), kids...)
+	default:
+		n = l.mk(tree.KFor, c.ForPos, c.End(), body)
+	}
+	l.missing(n, c.DoPos, open)
+	l.missing(n, c.DonePos, closeTok)
+	return n
+}
+
+func (l *lowerer) assign(a *syntax.Assign) *tree.Node {
+	var kids []*tree.Node
+	kids = append(kids, l.arith(a.Index)...)
+	if a.Value != nil {
+		kids = append(kids, l.word(a.Value))
+	}
+	var rparen syntax.Pos
+	if a.Array != nil {
+		for _, el := range a.Array.Elems {
+			kids = append(kids, l.arith(el.Index)...)
+			if el.Value != nil {
+				kids = append(kids, l.word(el.Value))
+			}
+		}
+		rparen = a.Array.Rparen
+	}
+	n := l.mk(tree.KAssign, a.Pos(), a.End(), kids...)
+	if a.Name != nil {
+		n.Name, n.NameRange = a.Name.Value, l.rng(a.Name.ValuePos, a.Name.ValueEnd)
+	}
+	l.missing(n, rparen, ")")
+	return n
+}
+
+func (l *lowerer) redirect(r *syntax.Redirect) *tree.Node {
+	var kids []*tree.Node
+	if r.Word != nil {
+		kids = append(kids, l.word(r.Word))
+	}
+	n := l.mk(tree.KRedirect, r.OpPos, syntax.Pos{}, kids...)
+	if r.N != nil {
+		n.Range.Start = l.pos(r.N.ValuePos)
+	}
+	if r.Hdoc != nil {
+		var body []*tree.Node
+		if len(r.Hdoc.Parts) > 0 {
+			body = append(body, l.word(r.Hdoc))
+		}
+		var hd *tree.Node
+		if len(r.Hdoc.Parts) > 0 {
+			hd = l.mk(tree.KHeredoc, r.Hdoc.Pos(), r.Hdoc.End(), body...)
+		} else {
+			hd = l.mk(tree.KHeredoc, syntax.Pos{}, syntax.Pos{})
+			hd.Range = tree.Range{Start: n.Range.End, End: n.Range.End}
+		}
+		if r.Word != nil {
+			hd.Name = l.literalText(r.Word)
+			if len(r.Word.Parts) > 0 {
+				hd.NameRange = l.rng(r.Word.Pos(), r.Word.End())
+			}
+		}
+		hd.Parent = n
+		n.Children = append(n.Children, hd)
+		if hd.Range.End.Offset > n.Range.End.Offset {
+			n.Range.End = hd.Range.End // the body follows the operator line; the redirect owns it
+		}
+	}
+	return n
+}
+
+// literalText concatenates a word's literal and quoted text; any non-literal
+// part is ignored. Used for heredoc tags and bats test names.
+func (l *lowerer) literalText(w *syntax.Word) string {
+	if w == nil {
+		return ""
+	}
+	var sb strings.Builder
+	var walk func(parts []syntax.WordPart)
+	walk = func(parts []syntax.WordPart) {
+		for _, p := range parts {
+			switch p := p.(type) {
+			case *syntax.Lit:
+				sb.WriteString(p.Value)
+			case *syntax.SglQuoted:
+				sb.WriteString(p.Value)
+			case *syntax.DblQuoted:
+				walk(p.Parts)
+			}
+		}
+	}
+	walk(w.Parts)
+	return sb.String()
+}
+
+func (l *lowerer) word(w *syntax.Word) *tree.Node {
+	var kids []*tree.Node
+	for _, p := range w.Parts {
+		kids = append(kids, l.part(p))
+	}
+	if len(kids) == 0 {
+		return l.mk(tree.KWord, syntax.Pos{}, syntax.Pos{})
+	}
+	n := l.mk(tree.KWord, syntax.Pos{}, syntax.Pos{}, kids...)
+	// The parser's own range for the word wins when it is valid (a Lit's
+	// ValueEnd survives escaped newlines).
+	if w.Pos().IsValid() {
+		n.Range.Start = l.pos(w.Pos())
+	}
+	if w.End().IsValid() {
+		n.Range.End = l.pos(w.End())
+	}
+	for _, c := range kids {
+		if c.Recovered {
+			n.Recovered = true
+		}
+	}
+	return n
+}
+
+func (l *lowerer) part(p syntax.WordPart) *tree.Node {
+	switch p := p.(type) {
+	case *syntax.Lit:
+		if p.ValuePos.IsRecovered() { // the parser invented a missing word
+			n := l.mk(tree.KLit, syntax.Pos{}, syntax.Pos{})
+			l.missing(n, p.ValuePos, "word")
+			return n
+		}
+		n := l.mk(tree.KLit, p.ValuePos, p.ValueEnd)
+		n.Value = p.Value
+		return n
+	case *syntax.SglQuoted:
+		n := l.mk(tree.KSglQuoted, p.Left, p.End())
+		n.Value = p.Value
+		l.missing(n, p.Right, "'")
+		return n
+	case *syntax.DblQuoted:
+		var kids []*tree.Node
+		for _, q := range p.Parts {
+			kids = append(kids, l.part(q))
+		}
+		n := l.mk(tree.KDblQuoted, p.Left, p.End(), kids...)
+		l.missing(n, p.Right, `"`)
+		return n
+	case *syntax.ParamExp:
+		var kids []*tree.Node
+		kids = append(kids, l.arith(p.Index)...)
+		if p.Slice != nil {
+			kids = append(kids, l.arith(p.Slice.Offset)...)
+			kids = append(kids, l.arith(p.Slice.Length)...)
+		}
+		if p.Repl != nil {
+			if p.Repl.Orig != nil {
+				kids = append(kids, l.word(p.Repl.Orig))
+			}
+			if p.Repl.With != nil {
+				kids = append(kids, l.word(p.Repl.With))
+			}
+		}
+		if p.Exp != nil && p.Exp.Word != nil {
+			kids = append(kids, l.word(p.Exp.Word))
+		}
+		n := l.mk(tree.KParamExp, p.Pos(), p.End(), kids...)
+		if p.Param != nil {
+			n.Name, n.NameRange = p.Param.Value, l.rng(p.Param.ValuePos, p.Param.ValueEnd)
+		}
+		if !p.Short {
+			l.missing(n, p.Rbrace, "}")
+		}
+		return n
+	case *syntax.CmdSubst:
+		n := l.mk(tree.KCmdSubst, p.Left, p.End(), l.stmts(p.Stmts)...)
+		l.missing(n, p.Right, ")")
+		return n
+	case *syntax.ArithmExp:
+		n := l.mk(tree.KArithExp, p.Left, p.End(), l.arith(p.X)...)
+		l.missing(n, p.Right, "))")
+		return n
+	case *syntax.ProcSubst:
+		n := l.mk(tree.KProcSubst, p.OpPos, p.End(), l.stmts(p.Stmts)...)
+		l.missing(n, p.Rparen, ")")
+		return n
+	case *syntax.ExtGlob:
+		n := l.mk(tree.KExtGlob, p.OpPos, p.End())
+		if p.Pattern != nil {
+			n.Value = p.Pattern.Value
+		}
+		return n
+	case *syntax.BraceExp:
+		var kids []*tree.Node
+		for _, w := range p.Elems {
+			kids = append(kids, l.word(w))
+		}
+		return l.mk(tree.KBraceExp, p.Pos(), p.End(), kids...)
+	}
+	return l.mk(tree.KLit, p.Pos(), p.End())
+}
+
+// arith flattens an arithmetic expression into the words it contains.
+func (l *lowerer) arith(e syntax.ArithmExpr) []*tree.Node {
+	switch e := e.(type) {
+	case nil:
+		return nil
+	case *syntax.Word:
+		return []*tree.Node{l.word(e)}
+	case *syntax.BinaryArithm:
+		return append(l.arith(e.X), l.arith(e.Y)...)
+	case *syntax.UnaryArithm:
+		return l.arith(e.X)
+	case *syntax.ParenArithm:
+		return l.arith(e.X)
+	}
+	return nil
+}
+
+// test flattens a [[ ]] expression into the words it contains.
+func (l *lowerer) test(e syntax.TestExpr) []*tree.Node {
+	switch e := e.(type) {
+	case nil:
+		return nil
+	case *syntax.Word:
+		return []*tree.Node{l.word(e)}
+	case *syntax.BinaryTest:
+		return append(l.test(e.X), l.test(e.Y)...)
+	case *syntax.UnaryTest:
+		return l.test(e.X)
+	case *syntax.ParenTest:
+		return l.test(e.X)
+	}
+	return nil
+}
