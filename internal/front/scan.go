@@ -64,20 +64,33 @@ func rawNesting(src []byte, limit int) int {
 	return -1
 }
 
-// Stack entries of nestScanner.
+// Stack entries of nestScanner. Hard entries are closed by their closer;
+// soft entries count one link of an operator chain and are dropped when the
+// chain ends.
 const (
 	nParen    = '(' // ( $( <( >(
-	nBrace    = '{' // { ${
-	nBracket  = '[' // [
+	nBrace    = '{' // { group
+	nParam    = 'P' // ${
+	nBracket  = '[' // [ that is not a glob: a test or a subscript
 	nArith    = 'A' // (( $((, closed by ))
 	nArithBrk = 'B' // $[, closed by ]
 	nDquote   = '"' // "..." and $"..."
 	nBackq    = '`' // `...`
 	nCase     = 'c' // case ... esac: a `)` here ends a pattern, it closes nothing
+	nKeyword  = 'k' // if, while, until, for, select: closed by fi or done
+	nElif     = 'e' // elif: the parser nests each branch; all close at fi
 	nHeredoc  = 'H' // unquoted heredoc body: only $ and ` expand
 	nTernary  = '?' // soft: one `?` of an unfinished a?b:c chain
-	nNot      = '!' // soft: one `!` word of a run (`! ! ! cmd`, `[[ ! ! x ]]`)
+	nNot      = '!' // soft: one `!` word of a run (`! ! ! cmd`)
+	nUnary    = 'u' // soft: one unary operator of a run in an expression (`- - - 1`, `[[ ! ! x ]]`)
+	nPrefix   = 't' // soft: one `time` or `coproc` of a chain (`time time cmd`)
+	nFunc     = 'f' // soft: one function header of a chain (`f() g() { :; }`)
+	nRight    = 'r' // soft: one binary operator the parser may nest on in an expression (= ** && ||), kept until the expression closes
 )
+
+func soft(k byte) bool {
+	return k == nTernary || k == nNot || k == nUnary || k == nPrefix || k == nFunc || k == nRight
+}
 
 type pendingDoc struct {
 	delim     []byte
@@ -93,10 +106,11 @@ type nestScanner struct {
 	limit int
 	over  int // offset where the stack first grew past limit, -1 if never
 
-	docs      []pendingDoc // heredocs whose bodies start at the next newline
-	inBody    bool         // scanning a heredoc body: heredocs inside it are not followed
-	wordStart bool         // the next byte starts a word (a '#' there opens a comment)
-	cmdStart  bool         // the next word is in command position (case/esac are keywords)
+	docs        []pendingDoc // heredocs whose bodies start at the next newline
+	inBody      bool         // scanning a heredoc body: heredocs inside it are not followed
+	wordStart   bool         // the next byte starts a word (a '#' there opens a comment)
+	cmdStart    bool         // the next word is in command position (keywords count there)
+	afterHeader bool         // the last command token was a function header: the next is its body
 }
 
 func (s *nestScanner) top() byte {
@@ -104,6 +118,27 @@ func (s *nestScanner) top() byte {
 		return 0
 	}
 	return s.stack[len(s.stack)-1]
+}
+
+// hardTop is the topmost entry that is not soft, 0 if none.
+func (s *nestScanner) hardTop() byte {
+	for i := len(s.stack) - 1; i >= 0; i-- {
+		if !soft(s.stack[i]) {
+			return s.stack[i]
+		}
+	}
+	return 0
+}
+
+// inExpr reports whether the scanner is inside an arithmetic expression,
+// a parameter expansion or a test/subscript bracket, where operator chains
+// may span blanks.
+func (s *nestScanner) inExpr() bool {
+	switch s.hardTop() {
+	case nArith, nArithBrk, nParam, nBracket:
+		return true
+	}
+	return false
 }
 
 func (s *nestScanner) push(k byte) {
@@ -131,7 +166,32 @@ func (s *nestScanner) dropSoft(k byte) {
 }
 
 func (s *nestScanner) dropAllSoft() {
-	for s.top() == nTernary || s.top() == nNot {
+	for soft(s.top()) {
+		s.pop()
+	}
+}
+
+// endCommand ends the chains that cannot cross a command separator.
+func (s *nestScanner) endCommand() {
+	for k := s.top(); k == nTernary || k == nPrefix || k == nNot || k == nUnary || k == nRight; k = s.top() {
+		if (k == nTernary || k == nUnary || k == nRight) && s.inExpr() {
+			return
+		}
+		s.pop()
+	}
+}
+
+// command notes the start of a command token in command position: unless it
+// is the body of the function header just read, a chain of headers ends.
+func (s *nestScanner) command() {
+	if s.afterHeader {
+		s.afterHeader = false
+		return
+	}
+	for k := s.top(); k == nFunc || k == nPrefix; k = s.top() {
+		if k == nPrefix {
+			return // `time f() { :; }` is still one chain
+		}
 		s.pop()
 	}
 }
@@ -189,20 +249,32 @@ func (s *nestScanner) docBody() {
 
 func isBlank(c byte) bool { return c == ' ' || c == '\t' }
 
-// code handles one token's worth of bytes in command or arithmetic context.
+// isUnaryOp reports whether c can be a unary operator in an expression.
+func isUnaryOp(c byte) bool { return c == '-' || c == '+' || c == '!' || c == '~' }
+
+// code handles one token's worth of bytes in command or expression context.
 func (s *nestScanner) code(end int) {
 	src, c := s.src, s.src[s.i]
-	if !isBlank(c) && c != '\n' && !(c == '!' && s.bangWord()) {
-		s.dropSoft(nNot) // a run of `!` words ends at the next other token
+	if !isBlank(c) && c != '\n' {
+		if !(c == '!' && s.bangWord()) {
+			s.dropSoft(nNot) // a run of `!` words ends at the next other token
+		}
+		if !isUnaryOp(c) {
+			s.dropSoft(nUnary) // a run of unary operators ends at its operand
+		}
+		if s.cmdStart && !isWordByte(c) && c != '#' && c != ';' && c != '&' && c != '|' && c != ')' {
+			s.command()
+		}
 	}
 	switch c {
 	case ' ', '\t', '\n':
-		if s.arith == 0 {
-			s.dropSoft(nTernary) // outside arithmetic, `?` is a glob character in a word
+		if !s.inExpr() {
+			s.dropSoft(nTernary) // outside expressions, `?` is a glob character in a word
 		}
 		s.i++
 		s.wordStart = true
 		if c == '\n' {
+			s.endCommand()
 			s.cmdStart = true
 			if len(s.docs) > 0 && !s.inBody {
 				s.heredocs(end)
@@ -210,9 +282,14 @@ func (s *nestScanner) code(end int) {
 		}
 		return
 	case ';', '&', '|':
-		if s.arith == 0 {
-			s.dropSoft(nTernary)
+		if s.inExpr() { // an operator: && and || chains nest in [[ ]], | and & are bitwise
+			if c != ';' {
+				s.push(nRight)
+			}
+			s.i++
+			return
 		}
+		s.endCommand()
 		s.i++
 		s.wordStart, s.cmdStart = true, true
 		return
@@ -254,10 +331,11 @@ func (s *nestScanner) code(end int) {
 		if s.cmdStart && s.i+1 < len(src) && src[s.i+1] == '(' {
 			s.push(nArith) // (( arithmetic command, or two subshells: either way two levels at most
 			s.i += 2
-		} else {
-			s.push(nParen)
-			s.i++
+			s.wordStart, s.cmdStart = true, false
+			return
 		}
+		s.push(nParen)
+		s.i++
 		s.wordStart, s.cmdStart = true, true
 		return
 	case ')':
@@ -270,36 +348,53 @@ func (s *nestScanner) code(end int) {
 		return
 	case '}':
 		s.dropAllSoft()
-		if s.top() == nBrace {
+		if k := s.top(); k == nBrace || k == nParam {
 			s.pop()
 		}
 		s.i++
 	case '[':
-		// A glob bracket expression ([{(], [[:digit:]]) is literal text; a test
-		// `[`, `[[` or a subscript opens nothing the parser recurses on, except
-		// a subscript inside a subscript, which the raw count bounds.
-		s.i = globEnd(src, s.i)
+		// A glob bracket expression ([{(], [[:digit:]]) is literal text. Any
+		// other [ opens a test or a subscript, an expression up to its ].
+		if e := globEnd(src, s.i); e > s.i+1 {
+			s.i = e
+		} else {
+			s.push(nBracket)
+			s.i++
+			s.wordStart = true
+			return
+		}
 	case ']':
 		s.dropAllSoft()
-		if s.top() == nArithBrk {
+		if k := s.top(); k == nBracket || k == nArithBrk {
 			s.pop()
 		}
 		s.i++
 	case '?':
 		s.push(nTernary)
 		s.i++
+	case '=', '*':
+		// Assignment chains (a=b=c) and ** are right-associative: the parser
+		// recurses once per operator. Elsewhere these are word characters.
+		if s.inExpr() {
+			s.push(nRight)
+		}
+		s.i++
 	case ':':
 		if s.top() == nTernary {
 			s.pop()
 		}
 		s.i++
-	case '!':
-		if s.bangWord() {
+	case '-', '+', '~', '!':
+		switch {
+		case s.inExpr():
+			s.push(nUnary)
+		case c == '!' && s.bangWord():
 			s.push(nNot)
+			s.i++
+			s.wordStart = false // the next blank sets it again; cmdStart stays: `! cmd`
+			return
 		}
 		s.i++
-		s.wordStart = false // the next blank sets it again; cmdStart stays: `! cmd`
-		return
 	case '<':
 		switch {
 		case bytes.HasPrefix(src[s.i:], []byte("<<<")): // here-string
@@ -332,36 +427,126 @@ func (s *nestScanner) bangWord() bool {
 	return s.wordStart && (j >= len(s.src) || isBlank(s.src[j]) || s.src[j] == '\n')
 }
 
-// keyword consumes a word in command position, noting case and esac, and
-// whether the word after it is in command position too.
-func (s *nestScanner) keyword() {
-	j := s.i
-	for j < len(s.src) && isWordByte(s.src[j]) {
+// isNameByte reports whether c can be part of a function name or keyword.
+func isNameByte(c byte) bool {
+	switch c {
+	case ' ', '\t', '\n', ';', '&', '|', '(', ')', '<', '>', '\'', '"', '`', '$', '\\', '{', '}', '[', ']', '=', '#', '?', '*', '!', '~':
+		return false
+	}
+	return true
+}
+
+// skipBlanks returns the first offset at or after j that is not a blank.
+func (s *nestScanner) skipBlanks(j int) int {
+	for j < len(s.src) && isBlank(s.src[j]) {
 		j++
 	}
-	if j < len(s.src) && !isBlank(s.src[j]) && s.src[j] != '\n' && s.src[j] != ';' && s.src[j] != ')' {
-		// Part of a longer word (`case.sh`, `a=b`): not a keyword. Scan it as bytes.
-		s.i++
-		s.wordStart, s.cmdStart = false, false
-		return
+	return j
+}
+
+// keyword consumes a word in command position. It counts the compound
+// commands the parser nests on (if, while, until, for, select, case, elif),
+// the prefix chains (time, coproc) and function headers, and decides whether
+// the word after it is in command position too.
+func (s *nestScanner) keyword() {
+	src := s.src
+	j := s.i
+	for j < len(src) && isNameByte(src[j]) {
+		j++
 	}
-	w := string(s.src[s.i:j])
+	w := string(src[s.i:j])
+	// NAME () is a function header, whatever NAME is spelled with.
+	if k := s.skipBlanks(j); k < len(src) && src[k] == '(' {
+		if k2 := s.skipBlanks(k + 1); k2 < len(src) && src[k2] == ')' {
+			s.header()
+			s.i = k2 + 1
+			return
+		}
+	}
 	s.i = j
 	s.wordStart = false
+	ends := j >= len(src) || isBlank(src[j]) || src[j] == '\n' || src[j] == ';' || src[j] == ')' || src[j] == '&' || src[j] == '|' || src[j] == '<' || src[j] == '>'
+	if !ends {
+		s.command() // part of a longer word (`a=b`, `x[1]=2`): a plain command
+		s.cmdStart = false
+		return
+	}
 	switch w {
+	case "if", "while", "until":
+		s.command()
+		s.push(nKeyword)
+		s.cmdStart = true
+	case "for", "select":
+		s.command()
+		s.push(nKeyword)
+		s.cmdStart = false
+		if k := s.skipBlanks(s.i); bytes.HasPrefix(src[k:], []byte("((")) {
+			s.push(nArith) // for (( init; cond; step ))
+			s.i = k + 2
+		}
 	case "case":
+		s.command()
 		s.push(nCase)
 		s.cmdStart = false
+	case "fi", "done":
+		for k := s.top(); soft(k) || k == nElif && w == "fi"; k = s.top() {
+			s.pop()
+		}
+		if s.top() == nKeyword {
+			s.pop()
+		}
+		s.cmdStart = false
 	case "esac":
+		s.dropAllSoft()
 		if s.top() == nCase {
 			s.pop()
 		}
 		s.cmdStart = false
-	case "if", "then", "else", "elif", "while", "until", "do", "time", "in":
-		s.cmdStart = true // `in`: the first pattern of a case may be followed straight by esac
+	case "elif":
+		s.dropAllSoft()
+		s.push(nElif)
+		s.cmdStart = true
+	case "then", "else", "do":
+		s.cmdStart = true
+	case "in":
+		s.cmdStart = s.top() == nCase // case patterns follow; a for list does not hold keywords
+	case "time", "coproc":
+		s.command()
+		s.push(nPrefix)
+		s.cmdStart = true
+	case "function":
+		s.funcKeyword()
 	default:
+		s.command()
 		s.cmdStart = false
 	}
+}
+
+// header counts a function header: one link more when it is the body of the
+// header before it (`f() g() h() { :; }`), else the first of a new chain.
+func (s *nestScanner) header() {
+	if !s.afterHeader {
+		s.command()
+	}
+	s.push(nFunc)
+	s.afterHeader = true
+	s.wordStart, s.cmdStart = true, true
+}
+
+// funcKeyword handles `function NAME [()]`.
+func (s *nestScanner) funcKeyword() {
+	src := s.src
+	j := s.skipBlanks(s.i)
+	for j < len(src) && isNameByte(src[j]) {
+		j++
+	}
+	if k := s.skipBlanks(j); k < len(src) && src[k] == '(' {
+		if k2 := s.skipBlanks(k + 1); k2 < len(src) && src[k2] == ')' {
+			j = k2 + 1
+		}
+	}
+	s.header()
+	s.i = j
 }
 
 // closeParen handles ')'.
@@ -404,7 +589,7 @@ func (s *nestScanner) dollar() {
 		s.wordStart, s.cmdStart = true, true
 		return
 	case next == '{':
-		s.push(nBrace)
+		s.push(nParam)
 		s.i += 2
 	case next == '[':
 		s.push(nArithBrk)

@@ -1,6 +1,7 @@
 package front
 
 import (
+	"runtime/debug"
 	"strings"
 	"testing"
 
@@ -37,9 +38,16 @@ func hasErr(f *tree.File, sub string) bool {
 	return false
 }
 
-// Each of these drove mvdan's recursive-descent parser past Go's 1 GB stack
-// limit, a fatal error no recover() catches (review finding C1). Parse must
-// refuse them before parsing: a Skipped file with an error that says why.
+// fill repeats unit between prefix and suffix up to the 2 MiB file limit.
+func fill(prefix, unit, suffix string) string {
+	n := (2<<20 - len(prefix) - len(suffix) - 1) / len(unit)
+	return prefix + strings.Repeat(unit, n) + suffix
+}
+
+// Parse must refuse these before parsing: a Skipped file with an error that
+// says why. Each drove mvdan's recursive-descent parser past Go's stack limit
+// (a fatal error no recover() catches; review finding C1), or used a quarter
+// of it or more, measured with debug.SetMaxStack.
 func TestDeepNestingIsSkipped(t *testing.T) {
 	cases := map[string]string{
 		"paren":       strings.Repeat("(", 200000) + "\n",
@@ -48,12 +56,37 @@ func TestDeepNestingIsSkipped(t *testing.T) {
 		"procsubst":   "cat " + strings.Repeat("<(", 500000) + "\n",
 		"dq-cmdsubst": "echo " + strings.Repeat(`"$(`, 400000) + "\n",
 		"dollar-brk":  "echo " + strings.Repeat("$[", 500000) + "\n",
-		"ternary":     "echo $((" + strings.Repeat("a?", 900000) + "\n",
-		"let-ternary": "let " + strings.Repeat("a?", 900000) + "1:2\n",
-		"test-not":    "[[ " + strings.Repeat("! ", 1000000) + "a ]]\n",
+		// Operator chains the parser recurses on.
+		"ternary":      fill("echo $((", "a?", "1))\n"),
+		"ternary-sp":   fill("(( ", "a ? ", "1 ))\n"),
+		"let-ternary":  fill("let ", "a?", "1\n"),
+		"for-ternary":  fill("for ((", "a ? ", "1;;)); do :; done\n"),
+		"subscript":    fill("x[", "a ? ", "1]=1\n"),
+		"param-index":  fill("echo ${x[", "a ? ", "1]}\n"),
+		"param-slice":  fill("echo ${x:", "a ? ", "1}\n"),
+		"arith-assign": fill("echo $((", "a=", "1))\n"),
+		"arith-power":  fill("echo $((", "2**", "2))\n"),
+		"arith-minus":  fill("echo $((", "- ", "1))\n"),
+		"arith-not":    fill("echo $((", "!", "1))\n"),
+		"test-not":     fill("[[ ", "! ", "a ]]\n"),
+		"test-and":     fill("[[ ", "a && ", "a ]]\n"),
+		// Compound commands, prefixes and function headers.
+		"if":              fill("", "if a;then\n", ""),
+		"while":           fill("", "while a;do\n", ""),
+		"for":             fill("", "for a in b;do\n", ""),
+		"for-in-done":     fill("", "for x in done; do ", ":\n"),
+		"case":            fill("", "case a in b)\n", ""),
+		"elif":            fill("if a; then :\n", "elif a; then :\n", "fi\n"),
+		"time":            fill("", "time ", "a\n"),
+		"coproc":          fill("", "coproc ", "a\n"),
+		"funcs":           fill("", "f() ", "{ :; }\n"),
+		"funcs-commented": fill("", "f() # c\n", "{ :; }\n"),
+		"func-dash":       fill("", "a-b() ", "{ :; }\n"),
+		"function-kw":     fill("", "function f\n", "{ :; }\n"),
 		// Closers the parser does not see as closers must not hide the depth.
 		"quoted-closers":  strings.Repeat("$( '))' ", 260000) + "\n",
 		"case-patterns":   strings.Repeat("$(case x in a) ", 130000) + "\n",
+		"esac-argument":   fill("", "$(case x in a) echo esac;; b) ", "\n"),
 		"comment-closers": strings.Repeat("$( # ))\n", 260000),
 		"heredoc-closers": strings.Repeat("$(cat <<'E'\n)))\nE\n", 100000),
 	}
@@ -74,60 +107,87 @@ func TestDeepNestingIsSkipped(t *testing.T) {
 	}
 }
 
-// Shapes the parser survives but that recursed (or ran quadratically) in the
-// lowerer, mvdan's own Walk or End: they must lower to a shallow tree, either
-// whole (chains are flattened) or with the over-deep statement dropped and
-// reported.
-func TestDeepShapesLowerSafely(t *testing.T) {
-	cases := []struct {
-		name, src string
-		whole     bool // the statement survives (chains), else it is dropped with an error
-		unclosed  bool // a hard parse error comes first: any error will do
-	}{
-		{"andor", "a " + strings.Repeat("&& a ", 400000) + "\n", true, false},
-		{"pipes", "a " + strings.Repeat("| a ", 400000) + "\n", true, false},
-		{"if", strings.Repeat("if a;then\n", 150000) + ":\n" + strings.Repeat("fi\n", 150000), false, false},
-		{"while", strings.Repeat("while a;do\n", 120000) + ":\n" + strings.Repeat("done\n", 120000), false, false},
-		{"if-unclosed", strings.Repeat("if a;then\n", 190000), false, true},
-		{"while-unclosed", strings.Repeat("while a;do\n", 190000), false, true},
-		{"elif", "if a; then :\n" + strings.Repeat("elif a; then :\n", 100000) + "fi\n", false, false},
-		{"time", strings.Repeat("time ", 400000) + "a\n", false, false},
-		{"coproc", strings.Repeat("coproc ", 290000) + "a\n", false, false},
-		{"funcs", strings.Repeat("f() ", 400000) + "{ :; }\n", false, false},
+// Shapes the parser handles without recursing, but that recursed (or ran
+// quadratically) in the lowerer, mvdan's Walk or End: at the 2 MiB limit they
+// lower whole, to a shallow tree.
+func TestLongChainsLowerSafely(t *testing.T) {
+	cases := map[string]string{
+		"andor":       fill("a ", "&& a ", "\n"),
+		"pipes":       fill("a ", "| a ", "\n"),
+		"arith-plus":  fill("echo $((", "1+", "1))\n"),
+		"arith-comma": fill("echo $((", "1,", "1))\n"),
 		// Comments inside a chain made mvdan's Walk call Stmt.End at every level.
-		{"funcs-commented", strings.Repeat("f() # c\n", 200000) + "{ :; }\n", false, false},
-		{"pipes-commented", "a " + strings.Repeat("| # c\na ", 200000) + "\n", true, false},
-		{"arith-plus", "echo $((" + strings.Repeat("1+", 900000) + "1))\n", true, false},
-		{"arith-comma", "echo $((" + strings.Repeat("1,", 900000) + "1))\n", true, false},
-		{"arith-assign", "echo $((" + strings.Repeat("a=", 900000) + "1))\n", true, false},
-		{"arith-power", "echo $((" + strings.Repeat("2**", 600000) + "2))\n", true, false},
-		{"arith-minus", "echo $((" + strings.Repeat("- ", 1000000) + "1))\n", true, false},
-		{"arith-not", "echo $((" + strings.Repeat("!", 2000000) + "1))\n", true, false},
-		{"test-and", "[[ " + strings.Repeat("a && ", 400000) + "a ]]\n", true, false},
+		"pipes-commented": fill("a ", "| # c\na ", "\n"),
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			f := Parse("x.sh", []byte(c.src), Bash)
-			if f.Skipped != "" {
-				t.Fatalf("skipped: %s", f.Skipped)
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := Parse("x.sh", []byte(src), Bash)
+			if f.Skipped != "" || len(f.Errors) != 0 {
+				t.Fatalf("skipped %q, errors %v", f.Skipped, f.Errors)
 			}
-			if hasErr(f, "internal error") {
-				t.Fatalf("internal error: %v", f.Errors[:1])
+			if len(f.Root.Children) != 1 {
+				t.Fatal("statement dropped")
+			}
+			if d := treeDepth(f); d > 10 {
+				t.Fatalf("tree depth %d", d)
+			}
+		})
+	}
+}
+
+// The lowerer's own bound, below the pre-scan (parseFile skips it): a
+// statement nested deeper than maxDepth lowering levels is dropped and
+// reported, so analysis never sees a deep tree.
+func TestLowererDepthBound(t *testing.T) {
+	cases := map[string]string{
+		"if":              strings.Repeat("if a;then\n", 2100) + ":\n" + strings.Repeat("fi\n", 2100),
+		"while":           strings.Repeat("while a;do\n", 4100) + ":\n" + strings.Repeat("done\n", 4100),
+		"elif":            "if a; then :\n" + strings.Repeat("elif a; then :\n", 4100) + "fi\n",
+		"time":            strings.Repeat("time ", 4100) + "a\n",
+		"coproc":          strings.Repeat("coproc ", 4100) + "a\n",
+		"funcs":           strings.Repeat("f() ", 4100) + "{ :; }\n",
+		"funcs-commented": strings.Repeat("f() # c\n", 4100) + "{ :; }\n",
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := tree.NewFile("x.sh", []byte(src))
+			stmts, errs, _ := parseFile(f, Bash)
+			f.Root.Children = stmts
+			f.Errors = errs
+			if !hasErr(f, "nested deeper") {
+				t.Fatalf("no depth error: %v", errs)
 			}
 			if d := treeDepth(f); d > 3*maxDepth+10 {
 				t.Fatalf("tree depth %d over the bound", d)
 			}
-			if c.whole && len(f.Root.Children) == 0 {
-				t.Fatalf("statement dropped: %v", f.Errors)
-			}
-			if c.unclosed {
-				if len(f.Errors) == 0 {
-					t.Fatal("no error")
-				}
-				return
-			}
-			if !c.whole && !hasErr(f, "nested deeper") {
-				t.Fatalf("no depth error: %v", f.Errors)
+		})
+	}
+}
+
+// Nesting just under the pre-scan's bound parses, and within 64 MB of stack:
+// a 16th of the 1 GB limit, so the bound leaves a wide margin (the cheapest
+// overflow measured at 4f8e524 needed 125,000 to 150,000 levels of `(`).
+func TestNestingAtTheBoundParses(t *testing.T) {
+	defer debug.SetMaxStack(debug.SetMaxStack(64 << 20))
+	const n = maxNesting - 10
+	cases := map[string]string{
+		"cmdsubst": "echo " + strings.Repeat("$(", n) + "x" + strings.Repeat(")", n) + "\n",
+		"dq":       "echo " + strings.Repeat(`"$(`, n/2) + "x" + strings.Repeat(`)"`, n/2) + "\n",
+		"if":       strings.Repeat("if a; then\n", n) + ":\n" + strings.Repeat("fi\n", n),
+		"while":    strings.Repeat("while a; do\n", n) + ":\n" + strings.Repeat("done\n", n),
+		"braces":   strings.Repeat("{ ", n) + ":" + strings.Repeat("; }", n) + "\n",
+		"ternary":  "echo $((" + strings.Repeat("a?", n) + "1" + strings.Repeat(":1", n) + "))\n",
+		"funcs":    strings.Repeat("f() ", n) + "{ :; }\n",
+		"unary":    "echo $((" + strings.Repeat("- ", n) + "1))\n",
+		"test-not": "[[ " + strings.Repeat("! ", n) + "a ]]\n",
+		"assign":   "echo $((" + strings.Repeat("a=", n) + "1))\n",
+		"elif":     "if a; then :\n" + strings.Repeat("elif a; then :\n", n) + "fi\n",
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := Parse("x.sh", []byte(src), Bash)
+			if f.Skipped != "" || len(f.Errors) != 0 {
+				t.Fatalf("skipped %q, errors %v", f.Skipped, f.Errors)
 			}
 		})
 	}
