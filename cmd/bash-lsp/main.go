@@ -25,7 +25,7 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
-const usage = "usage: bash-lsp [serve|version|ast FILE [--json]|symbols [PATH...] [--json]|doctor [PATH]|status|callers|callees|refs|impact|trace|unresolved|cycles]"
+const usage = "usage: bash-lsp [serve|version|ast FILE [--json]|symbols [PATH...] [--json]|doctor [PATH]|extract [--root DIR] [--list-file FILE]|status|callers|callees|refs|impact|trace|unresolved|cycles]"
 
 // Exit codes: 0 success, 1 runtime failure, 2 usage error.
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -53,6 +53,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return cmdSymbols(args[1:], stdout, stderr)
 	case "doctor":
 		return cmdDoctor(args[1:], stdout, stderr)
+	case "extract":
+		return cmdExtract(args[1:], stdout, stderr)
 	case "status", "callers", "callees", "refs", "impact", "trace", "unresolved", "cycles":
 		return cmdGraph(args[0], args[1:], stdout, stderr)
 	default:
