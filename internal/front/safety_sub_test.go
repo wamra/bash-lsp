@@ -248,8 +248,8 @@ func TestNoCrashSubprocess(t *testing.T) {
 			if !strings.Contains(out, "result: parsed: ") && !strings.Contains(out, "result: skipped: "+nestingError) {
 				t.Fatalf("child printed no result:\n%s", firstLines(out, 12))
 			}
-			if !strings.Contains(out, "; bound: ") {
-				t.Fatalf("child did not bind and build:\n%s", firstLines(out, 12))
+			if !strings.Contains(out, "; bound: ") || !strings.Contains(out, " edges") {
+				t.Fatalf("child did not bind, build and list edges:\n%s", firstLines(out, 12))
 			}
 			// The cases named for it sit at the parser's limit, not past it.
 			if strings.HasPrefix(name, "limit-") && !strings.Contains(out, "nesting error: false") {

@@ -117,7 +117,8 @@ func FuzzBind(f *testing.F) {
 // FuzzEdges builds a snapshot of arbitrary input, so every eval, trap and
 // shell -c string goes through string-body parsing and the offset map, and
 // asks for every edge: no panic; every call use and every edge site lies
-// inside the file, with line and column matching its offset.
+// inside the file, with line and column matching its offset. Parse takes at
+// most parseBudget, Bind, Build and Edges each at most fuzzBudget.
 func FuzzEdges(f *testing.F) {
 	for _, s := range []string{
 		"f() { :; }\ntrap 'log \"a b\"' EXIT\neval \"f \\\"$x\\\"\"\n",
@@ -133,13 +134,30 @@ func FuzzEdges(f *testing.F) {
 	} {
 		f.Add([]byte(s))
 	}
+	// The merge's shapes at the 16 KiB this fuzzer takes (shapes_test.go).
+	const n = 1 << 14
+	for _, s := range []string{
+		fillTo(n, "f() { :; }\n", "cmd=f; \"$cmd\";\n", ""),
+		fillTo(n, "f() { :; }\ng() { "+strings.Repeat("( ", 1000), "cmd=f; \"$cmd\";", strings.Repeat(" )", 1000)+" }\n"),
+		fillTo(n, "", "f() { x=1; echo $y; }\n", "f\n"),
+		strings.Repeat("x=1\n", n/8) + strings.Repeat(". $f\n", n/10),
+		aliasesOf(n),
+		fillTo(n, "g() { "+strings.Repeat("( ", 1000), ". $f;", strings.Repeat(" )", 1000)+" }\n"),
+		fillTo(n, "f() { :; }\n", "eval \"f $x\"\n", ""),
+		fillTo(n, "f() { :; }\neval \"", "f;", "\"\n"),
+		fillTo(n, "f() { :; }\n", "unset -f f; f\n", ""),
+	} {
+		f.Add([]byte(s))
+	}
 	f.Fuzz(func(t *testing.T, src []byte) {
 		if len(src) > 1<<14 {
 			return
 		}
 		p := "/ws/f.sh"
-		file := front.Parse(p, src, front.Bash)
-		ff := Bind(file)
+		var file *tree.File
+		var ff *FileFacts
+		withinBudget(t, "Parse", parseBudget(len(src)), len(src), func() { file = front.Parse(p, src, front.Bash) })
+		withinBudget(t, "Bind", fuzzBudget(len(src)), len(src), func() { ff = Bind(file) })
 		check := func(what string, r tree.Range) {
 			a, b := r.Start.Offset, r.End.Offset
 			if a < 0 || b > len(src) || a > b {
@@ -157,7 +175,10 @@ func FuzzEdges(f *testing.F) {
 				}
 			}
 		}
-		s := Build(map[string]*FileFacts{p: ff}, Options{Root: "/ws"}, 1)
+		var s *Snapshot
+		withinBudget(t, "Build", fuzzBudget(len(src)), len(src), func() { s = Build(map[string]*FileFacts{p: ff}, Options{Root: "/ws"}, 1) })
+		var edges []Edge
+		withinBudget(t, "Edges", fuzzBudget(len(src)), len(src), func() { edges = s.Edges() })
 		for _, bs := range s.bindings {
 			for _, b := range bs {
 				if u := b.Use; u.Kind == UseCall && u.NamesTarget() {
@@ -168,7 +189,7 @@ func FuzzEdges(f *testing.F) {
 				}
 			}
 		}
-		for _, e := range s.Edges() {
+		for _, e := range edges {
 			if e.Site.Path == p {
 				check("edge "+e.Reason, e.Site.Range)
 			}
