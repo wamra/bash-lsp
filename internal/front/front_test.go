@@ -157,8 +157,8 @@ func TestLowerShapes(t *testing.T) {
 	if len(pl) != 1 || len(pl[0].Children) != 3 {
 		t.Fatalf("pipeline stages: %d pipelines", len(pl))
 	}
-	if len(only(tree.KAndOr)) != 2 {
-		t.Fatalf("andor count %d", len(only(tree.KAndOr)))
+	if ao := only(tree.KAndOr); len(ao) != 1 || len(ao[0].Children) != 3 {
+		t.Fatalf("andor: %d nodes, want one over the three statements", len(ao))
 	}
 	dc := only(tree.KDecl)[0]
 	if dc.Name != "export" || len(dc.Children) != 2 || dc.Children[0].Name != "FOO" || dc.Children[1].Name != "BAR" {

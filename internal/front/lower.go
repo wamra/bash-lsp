@@ -1,6 +1,7 @@
 package front
 
 import (
+	"fmt"
 	"regexp"
 	"sort"
 	"strings"
@@ -24,6 +25,28 @@ type lowerer struct {
 	// and a 561 KB script has about 220,000 of them.
 	nodes []tree.Node
 	ptrs  []*tree.Node
+
+	depth int // recursion depth of stmt, word, part and ifClause; see maxDepth
+}
+
+// maxDepth bounds the lowerer's recursion. A statement nested deeper is
+// dropped and reported, so the tree handed to analysis is at most about
+// 3*maxDepth nodes deep (a level adds a statement, its command and a block at
+// most) and every recursive walk over it (tree.Node.Walk, Bind, hover, the
+// ast view) stays within a few megabytes of stack. The parser has already
+// accepted the statement by then: Parse's pre-scan (scan.go) bounds what it
+// recurses on. The whole-file scans over the parser's tree do not recurse
+// (visit.go).
+const maxDepth = 4000
+
+// tooDeep is the panic value of a lowering that crossed maxDepth.
+type tooDeep struct{}
+
+func (l *lowerer) enter() {
+	l.depth++
+	if l.depth > maxDepth {
+		panic(tooDeep{})
+	}
 }
 
 const (
@@ -84,8 +107,13 @@ func (l *lowerer) safeStmt(s *syntax.Stmt) (n *tree.Node) {
 	defer func() {
 		if r := recover(); r != nil {
 			n = nil
+			l.depth = 0
 			at := l.f.PosAt(l.cursor)
-			l.errs = append(l.errs, tree.SyntaxError{Range: tree.Range{Start: at, End: at}, Msg: "internal error lowering statement"})
+			msg := "internal error lowering statement"
+			if _, ok := r.(tooDeep); ok {
+				msg = fmt.Sprintf("statement nested deeper than %d levels: not analysed", maxDepth)
+			}
+			l.errs = append(l.errs, tree.SyntaxError{Range: tree.Range{Start: at, End: at}, Msg: msg})
 		}
 	}()
 	return l.stmt(s)
@@ -95,7 +123,7 @@ func (l *lowerer) safeStmt(s *syntax.Stmt) (n *tree.Node) {
 func lowerComments(f *tree.File, base tree.Pos, af *syntax.File) (out []*tree.Node) {
 	defer func() { _ = recover() }() // a partial tree after a hard error may hold nil nodes
 	l := &lowerer{f: f, base: base}
-	syntax.Walk(af, func(n syntax.Node) bool {
+	visitAll(af, func(n syntax.Node) {
 		if c, ok := n.(*syntax.Comment); ok && c != nil && c.Hash.IsValid() {
 			text := strings.TrimRight(c.Text, "\r")
 			start := l.pos(c.Hash)
@@ -105,7 +133,6 @@ func lowerComments(f *tree.File, base tree.Pos, af *syntax.File) (out []*tree.No
 				Value: strings.TrimSpace(text),
 			})
 		}
-		return true
 	})
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Range.Start.Offset < out[j].Range.Start.Offset })
 	return out
@@ -200,6 +227,13 @@ func (l *lowerer) group(list []*syntax.Stmt) *tree.Node {
 }
 
 func (l *lowerer) stmt(s *syntax.Stmt) *tree.Node {
+	l.enter()
+	n := l.stmt1(s)
+	l.depth--
+	return n
+}
+
+func (l *lowerer) stmt1(s *syntax.Stmt) *tree.Node {
 	var kids []*tree.Node
 	if s.Cmd != nil {
 		kids = append(kids, l.command(s.Cmd))
@@ -212,9 +246,22 @@ func (l *lowerer) stmt(s *syntax.Stmt) *tree.Node {
 		l.missing(n, s.Position, "command")
 		return n
 	}
-	end := s.End()
-	n := l.mk(tree.KStmt, s.Position, end, kids...)
+	n := l.mk(tree.KStmt, s.Position, stmtEnd(s), kids...)
 	return n
+}
+
+// stmtEnd is s.End(), except for the commands whose End descends through
+// every statement nested in them (time, coproc, function bodies): calling it
+// at each level of a chain of those is quadratic, so the end is left invalid
+// and mk takes it from the children, which cover the same text.
+func stmtEnd(s *syntax.Stmt) syntax.Pos {
+	switch s.Cmd.(type) {
+	case *syntax.TimeClause, *syntax.CoprocClause, *syntax.FuncDecl:
+		if !s.Semicolon.IsValid() {
+			return syntax.Pos{}
+		}
+	}
+	return s.End()
 }
 
 func (l *lowerer) command(c syntax.Command) *tree.Node {
@@ -291,12 +338,16 @@ func (l *lowerer) command(c syntax.Command) *tree.Node {
 		switch c.Op {
 		case syntax.Pipe, syntax.PipeAll:
 			var kids []*tree.Node
-			for _, s := range pipeStages(c) {
+			for _, s := range chain(c, isPipe) {
 				kids = append(kids, l.stmt(s))
 			}
 			return l.mk(tree.KPipeline, syntax.Pos{}, syntax.Pos{}, kids...)
-		default: // && and ||: binary, X then Y
-			return l.mk(tree.KAndOr, syntax.Pos{}, syntax.Pos{}, l.stmt(c.X), l.stmt(c.Y))
+		default: // && and ||: one node over the whole chain, statements in source order
+			var kids []*tree.Node
+			for _, s := range chain(c, isAndOr) {
+				kids = append(kids, l.stmt(s))
+			}
+			return l.mk(tree.KAndOr, syntax.Pos{}, syntax.Pos{}, kids...)
 		}
 	case *syntax.ArithmCmd:
 		n := l.mk(tree.KArith, c.Left, c.End(), l.arith(c.X)...)
@@ -313,11 +364,10 @@ func (l *lowerer) command(c syntax.Command) *tree.Node {
 		}
 		return l.mk(tree.KLet, c.Let, syntax.Pos{}, kids...)
 	case *syntax.TimeClause:
-		var kids []*tree.Node
-		if c.Stmt != nil {
-			kids = append(kids, l.stmt(c.Stmt))
+		if c.Stmt == nil {
+			return l.mk(tree.KTime, c.Time, c.End())
 		}
-		return l.mk(tree.KTime, c.Time, c.End(), kids...)
+		return l.mk(tree.KTime, c.Time, syntax.Pos{}, l.stmt(c.Stmt)) // c.End() would recurse; see stmtEnd
 	case *syntax.CoprocClause:
 		var kids []*tree.Node
 		if c.Name != nil {
@@ -330,12 +380,22 @@ func (l *lowerer) command(c syntax.Command) *tree.Node {
 	return l.mk(tree.KCall, c.Pos(), c.End())
 }
 
-// pipeStages flattens an unparenthesised `a | b | c` into its stages.
-func pipeStages(c *syntax.BinaryCmd) []*syntax.Stmt {
+func isPipe(op syntax.BinCmdOperator) bool { return op == syntax.Pipe || op == syntax.PipeAll }
+
+func isAndOr(op syntax.BinCmdOperator) bool { return op == syntax.AndStmt || op == syntax.OrStmt }
+
+// chain flattens an unparenthesised `a | b | c` (or `a && b || c`) into its
+// statements in source order. It keeps its own stack: the parser nests a long
+// chain one BinaryCmd per operator, and recursing over it would overflow.
+// Linear in the chain length.
+func chain(c *syntax.BinaryCmd, same func(syntax.BinCmdOperator) bool) []*syntax.Stmt {
 	var out []*syntax.Stmt
-	for _, s := range []*syntax.Stmt{c.X, c.Y} {
-		if b, ok := s.Cmd.(*syntax.BinaryCmd); ok && (b.Op == syntax.Pipe || b.Op == syntax.PipeAll) && len(s.Redirs) == 0 && !s.Negated && !s.Background {
-			out = append(out, pipeStages(b)...)
+	stack := []*syntax.Stmt{c.Y, c.X}
+	for len(stack) > 0 {
+		s := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if b, ok := s.Cmd.(*syntax.BinaryCmd); ok && same(b.Op) && len(s.Redirs) == 0 && !s.Negated && !s.Background {
+			stack = append(stack, b.Y, b.X)
 		} else {
 			out = append(out, s)
 		}
@@ -344,6 +404,13 @@ func pipeStages(c *syntax.BinaryCmd) []*syntax.Stmt {
 }
 
 func (l *lowerer) ifClause(c *syntax.IfClause, top bool) *tree.Node {
+	l.enter()
+	n := l.ifClause1(c, top)
+	l.depth--
+	return n
+}
+
+func (l *lowerer) ifClause1(c *syntax.IfClause, top bool) *tree.Node {
 	kids := []*tree.Node{l.group(c.Cond), l.group(c.Then)}
 	if e := c.Else; e != nil {
 		if e.ThenPos.IsValid() || e.ThenPos.IsRecovered() { // elif
@@ -480,6 +547,13 @@ func (l *lowerer) literalText(w *syntax.Word) string {
 }
 
 func (l *lowerer) word(w *syntax.Word) *tree.Node {
+	l.enter()
+	n := l.word1(w)
+	l.depth--
+	return n
+}
+
+func (l *lowerer) word1(w *syntax.Word) *tree.Node {
 	var kids []*tree.Node
 	for _, p := range w.Parts {
 		kids = append(kids, l.part(p))
@@ -513,6 +587,13 @@ func (l *lowerer) word(w *syntax.Word) *tree.Node {
 }
 
 func (l *lowerer) part(p syntax.WordPart) *tree.Node {
+	l.enter()
+	n := l.part1(p)
+	l.depth--
+	return n
+}
+
+func (l *lowerer) part1(p syntax.WordPart) *tree.Node {
 	switch p := p.(type) {
 	case *syntax.Lit:
 		if p.ValuePos.IsRecovered() { // the parser invented a missing word
@@ -590,38 +671,48 @@ func (l *lowerer) part(p syntax.WordPart) *tree.Node {
 	return l.mk(tree.KLit, p.Pos(), p.End())
 }
 
-// arith flattens an arithmetic expression into the words it contains.
+// arith flattens an arithmetic expression into the words it contains, in
+// source order. Iterative: operator chains nest one node per operator.
 func (l *lowerer) arith(e syntax.ArithmExpr) []*tree.Node {
-	switch e := e.(type) {
-	case nil:
-		return nil
-	case *syntax.Word:
-		return []*tree.Node{l.word(e)}
-	case *syntax.BinaryArithm:
-		return append(l.arith(e.X), l.arith(e.Y)...)
-	case *syntax.UnaryArithm:
-		return l.arith(e.X)
-	case *syntax.ParenArithm:
-		return l.arith(e.X)
+	var out []*tree.Node
+	stack := []syntax.ArithmExpr{e}
+	for len(stack) > 0 {
+		e := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		switch e := e.(type) {
+		case *syntax.Word:
+			out = append(out, l.word(e))
+		case *syntax.BinaryArithm:
+			stack = append(stack, e.Y, e.X)
+		case *syntax.UnaryArithm:
+			stack = append(stack, e.X)
+		case *syntax.ParenArithm:
+			stack = append(stack, e.X)
+		}
 	}
-	return nil
+	return out
 }
 
-// test flattens a [[ ]] expression into the words it contains.
+// test flattens a [[ ]] expression into the words it contains, in source
+// order. Iterative, like arith.
 func (l *lowerer) test(e syntax.TestExpr) []*tree.Node {
-	switch e := e.(type) {
-	case nil:
-		return nil
-	case *syntax.Word:
-		return []*tree.Node{l.word(e)}
-	case *syntax.BinaryTest:
-		return append(l.test(e.X), l.test(e.Y)...)
-	case *syntax.UnaryTest:
-		return l.test(e.X)
-	case *syntax.ParenTest:
-		return l.test(e.X)
+	var out []*tree.Node
+	stack := []syntax.TestExpr{e}
+	for len(stack) > 0 {
+		e := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		switch e := e.(type) {
+		case *syntax.Word:
+			out = append(out, l.word(e))
+		case *syntax.BinaryTest:
+			stack = append(stack, e.Y, e.X)
+		case *syntax.UnaryTest:
+			stack = append(stack, e.X)
+		case *syntax.ParenTest:
+			stack = append(stack, e.X)
+		}
 	}
-	return nil
+	return out
 }
 
 var declKeywords = map[string]bool{"local": true, "declare": true, "typeset": true, "export": true, "readonly": true}

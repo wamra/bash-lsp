@@ -58,7 +58,13 @@ func (d *docsOnly) Snapshot() *analysis.Snapshot {
 }
 
 func (d *docsOnly) SetOverlay(path string, _ int, text []byte) {
-	f := front.Parse(path, text, front.Detect(path, text))
+	var f *tree.File
+	if len(text) > workspace.DefaultMaxFileBytes {
+		f = workspace.OversizeFile(path, fmt.Sprintf("%s: %d bytes exceeds the %d byte file limit",
+			filepath.Base(path), len(text), workspace.DefaultMaxFileBytes))
+	} else {
+		f = front.Parse(path, text, front.Detect(path, text))
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.files[path] = analysis.Bind(f)

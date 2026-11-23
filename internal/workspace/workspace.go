@@ -19,13 +19,18 @@ import (
 	"github.com/wamra/bash-lsp/analysis"
 	"github.com/wamra/bash-lsp/internal/front"
 	"github.com/wamra/bash-lsp/internal/ignore"
+	"github.com/wamra/bash-lsp/tree"
 )
 
 // Default limits, used when a Limits field is zero.
 const (
-	defaultMaxFileBytes = 2 << 20
+	defaultMaxFileBytes = DefaultMaxFileBytes
 	defaultMaxFiles     = 20000
 )
+
+// DefaultMaxFileBytes is the file size limit when Limits.MaxFileBytes is zero.
+// It applies to open documents too.
+const DefaultMaxFileBytes = 2 << 20
 
 // Limits bound discovery. Zero values mean 2<<20 and 20000.
 type Limits struct {
@@ -69,8 +74,7 @@ type entry struct {
 }
 
 type overlay struct {
-	version int
-	entry   *entry
+	entry *entry
 }
 
 type skipKind uint8
@@ -149,7 +153,8 @@ func (w *Workspace) Snapshot() *analysis.Snapshot { return w.snap.Load() }
 
 // SetOverlay installs the unsaved editor buffer for path and rebuilds. The
 // path is canonicalised to the spelling the walk uses, so the overlay replaces
-// the file's disk entry.
+// the file's disk entry. A buffer over MaxFileBytes is not parsed: the file is
+// held as skipped while the overlay lasts. version is not used.
 func (w *Workspace) SetOverlay(path string, version int, text []byte) {
 	hash := sha256.Sum256(text)
 	w.mu.Lock()
@@ -162,12 +167,26 @@ func (w *Workspace) SetOverlay(path string, version int, text []byte) {
 	}
 	w.mu.Unlock()
 	if e == nil {
-		e = parseEntry(path, text)
+		if int64(len(text)) > w.lim.MaxFileBytes {
+			// Held to the disk limit: skipped, with the line doctor prints for a
+			// file that size, and its disk entry (if any) hidden as for any overlay.
+			e = &entry{path: path, hash: hash, facts: analysis.Bind(OversizeFile(path, w.bigLine(w.relSlash(path), int64(len(text)))))}
+		} else {
+			e = parseEntry(path, text)
+		}
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.overlays[key(path)] = &overlay{version: version, entry: e}
+	w.overlays[key(path)] = &overlay{entry: e}
 	w.rebuild()
+}
+
+// OversizeFile is the tree of a document over the size limit: no text, no
+// statements, Skipped set to reason.
+func OversizeFile(path, reason string) *tree.File {
+	f := tree.NewFile(path, nil)
+	f.Skipped = reason
+	return f
 }
 
 // CloseOverlay drops the overlay of path: the file reverts to its disk

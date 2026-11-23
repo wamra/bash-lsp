@@ -489,3 +489,28 @@ func TestReadBounded(t *testing.T) {
 		t.Fatal(len(d), big, err)
 	}
 }
+
+// review C1 / T9: an overlay over MaxFileBytes is skipped like a disk file of
+// that size, and hides the disk entry while it lasts.
+func TestOverlayOverSizeLimit(t *testing.T) {
+	root := t.TempDir()
+	p := filepath.Join(root, "a.sh")
+	write(t, p, "on_disk() { :; }\n")
+	w, err := Open(root, Limits{MaxFileBytes: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SetOverlay(p, 1, []byte("in_buffer() { :; }\n"+strings.Repeat("# pad\n", 20)))
+	s := w.Snapshot()
+	ff := s.Facts(w.Canon(p))
+	if ff == nil || ff.File == nil || !strings.Contains(ff.File.Skipped, "a.sh: 139 bytes exceeds the 64 byte file limit") {
+		t.Fatalf("facts %+v", ff)
+	}
+	if len(s.WorkspaceSymbols("in_buffer", 5))+len(s.WorkspaceSymbols("on_disk", 5)) != 0 {
+		t.Fatal("an oversize overlay must not be parsed, nor show the disk content")
+	}
+	w.CloseOverlay(p)
+	if len(w.Snapshot().WorkspaceSymbols("on_disk", 5)) != 1 {
+		t.Fatal("disk content not back after close")
+	}
+}

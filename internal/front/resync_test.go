@@ -205,6 +205,20 @@ func FuzzParse(f *testing.F) {
 			return nil
 		})
 	}
+	// Small versions of the shapes that once overflowed the stack or ran
+	// quadratically (deep_test.go); the fuzzer mutates them toward the limits.
+	for _, seed := range []string{
+		"((((((\n", "echo $($($($(\n", "{ { { { \n", "cat <(<(<(\n", `echo "$("$("$(` + "\n",
+		"echo $[$[$[\n", "echo $((a?a?a?1:2:3:4))\n", "let a?a?a?1:2:3:4\n", "[[ ! ! ! a ]]\n",
+		"a && a || a && a\n", "a | a | a | a\n", "a | # c\na | # c\na\n",
+		"if a;then\nif a;then\n:\nfi\nfi\n", "if a; then :\nelif a; then :\nelif a; then :\nfi\n",
+		"time time time a\n", "coproc coproc a\n", "f() g() { :; }\n", "f() # c\ng() # c\n{ :; }\n",
+		"echo $((1+1+1+1))\n", "echo $((a=b=c=1))\n", "echo $((2**2**2))\n", "echo $((- - !!1))\n",
+		"[[ a && a && a ]]\n", "$( '))' $( '))'\n", "$(case x in a) $(case x in a)\n",
+		"$( # ))\n$( # ))\n", "$(cat <<'E'\n)))\nE\n$(cat <<E\n$(\nE\n",
+	} {
+		f.Add([]byte(seed))
+	}
 	f.Fuzz(func(t *testing.T, src []byte) {
 		file := Parse("f.sh", src, Bash)
 		checkInvariants(t, file)

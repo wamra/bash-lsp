@@ -3,6 +3,7 @@ package front
 import (
 	"bytes"
 	"errors"
+	"fmt"
 
 	"mvdan.cc/sh/v3/syntax"
 
@@ -39,8 +40,7 @@ func parseFile(f *tree.File, d Dialect) ([]*tree.Node, []tree.SyntaxError, []*tr
 // raw runs the parser once over f.Src[off:]. It does not resync.
 func (r *resyncer) raw(off int) attempt {
 	f := r.f
-	p := syntax.NewParser(syntax.KeepComments(true), syntax.RecoverErrors(50), syntax.Variant(variant(r.d)))
-	af, err := p.Parse(bytes.NewReader(f.Src[off:]), f.Path)
+	af, err, crashed := parseSafely(f.Src[off:], f.Path, r.d)
 	if af == nil {
 		af = &syntax.File{}
 	}
@@ -48,7 +48,12 @@ func (r *resyncer) raw(off int) attempt {
 	a := attempt{failOff: -1}
 	a.stmts, a.errs = lowerStmts(f, base, af.Stmts)
 	a.comments = lowerComments(f, base, af)
-	if err != nil {
+	switch {
+	case crashed:
+		// No position to go by: the broken region starts where this run did.
+		a.failErr = tree.SyntaxError{Range: tree.Range{Start: base, End: base}, Msg: err.Error()}
+		a.failOff = base.Offset
+	case err != nil:
 		a.failErr = hardError(f, base.Offset, err)
 		a.failOff = a.failErr.Range.Start.Offset
 	}
@@ -60,12 +65,26 @@ func (r *resyncer) raw(off int) attempt {
 	return a
 }
 
+// parseSafely runs the parser over src. The parser can panic on some broken
+// input (`A=$((0 A` indexes past a slice in v3.14.1); crashed reports that,
+// with err describing it, instead of letting the panic end the process.
+func parseSafely(src []byte, path string, d Dialect) (af *syntax.File, err error, crashed bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			af, err, crashed = nil, fmt.Errorf("parser failure: %v", r), true
+		}
+	}()
+	p := syntax.NewParser(syntax.KeepComments(true), syntax.RecoverErrors(50), syntax.Variant(variant(d)))
+	af, err = p.Parse(bytes.NewReader(src), path)
+	return af, err, false
+}
+
 // unclosedQuote returns the offset (relative to the parsed text) of the first
 // quoted string whose closing quote the parser had to invent, or -1.
 func unclosedQuote(af *syntax.File) (off int) {
 	off = -1
 	defer func() { _ = recover() }() // a partial tree may hold nil nodes
-	syntax.Walk(af, func(n syntax.Node) bool {
+	visitAll(af, func(n syntax.Node) {
 		var left, right syntax.Pos
 		switch q := n.(type) {
 		case *syntax.DblQuoted:
@@ -73,12 +92,11 @@ func unclosedQuote(af *syntax.File) (off int) {
 		case *syntax.SglQuoted:
 			left, right = q.Left, q.Right
 		default:
-			return true
+			return
 		}
 		if left.IsValid() && (!right.IsValid() || right.IsRecovered()) && (off < 0 || int(left.Offset()) < off) {
 			off = int(left.Offset())
 		}
-		return true
 	})
 	return off
 }
