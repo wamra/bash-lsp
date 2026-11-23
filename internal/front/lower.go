@@ -27,8 +27,8 @@ type lowerer struct {
 }
 
 const (
-	firstChunk = 32   // nodes (and child pointers) in the first chunk
-	maxChunk   = 2048 // chunks double up to this many entries
+	firstChunk = 32 // nodes (and child pointers) in the first chunk
+	maxChunk   = 64 // chunks double up to this many entries
 )
 
 // newNode returns a zeroed node from the current chunk.
