@@ -114,3 +114,34 @@ func TestHoverOnManyDefinitionsInBoundedTime(t *testing.T) {
 		t.Errorf("hover lost the body effects:\n%.300s", md)
 	}
 }
+
+// Each function definition walked the scope chain to its confining private
+// scope, through function scopes (confining): O(definitions x depth), Bind
+// 1.2 s on 2 MiB of definitions inside 1,990 nested functions against 0.14 s
+// at 500. Binding the same size at 1,990 levels must cost about what it
+// costs at 250 (best of three each), not eight times as much.
+func TestNestedFunctionDefinitionsBindIndependentOfDepth(t *testing.T) {
+	size, _ := shapeSize()
+	bind := func(depth int) time.Duration {
+		src := fillTo(size, strings.Repeat("f() { ", depth), "h() { :; };", strings.Repeat(" }", depth)+"\n")
+		f := front.Parse("/ws/a.sh", []byte(src), front.Bash)
+		if f.Skipped != "" || len(f.Errors) > 0 {
+			t.Fatalf("depth %d: not parsed cleanly: %q %v", depth, f.Skipped, f.Errors)
+		}
+		best := time.Duration(1<<63 - 1)
+		for range 3 {
+			start := time.Now()
+			ff := Bind(f)
+			best = min(best, time.Since(start))
+			if d := ff.Decls[len(ff.Decls)-1]; d.Kind != DeclFunction || d.Name != "h" {
+				t.Fatalf("depth %d: last declaration %+v", depth, d)
+			}
+		}
+		return best
+	}
+	shallow, deep := bind(250), bind(1990)
+	t.Logf("Bind at 250 levels %v, at 1,990 levels %v", shallow, deep)
+	if deep > 4*shallow+50*time.Millisecond {
+		t.Errorf("Bind at 1,990 levels took %v, %.1fx its %v at 250", deep, float64(deep)/float64(shallow), shallow)
+	}
+}

@@ -46,17 +46,6 @@ func privateScope(sc *Scope) *Scope {
 	return nil
 }
 
-// confining returns the innermost private scope (see ScopeKind.Private) of
-// sc or its ancestors, function scopes included; nil when there is none.
-func confining(sc *Scope) *Scope {
-	for ; sc != nil; sc = sc.Parent {
-		if sc.Kind.Private() {
-			return sc
-		}
-	}
-	return nil
-}
-
 // Scope is a lexical scope. Func is the name of the enclosing function, "" at file level.
 type Scope struct {
 	Kind   ScopeKind
@@ -68,6 +57,7 @@ type Scope struct {
 	// per use or assignment cost O(depth) each, up to 45 s for 2 MiB):
 	body        *tree.Node // the KFuncDecl node of the nearest function scope, nil outside one
 	named       *tree.Node // the KFuncDecl node of the nearest function scope with a name, nil when none (callerOfScope)
+	confine     *Scope     // the innermost private scope of this scope or its ancestors, function scopes included (Decl.Confined)
 	first, last int        // the uses Bind recorded while this scope was open are FileFacts.Uses[first:last]
 	closed      bool       // Bind has left the scope
 }
@@ -227,7 +217,10 @@ func (b *binder) children(n *tree.Node, sc *Scope) {
 
 // open makes a scope of kind k under sc, opened now.
 func (b *binder) open(sc *Scope, k ScopeKind, n *tree.Node) *Scope {
-	s := &Scope{Kind: k, Parent: sc, Node: n, Func: sc.Func, body: sc.body, named: sc.named, first: len(b.ff.Uses)}
+	s := &Scope{Kind: k, Parent: sc, Node: n, Func: sc.Func, body: sc.body, named: sc.named, confine: sc.confine, first: len(b.ff.Uses)}
+	if k.Private() {
+		s.confine = s
+	}
 	if k == ScopeFunction {
 		s.body = n
 		if n.Name != "" {
@@ -250,7 +243,7 @@ func (b *binder) visit(n *tree.Node, sc *Scope) {
 	case tree.KFuncDecl:
 		if n.Name != "" {
 			b.ff.Decls = append(b.ff.Decls, &Decl{Kind: DeclFunction, Name: n.Name, NameRange: n.NameRange,
-				Scope: b.ff.Root, Doc: b.docAbove(n.Range.Start.Line), Node: n, Confined: confining(sc)})
+				Scope: b.ff.Root, Doc: b.docAbove(n.Range.Start.Line), Node: n, Confined: sc.confine})
 		}
 		fs := b.open(sc, ScopeFunction, n)
 		fs.Func = n.Name
