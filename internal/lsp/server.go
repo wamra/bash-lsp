@@ -86,6 +86,8 @@ func (d *docsOnly) Canon(path string) string { return filepath.Clean(path) }
 
 type document struct {
 	uri     string
+	path    string  // canonical, the key in server.docs
+	be      backend // the workspace that holds its overlay
 	version int
 	text    []byte
 }
@@ -98,16 +100,24 @@ type server struct {
 	initialized  bool
 	shutdown     bool
 	hierarchical bool
-	resolvedOnly bool   // initialization option references.resolvedOnly
-	rootPath     string // as the client spelled it; "" without a root
+	resolvedOnly bool     // initialization option references.resolvedOnly
+	watchDynamic bool     // the client registers didChangeWatchedFiles dynamically
+	roots        []string // the workspace folders as the client spelled them
 
 	started bool
-	ready   chan struct{} // closed when be is usable
-	be      backend
-	realRoot,
-	clientRoot string
+	ready   chan struct{} // closed when folders is set
+	// folders are the open workspace folders, in the client's order. Set by
+	// the opener goroutine before ready is closed; after that, read and
+	// changed on the message loop only.
+	folders []*folder
+	loose   *docsOnly // documents outside every folder
 
-	docs map[string]*document // by workspace path
+	docs  map[string]*document // open documents by canonical path
+	byURI map[string]string    // canonical path of an open document by its URI
+
+	registered bool              // client/registerCapability sent
+	reqSeq     int               // ids of requests to the client
+	pending    map[string]string // method of each request awaiting a response, by id
 
 	exit    bool
 	exitErr error
@@ -125,6 +135,8 @@ func Serve(in io.Reader, out io.Writer, logw io.Writer, version string) error {
 		version: version,
 		ready:   make(chan struct{}),
 		docs:    map[string]*document{},
+		byURI:   map[string]string{},
+		pending: map[string]string{},
 	}
 	for !s.exit {
 		body, err := s.c.read()
@@ -160,7 +172,8 @@ func (s *server) dispatch(body []byte) {
 		return
 	}
 	if m.Method == "" {
-		return // a response to a request we never sent
+		s.response(m)
+		return
 	}
 	isReq := len(m.ID) > 0
 	if m.Method == "exit" {
@@ -210,6 +223,7 @@ func (s *server) handle(m message) (any, *rpcError) {
 		return s.initialize(m.Params)
 	case "initialized":
 		s.startWorkspace()
+		s.registerWatchers()
 		return nil, nil
 	case "shutdown":
 		s.shutdown = true
@@ -220,8 +234,12 @@ func (s *server) handle(m message) (any, *rpcError) {
 		return nil, s.didChange(m.Params)
 	case "textDocument/didClose":
 		return nil, s.didClose(m.Params)
+	case "textDocument/didSave":
+		return nil, s.didSave(m.Params)
 	case "workspace/didChangeWatchedFiles":
 		return nil, s.didChangeWatched(m.Params)
+	case "workspace/didChangeWorkspaceFolders":
+		return nil, s.didChangeFolders(m.Params)
 	case "textDocument/definition":
 		return s.definition(m.Params)
 	case "textDocument/references":
@@ -272,7 +290,8 @@ func (s *server) initialize(raw json.RawMessage) (any, *rpcError) {
 	s.initialized = true
 	s.hierarchical = p.Capabilities.TextDocument.DocumentSymbol.Hierarchical
 	s.resolvedOnly = resolvedOnlyOption(p.InitializationOptions, s.log)
-	s.rootPath = rootOf(p, s.log)
+	s.watchDynamic = p.Capabilities.Workspace.DidChangeWatchedFiles.DynamicRegistration
+	s.roots = rootsOf(p, s.log)
 	return initializeResult{Capabilities: capabilities(), ServerInfo: serverInfo{Name: "bash-lsp", Version: s.version}}, nil
 }
 
@@ -295,37 +314,43 @@ func resolvedOnlyOption(raw json.RawMessage, lg *log.Logger) bool {
 	return o.References.ResolvedOnly
 }
 
-// rootOf picks the first workspace folder, else rootUri, else rootPath.
-func rootOf(p initializeParams, lg *log.Logger) string {
-	var uri string
+// rootsOf picks the workspace folders, else rootUri, else rootPath. A
+// folder whose URI is not a file URI is logged and left out.
+func rootsOf(p initializeParams, lg *log.Logger) []string {
+	var uris []string
 	switch {
 	case len(p.WorkspaceFolders) > 0:
-		uri = p.WorkspaceFolders[0].URI
+		for _, f := range p.WorkspaceFolders {
+			uris = append(uris, f.URI)
+		}
 	case p.RootURI != nil && *p.RootURI != "":
-		uri = *p.RootURI
+		uris = []string{*p.RootURI}
 	case p.RootPath != nil && *p.RootPath != "":
-		return filepath.Clean(*p.RootPath)
-	default:
-		return ""
+		return []string{filepath.Clean(*p.RootPath)}
 	}
-	path, err := workspace.PathFromURI(uri)
-	if err != nil {
-		lg.Printf("ignoring root %q: %v", uri, err)
-		return ""
+	var out []string
+	for _, uri := range uris {
+		path, err := workspace.PathFromURI(uri)
+		if err != nil {
+			lg.Printf("ignoring root %q: %v", uri, err)
+			continue
+		}
+		out = append(out, filepath.Clean(path))
 	}
-	return filepath.Clean(path)
+	return out
 }
 
-// startWorkspace opens the workspace in the background; every later request
-// waits for it. Called on `initialized` and, for clients that skip it, on the
-// first request that needs the workspace.
+// startWorkspace opens the workspace folders in the background, one after
+// the other; every later request waits for them. Called on `initialized`
+// and, for clients that skip it, on the first request that needs the
+// workspace.
 func (s *server) startWorkspace() {
 	if s.started {
 		return
 	}
 	s.started = true
-	if s.rootPath == "" {
-		s.be = newDocsOnly()
+	s.loose = newDocsOnly()
+	if len(s.roots) == 0 {
 		close(s.ready)
 		return
 	}
@@ -334,25 +359,17 @@ func (s *server) startWorkspace() {
 		defer func() {
 			if r := recover(); r != nil {
 				s.log.Printf("panic opening workspace: %v\n%s", r, debug.Stack())
-				s.be = newDocsOnly()
+				s.folders = nil
 			}
 		}()
-		ws, err := workspace.Open(s.rootPath, workspace.Limits{})
-		if err != nil {
-			s.log.Printf("cannot open workspace %s: %v; serving open documents only", s.rootPath, err)
-			s.be = newDocsOnly()
-			return
-		}
-		s.realRoot, s.clientRoot = ws.Root(), s.rootPath
-		s.be = ws
+		s.folders = s.openFolders(s.roots)
 	}()
 }
 
-// backend waits for the first workspace build.
-func (s *server) backend() backend {
+// wait waits for the first workspace build.
+func (s *server) wait() {
 	s.startWorkspace()
 	<-s.ready
-	return s.be
 }
 
 // ---- paths ----
@@ -365,26 +382,6 @@ func under(root, p string) (string, bool) {
 	return rel, true
 }
 
-// fromClient maps a path the client spelled to the workspace's canonical
-// key: the one overlays are stored under and snapshot queries take.
-func (s *server) fromClient(p string) string {
-	p = filepath.Clean(p)
-	if s.be != nil {
-		return s.be.Canon(p)
-	}
-	return p
-}
-
-// toClient is the inverse of fromClient for paths inside the root.
-func (s *server) toClient(p string) string {
-	if s.clientRoot != "" {
-		if rel, ok := under(s.realRoot, p); ok {
-			return filepath.Join(s.clientRoot, rel)
-		}
-	}
-	return p
-}
-
 // uriOf names path to the client: a document the client opened keeps the URI
 // it used; other files get the root-rebased spelling.
 func (s *server) uriOf(path string) string {
@@ -394,12 +391,28 @@ func (s *server) uriOf(path string) string {
 	return workspace.URIFromPath(s.toClient(path))
 }
 
-func (s *server) pathOf(uri string) (string, *rpcError) {
+// locate maps a document URI to the workspace that serves it and the
+// canonical path it is known by there.
+func (s *server) locate(uri string) (backend, string, *rpcError) {
 	p, err := workspace.PathFromURI(uri)
 	if err != nil {
-		return "", &rpcError{codeInvalidParams, err.Error()}
+		return nil, "", &rpcError{codeInvalidParams, err.Error()}
 	}
-	return s.fromClient(p), nil
+	be, path := s.route(p)
+	return be, path, nil
+}
+
+// docOf finds the open document of uri: by the URI it was opened with, else
+// by where the URI leads now.
+func (s *server) docOf(uri string) (*document, *rpcError) {
+	if path, ok := s.byURI[uri]; ok {
+		return s.docs[path], nil
+	}
+	_, path, rerr := s.locate(uri)
+	if rerr != nil {
+		return nil, rerr
+	}
+	return s.docs[path], nil
 }
 
 // ---- document sync ----
@@ -409,14 +422,15 @@ func (s *server) didOpen(raw json.RawMessage) *rpcError {
 	if rerr := decode(raw, &p); rerr != nil {
 		return rerr
 	}
-	be := s.backend()
-	path, rerr := s.pathOf(p.TextDocument.URI)
+	s.wait()
+	be, path, rerr := s.locate(p.TextDocument.URI)
 	if rerr != nil {
 		s.log.Printf("didOpen ignored: %s", rerr.Message)
 		return nil
 	}
-	d := &document{uri: p.TextDocument.URI, version: p.TextDocument.Version, text: []byte(p.TextDocument.Text)}
+	d := &document{uri: p.TextDocument.URI, path: path, be: be, version: p.TextDocument.Version, text: []byte(p.TextDocument.Text)}
 	s.docs[path] = d
+	s.byURI[d.uri] = path
 	be.SetOverlay(path, d.version, d.text)
 	s.publish(be, d, path)
 	return nil
@@ -427,21 +441,20 @@ func (s *server) didChange(raw json.RawMessage) *rpcError {
 	if rerr := decode(raw, &p); rerr != nil {
 		return rerr
 	}
-	be := s.backend()
-	path, rerr := s.pathOf(p.TextDocument.URI)
+	s.wait()
+	d, rerr := s.docOf(p.TextDocument.URI)
 	if rerr != nil {
 		s.log.Printf("didChange ignored: %s", rerr.Message)
 		return nil
 	}
-	d := s.docs[path]
 	if d == nil {
 		s.log.Printf("didChange for a document that is not open: %s", p.TextDocument.URI)
 		return nil
 	}
 	d.text = applyChanges(d.text, p.ContentChanges)
 	d.version = p.TextDocument.Version
-	be.SetOverlay(path, d.version, d.text)
-	s.publish(be, d, path)
+	d.be.SetOverlay(d.path, d.version, d.text)
+	s.publish(d.be, d, d.path)
 	return nil
 }
 
@@ -450,36 +463,16 @@ func (s *server) didClose(raw json.RawMessage) *rpcError {
 	if rerr := decode(raw, &p); rerr != nil {
 		return rerr
 	}
-	be := s.backend()
-	path, rerr := s.pathOf(p.TextDocument.URI)
-	if rerr != nil {
+	s.wait()
+	d, rerr := s.docOf(p.TextDocument.URI)
+	delete(s.byURI, p.TextDocument.URI)
+	if rerr != nil || d == nil {
 		return nil
 	}
-	if _, ok := s.docs[path]; !ok {
-		return nil
-	}
-	delete(s.docs, path)
-	be.CloseOverlay(path)
+	delete(s.docs, d.path)
+	d.be.CloseOverlay(d.path)
 	// Diagnostics belong to open documents: clear them.
 	s.c.notify("textDocument/publishDiagnostics", publishDiagnosticsParams{URI: p.TextDocument.URI, Diagnostics: []Diagnostic{}})
-	return nil
-}
-
-func (s *server) didChangeWatched(raw json.RawMessage) *rpcError {
-	var p didChangeWatchedFilesParams
-	if rerr := decode(raw, &p); rerr != nil {
-		return rerr
-	}
-	be := s.backend()
-	var paths []string
-	for _, c := range p.Changes {
-		if path, rerr := s.pathOf(c.URI); rerr == nil {
-			paths = append(paths, path)
-		}
-	}
-	if len(paths) > 0 {
-		be.Refresh(paths...)
-	}
 	return nil
 }
 
@@ -547,8 +540,8 @@ func (s *server) locations(snap *analysis.Snapshot, ls []analysis.Location) []Lo
 // cursor resolves a request position to a snapshot, path and byte offset.
 // ok is false when the document is unknown to the snapshot.
 func (s *server) cursor(uri string, pos Position) (snap *analysis.Snapshot, path string, offset int, ok bool, rerr *rpcError) {
-	be := s.backend()
-	path, rerr = s.pathOf(uri)
+	s.wait()
+	be, path, rerr := s.locate(uri)
 	if rerr != nil {
 		return
 	}
@@ -629,8 +622,8 @@ func (s *server) documentSymbol(raw json.RawMessage) (any, *rpcError) {
 	if rerr := decode(raw, &p); rerr != nil {
 		return nil, rerr
 	}
-	be := s.backend()
-	path, rerr := s.pathOf(p.TextDocument.URI)
+	s.wait()
+	be, path, rerr := s.locate(p.TextDocument.URI)
 	if rerr != nil {
 		return nil, rerr
 	}
@@ -680,6 +673,14 @@ func hierSymbol(cs converters, f *tree.File, d analysis.DocSymbol) DocumentSymbo
 	return out
 }
 
+// maxWorkspaceSymbols caps workspace/symbol, as analysis does per snapshot.
+const maxWorkspaceSymbols = 200
+
+// workspaceSymbol merges the symbols of every workspace folder and of the
+// documents outside them. Each list comes ranked from its snapshot; the
+// lists are interleaved (first of each, then second of each, in folder
+// order, the outside documents last), so no folder crowds the others out
+// of the cap.
 func (s *server) workspaceSymbol(raw json.RawMessage) (any, *rpcError) {
 	var p workspaceSymbolParams
 	if len(raw) > 0 {
@@ -687,13 +688,32 @@ func (s *server) workspaceSymbol(raw json.RawMessage) (any, *rpcError) {
 			return nil, rerr
 		}
 	}
-	snap := s.backend().Snapshot()
-	infos := snap.WorkspaceSymbols(p.Query, 0)
-	out := make([]SymbolInformation, 0, len(infos))
+	s.wait()
+	type list struct {
+		snap  *analysis.Snapshot
+		infos []analysis.SymbolInfo
+	}
+	var lists []list
+	for _, be := range s.backends() {
+		snap := be.Snapshot()
+		lists = append(lists, list{snap, snap.WorkspaceSymbols(p.Query, maxWorkspaceSymbols)})
+	}
+	out := []SymbolInformation{}
 	cs := converters{}
-	for _, i := range infos {
-		out = append(out, SymbolInformation{Name: i.Name, Kind: symbolKind(i.Kind),
-			Location: Location{URI: s.uriOf(i.Path), Range: s.rangeIn(cs, snap, i.Path, i.Range)}})
+	for i := 0; len(out) < maxWorkspaceSymbols; i++ {
+		more := false
+		for _, l := range lists {
+			if i >= len(l.infos) || len(out) == maxWorkspaceSymbols {
+				continue
+			}
+			more = true
+			in := l.infos[i]
+			out = append(out, SymbolInformation{Name: in.Name, Kind: symbolKind(in.Kind),
+				Location: Location{URI: s.uriOf(in.Path), Range: s.rangeIn(cs, l.snap, in.Path, in.Range)}})
+		}
+		if !more {
+			break
+		}
 	}
 	return out, nil
 }

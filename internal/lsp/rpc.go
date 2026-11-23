@@ -22,10 +22,13 @@ const (
 	codeNotInitialized = -32002
 )
 
+// message is a request, a notification, or a response to a request the
+// server sent (no method; result or error).
 type message struct {
 	ID     json.RawMessage `json:"id,omitempty"`
 	Method string          `json:"method,omitempty"`
 	Params json.RawMessage `json:"params,omitempty"`
+	Error  json.RawMessage `json:"error,omitempty"` // kept raw: a response is read leniently
 }
 
 type rpcError struct {
@@ -38,6 +41,13 @@ type response struct {
 	ID      json.RawMessage `json:"id"`
 	Result  json.RawMessage `json:"result,omitempty"`
 	Error   *rpcError       `json:"error,omitempty"`
+}
+
+type request struct {
+	JSONRPC string `json:"jsonrpc"`
+	ID      string `json:"id"`
+	Method  string `json:"method"`
+	Params  any    `json:"params"`
 }
 
 type notification struct {
@@ -149,6 +159,12 @@ func (c *conn) reply(id json.RawMessage, result any, rerr *rpcError) {
 		}
 	}
 	c.send(resp)
+}
+
+// request sends a request to the client; its response arrives as a message
+// with no method.
+func (c *conn) request(id, method string, params any) {
+	c.send(request{JSONRPC: "2.0", ID: id, Method: method, Params: params})
 }
 
 func (c *conn) notify(method string, params any) {

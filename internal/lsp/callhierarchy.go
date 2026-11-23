@@ -25,11 +25,11 @@ type itemData struct {
 	Name string `json:"name"`
 }
 
-// relPath is p relative to the workspace root, with forward slashes; the
-// whole path without a root or outside it.
+// relPath is p relative to the root of the workspace folder that holds it,
+// with forward slashes; the whole path outside every folder.
 func (s *server) relPath(p string) string {
-	if s.realRoot != "" {
-		if rel, ok := under(s.realRoot, p); ok {
+	if f := s.folderOf(p); f != nil {
+		if rel, ok := under(f.ws.Root(), p); ok {
 			return filepath.ToSlash(rel)
 		}
 	}
@@ -59,30 +59,37 @@ func (s *server) item(cs converters, snap *analysis.Snapshot, n analysis.Node, l
 	return it
 }
 
-// nodeOf finds the node an item stands for in snap: by its data, else by
-// its uri and (for a function) name. ok is false when the node is gone.
-func (s *server) nodeOf(snap *analysis.Snapshot, it callHierarchyItem) (analysis.Node, bool) {
+// nodeOf finds the node an item stands for, and the snapshot of the
+// workspace that holds it: by its data, else by its uri and (for a
+// function) name. The data path picks the workspace by its spelling alone
+// (no file is touched): only a path the server produced names a file a
+// snapshot holds. ok is false when the node is gone.
+func (s *server) nodeOf(it callHierarchyItem) (*analysis.Snapshot, analysis.Node, bool) {
 	var d itemData
 	if len(it.Data) > 0 && json.Unmarshal(it.Data, &d) != nil {
 		d = itemData{}
 	}
+	var snap *analysis.Snapshot
 	if d.Path == "" {
-		p, rerr := s.pathOf(it.URI)
+		be, p, rerr := s.locate(it.URI)
 		if rerr != nil {
-			return analysis.Node{}, false
+			return nil, analysis.Node{}, false
 		}
-		d.Path = p
+		snap, d.Path = be.Snapshot(), p
 		if it.Kind != kindFile {
 			d.Name = it.Name
 		}
+	} else {
+		snap = s.backendOf(d.Path).Snapshot()
 	}
 	if snap.Facts(d.Path) == nil {
-		return analysis.Node{}, false
+		return snap, analysis.Node{}, false
 	}
 	if d.Name == "" {
-		return analysis.Node{Path: d.Path}, true
+		return snap, analysis.Node{Path: d.Path}, true
 	}
-	return snap.FuncNode(d.Path, d.Name)
+	n, ok := snap.FuncNode(d.Path, d.Name)
+	return snap, n, ok
 }
 
 func (s *server) prepareCallHierarchy(raw json.RawMessage) (any, *rpcError) {
@@ -186,8 +193,8 @@ func (s *server) callsOf(raw json.RawMessage, incoming bool) (snap *analysis.Sna
 	if rerr = decode(raw, &p); rerr != nil {
 		return
 	}
-	snap = s.backend().Snapshot()
-	n, ok := s.nodeOf(snap, p.Item)
+	s.wait()
+	snap, n, ok := s.nodeOf(p.Item)
 	if !ok {
 		return snap, n, nil, nil
 	}

@@ -33,6 +33,47 @@ type testClient struct {
 	replies map[string]*rpcReply
 	diags   map[string][][]Diagnostic
 	closed  bool
+
+	// Requests from the server (method set, id set), in arrival order, and
+	// how the client answers them: respond returns the result and the error
+	// to send; nil answers {"result": null}.
+	serverReqs []serverReq
+	respond    func(serverReq) (any, *rpcError)
+	logs       *syncBuffer
+}
+
+type serverReq struct {
+	ID     json.RawMessage
+	Method string
+	Params json.RawMessage
+}
+
+// syncBuffer is a log writer the test can read while the server writes.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.String()
+}
+
+// clientCfg configures clientWith. Zero values give the defaults of client.
+type clientCfg struct {
+	root         string         // sent as rootUri unless folders is set
+	folders      []string       // sent as workspaceFolders
+	hierarchical bool           // hierarchicalDocumentSymbolSupport
+	initOpts     any            // initializationOptions
+	workspaceCap map[string]any // capabilities.workspace
+	respond      func(serverReq) (any, *rpcError)
 }
 
 type rpcReply struct {
@@ -75,29 +116,45 @@ func clientOpt(t *testing.T, root string, hierarchical bool) *testClient {
 // initialized; initOpts, when not nil, is sent as initializationOptions.
 func clientInit(t *testing.T, root string, hierarchical bool, initOpts any) *testClient {
 	t.Helper()
+	return clientWith(t, clientCfg{root: root, hierarchical: hierarchical, initOpts: initOpts})
+}
+
+func clientWith(t *testing.T, cfg clientCfg) *testClient {
+	t.Helper()
+	root := cfg.root
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
 	c := &testClient{t: t, root: root, in: inW, out: outR, done: make(chan error, 1),
-		replies: map[string]*rpcReply{}, diags: map[string][][]Diagnostic{}}
+		replies: map[string]*rpcReply{}, diags: map[string][][]Diagnostic{}, respond: cfg.respond, logs: &syncBuffer{}}
 	c.cond = sync.NewCond(&c.mu)
 	if root == "" {
 		c.root = t.TempDir() // a place to name documents; not sent as the root
 	}
 	go func() {
-		err := Serve(inR, outW, io.Discard, "test")
+		err := Serve(inR, outW, c.logs, "test")
 		outW.Close()
 		c.done <- err
 	}()
 	go c.readLoop()
 	t.Cleanup(func() { inW.Close(); outR.Close() })
 
-	params := map[string]any{"processId": nil, "capabilities": map[string]any{"textDocument": map[string]any{
-		"documentSymbol": map[string]any{"hierarchicalDocumentSymbolSupport": hierarchical}}}}
-	if root != "" {
+	caps := map[string]any{"textDocument": map[string]any{
+		"documentSymbol": map[string]any{"hierarchicalDocumentSymbolSupport": cfg.hierarchical}}}
+	if cfg.workspaceCap != nil {
+		caps["workspace"] = cfg.workspaceCap
+	}
+	params := map[string]any{"processId": nil, "capabilities": caps}
+	if cfg.folders != nil {
+		var fs []any
+		for _, f := range cfg.folders {
+			fs = append(fs, map[string]any{"uri": workspace.URIFromPath(f), "name": filepath.Base(f)})
+		}
+		params["workspaceFolders"] = fs
+	} else if root != "" {
 		params["rootUri"] = workspace.URIFromPath(root)
 	}
-	if initOpts != nil {
-		params["initializationOptions"] = initOpts
+	if cfg.initOpts != nil {
+		params["initializationOptions"] = cfg.initOpts
 	}
 	c.call("initialize", params)
 	c.notify("initialized", map[string]any{})
@@ -131,6 +188,26 @@ func (c *testClient) readLoop() {
 			var p publishDiagnosticsParams
 			_ = json.Unmarshal(m.Params, &p)
 			c.diags[p.URI] = append(c.diags[p.URI], p.Diagnostics)
+		} else if len(m.ID) > 0 && m.Method != "" { // a request from the server
+			r := serverReq{ID: m.ID, Method: m.Method, Params: m.Params}
+			c.serverReqs = append(c.serverReqs, r)
+			respond := c.respond
+			c.mu.Unlock()
+			var result any
+			var rerr *rpcError
+			if respond != nil {
+				result, rerr = respond(r)
+			}
+			resp := map[string]any{"jsonrpc": "2.0", "id": r.ID}
+			if rerr != nil {
+				resp["error"] = rerr
+			} else {
+				resp["result"] = result
+			}
+			b, _ := json.Marshal(resp)
+			// Off this goroutine: the server may be writing to us meanwhile.
+			go c.in.Write(append([]byte(fmt.Sprintf("Content-Length: %d\r\n\r\n", len(b))), b...))
+			c.mu.Lock()
 		} else if len(m.ID) > 0 {
 			c.replies[string(m.ID)] = &rpcReply{Result: m.Result, Error: m.Error}
 		}
@@ -375,7 +452,8 @@ func TestInitializeCapabilities(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := `{"callHierarchyProvider":true,"definitionProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"implementationProvider":true,` +
-		`"positionEncoding":"utf-16","referencesProvider":true,"textDocumentSync":{"change":2,"openClose":true},"workspaceSymbolProvider":true}`
+		`"positionEncoding":"utf-16","referencesProvider":true,"textDocumentSync":{"change":2,"openClose":true,"save":{"includeText":false}},` +
+		`"workspace":{"workspaceFolders":{"changeNotifications":"workspace/didChangeWorkspaceFolders","supported":true}},"workspaceSymbolProvider":true}`
 	have, _ := json.Marshal(resp.Result.Capabilities) // map keys marshal sorted
 	if string(have) != want {
 		t.Fatalf("capabilities\n got %s\nwant %s", have, want)

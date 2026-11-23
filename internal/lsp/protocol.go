@@ -144,13 +144,15 @@ type initializeParams struct {
 				Hierarchical bool `json:"hierarchicalDocumentSymbolSupport"`
 			} `json:"documentSymbol"`
 		} `json:"textDocument"`
+		// ClientCapabilities.workspace (WorkspaceClientCapabilities)
+		// .didChangeWatchedFiles (DidChangeWatchedFilesClientCapabilities)
+		// .dynamicRegistration; see the watched-files section below.
+		Workspace struct {
+			DidChangeWatchedFiles struct {
+				DynamicRegistration bool `json:"dynamicRegistration"`
+			} `json:"didChangeWatchedFiles"`
+		} `json:"workspace"`
 	} `json:"capabilities"`
-}
-
-type didChangeWatchedFilesParams struct {
-	Changes []struct {
-		URI string `json:"uri"`
-	} `json:"changes"`
 }
 
 type serverInfo struct {
@@ -165,8 +167,14 @@ type initializeResult struct {
 
 func capabilities() map[string]any {
 	return map[string]any{
-		"positionEncoding":        "utf-16",
-		"textDocumentSync":        map[string]any{"openClose": true, "change": 2},
+		"positionEncoding": "utf-16",
+		// TextDocumentSyncOptions.save (SaveOptions): without it a client
+		// sends no didSave.
+		"textDocumentSync": map[string]any{"openClose": true, "change": 2, "save": map[string]any{"includeText": false}},
+		// ServerCapabilities.workspace (WorkspaceOptions).workspaceFolders
+		// (WorkspaceFoldersServerCapabilities), in the form gopls sends.
+		"workspace": map[string]any{"workspaceFolders": map[string]any{
+			"supported": true, "changeNotifications": "workspace/didChangeWorkspaceFolders"}},
 		"definitionProvider":      true,
 		"referencesProvider":      true,
 		"implementationProvider":  true,
@@ -223,4 +231,64 @@ type callHierarchyOutgoingCall struct {
 // CallHierarchyOutgoingCallsParams (same shape).
 type callHierarchyCallsParams struct {
 	Item callHierarchyItem `json:"item"`
+}
+
+// ---- watched files, save, workspace folders ----
+//
+// Field names as in LSP 3.17, copied from the generated protocol of gopls
+// v0.24.0 (golang.org/x/tools/gopls/internal/protocol/tsprotocol.go, from
+// the vscode-languageserver-node metaModel; these types are unchanged in
+// 3.18): DidChangeWatchedFilesClientCapabilities, DidChangeWatchedFilesParams,
+// FileEvent, FileChangeType (Created 1, Changed 2, Deleted 3),
+// DidSaveTextDocumentParams, DidChangeWorkspaceFoldersParams,
+// WorkspaceFoldersChangeEvent, WorkspaceFolder, RegistrationParams,
+// Registration, DidChangeWatchedFilesRegistrationOptions and
+// FileSystemWatcher (globPattern; kind omitted means Create|Change|Delete).
+// The request is client/registerCapability and the notifications are
+// workspace/didChangeWatchedFiles, textDocument/didSave and
+// workspace/didChangeWorkspaceFolders (gopls tsclient.go, tsserver.go).
+
+// fileEvent is FileEvent. Type is not used: the state on disk decides.
+type fileEvent struct {
+	URI  string `json:"uri"`
+	Type int    `json:"type"`
+}
+
+type didChangeWatchedFilesParams struct {
+	Changes []fileEvent `json:"changes"`
+}
+
+// didSaveTextDocumentParams is DidSaveTextDocumentParams; text is not
+// requested (includeText false) and not used.
+type didSaveTextDocumentParams struct {
+	TextDocument textDocumentIdentifier `json:"textDocument"`
+}
+
+type workspaceFoldersChangeEvent struct {
+	Added   []workspaceFolder `json:"added"`
+	Removed []workspaceFolder `json:"removed"`
+}
+
+type didChangeWorkspaceFoldersParams struct {
+	Event workspaceFoldersChangeEvent `json:"event"`
+}
+
+// fileSystemWatcher is FileSystemWatcher with a pattern string (a
+// GlobPattern is a Pattern string or a RelativePattern).
+type fileSystemWatcher struct {
+	GlobPattern string `json:"globPattern"`
+}
+
+type didChangeWatchedFilesRegistrationOptions struct {
+	Watchers []fileSystemWatcher `json:"watchers"`
+}
+
+type registration struct {
+	ID              string `json:"id"`
+	Method          string `json:"method"`
+	RegisterOptions any    `json:"registerOptions,omitempty"`
+}
+
+type registrationParams struct {
+	Registrations []registration `json:"registrations"`
 }

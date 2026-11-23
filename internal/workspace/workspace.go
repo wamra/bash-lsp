@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode"
 
 	"github.com/wamra/bash-lsp/analysis"
 	"github.com/wamra/bash-lsp/internal/ignore"
@@ -53,16 +54,75 @@ var (
 
 const windows = runtime.GOOS == "windows"
 
-// keyFor is the map key of a path: lower-cased on Windows, where paths are
-// case-insensitive; the original spelling is kept for display.
-func keyFor(p string, win bool) string {
-	if win {
+// keyFor is the map key of a path: lower-cased when the volume is
+// case-insensitive (always on Windows; detected per root elsewhere); the
+// original spelling is kept for display. strings.ToLower is simple
+// per-rune folding; names that differ only by Unicode normalisation (NFC
+// against NFD) get different keys.
+func keyFor(p string, fold bool) string {
+	if fold {
 		return strings.ToLower(p)
 	}
 	return p
 }
 
-func key(p string) string { return keyFor(p, windows) }
+// key is the map key of p in this workspace.
+func (w *Workspace) key(p string) string { return keyFor(p, w.fold) }
+
+// detectFold reports whether the volume of a resolved root is
+// case-insensitive; a variable so tests can force it.
+var detectFold = caseInsensitive
+
+// flipCase swaps the case of every cased letter of s; ok is false when s
+// has none.
+func flipCase(s string) (string, bool) {
+	rs := []rune(s)
+	ok := false
+	for i, r := range rs {
+		if u := unicode.ToUpper(r); u != r {
+			rs[i], ok = u, true
+		} else if l := unicode.ToLower(r); l != r {
+			rs[i], ok = l, true
+		}
+	}
+	return string(rs), ok
+}
+
+// sameFile reports whether a and b both exist (not following a final
+// symlink) and are the same file.
+func sameFile(a, b string) bool {
+	fa, err := os.Lstat(a)
+	if err != nil {
+		return false
+	}
+	fb, err := os.Lstat(b)
+	return err == nil && os.SameFile(fa, fb)
+}
+
+// caseInsensitive is the create-free check of a resolved root: the root
+// spelled with its case flipped must exist and be the same directory. A
+// root with no letters, or whose flipped spelling does not exist, is
+// case-sensitive. The flipped root resolves only if every directory on the
+// way folds, so a case-sensitive volume mounted below a folding one is seen
+// as sensitive; a folding volume whose mount point is the root itself is
+// told apart by a second probe, inside the root: its first entry with a
+// letter, spelled with its case flipped, must be the same file.
+func caseInsensitive(root string) bool {
+	flipped, ok := flipCase(root)
+	if !ok || !sameFile(root, flipped) {
+		return false
+	}
+	ents, err := os.ReadDir(root)
+	if err != nil {
+		return true
+	}
+	for _, e := range ents {
+		if f, ok := flipCase(e.Name()); ok {
+			return sameFile(filepath.Join(root, e.Name()), filepath.Join(root, f))
+		}
+	}
+	return true
+}
 
 type entry struct {
 	path    string // display spelling (canonical: resolved root, walk's directory names)
@@ -129,6 +189,7 @@ const maxIgnoreBytes = 1 << 20
 type Workspace struct {
 	root string
 	lim  Limits
+	fold bool // keys fold case: Windows, or a case-insensitive volume
 
 	mu       sync.Mutex // guards everything below except snap
 	disk     map[string]*entry
@@ -137,11 +198,18 @@ type Workspace struct {
 	skips    map[string]skipInfo
 	dirName  map[string]string // key(real dir) -> the walk's logical path for it
 	rcCache  map[string]rcInfo
+	excl     map[string]bool // keys of directories whose subtrees another workspace owns
 	snap     atomic.Pointer[analysis.Snapshot]
 }
 
 // Open walks root, parses and binds every shell file and builds generation 1.
-func Open(root string, lim Limits) (*Workspace, error) {
+func Open(root string, lim Limits) (*Workspace, error) { return OpenExcluding(root, lim, nil) }
+
+// OpenExcluding is Open without the subtrees of exclude: the roots of other
+// workspaces nested inside this one (a file belongs to one workspace). An
+// entry not strictly inside the root is ignored. Entries are absolute,
+// symlink-resolved paths.
+func OpenExcluding(root string, lim Limits, exclude []string) (*Workspace, error) {
 	if lim.MaxFileBytes <= 0 {
 		lim.MaxFileBytes = defaultMaxFileBytes
 	}
@@ -161,8 +229,9 @@ func Open(root string, lim Limits) (*Workspace, error) {
 	} else if !fi.IsDir() {
 		return nil, fmt.Errorf("%s is not a directory", root)
 	}
-	w := &Workspace{root: real, lim: lim, disk: map[string]*entry{}, overlays: map[string]*overlay{},
+	w := &Workspace{root: real, lim: lim, fold: windows || detectFold(real), disk: map[string]*entry{}, overlays: map[string]*overlay{},
 		skips: map[string]skipInfo{}, dirName: map[string]string{}, rcCache: map[string]rcInfo{}}
+	w.excl = w.exclusions(exclude)
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.reconcileAll()
@@ -172,6 +241,89 @@ func Open(root string, lim Limits) (*Workspace, error) {
 
 // Root is the absolute, symlink-resolved workspace root.
 func (w *Workspace) Root() string { return w.root }
+
+// CaseInsensitive reports whether paths fold case in this workspace: on
+// Windows, or when Open found the root's volume case-insensitive.
+func (w *Workspace) CaseInsensitive() bool { return w.fold }
+
+// IsRoot reports whether path (absolute, resolved) is the root, with this
+// workspace's case rule. It touches no file.
+func (w *Workspace) IsRoot(path string) bool { return w.key(filepath.Clean(path)) == w.key(w.root) }
+
+// Contains reports whether the canonical path is the root or below it, with
+// this workspace's case rule; excluded subtrees count. It touches no file.
+func (w *Workspace) Contains(path string) bool { return w.within(filepath.Clean(path)) }
+
+// Owns reports whether the canonical path is this workspace's: inside the
+// root and not in an excluded subtree. It touches no file.
+func (w *Workspace) Owns(path string) bool {
+	path = filepath.Clean(path)
+	if !w.within(path) {
+		return false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return !w.excluded(path)
+}
+
+// SetExcluded replaces the excluded subtrees (see OpenExcluding) and, when
+// they changed, re-walks the root and rebuilds. Overlays below a newly
+// excluded directory stay until CloseOverlay.
+func (w *Workspace) SetExcluded(dirs []string) {
+	ex := w.exclusions(dirs)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(ex) == len(w.excl) {
+		same := true
+		for k := range ex {
+			if !w.excl[k] {
+				same = false
+			}
+		}
+		if same {
+			return
+		}
+	}
+	w.excl = ex
+	w.reconcileAll()
+	w.rebuild()
+}
+
+// exclusions keys the entries of dirs strictly inside the root.
+func (w *Workspace) exclusions(dirs []string) map[string]bool {
+	ex := map[string]bool{}
+	for _, d := range dirs {
+		if d == "" || !filepath.IsAbs(d) {
+			continue
+		}
+		d = filepath.Clean(d)
+		if w.within(d) && !w.IsRoot(d) {
+			ex[w.key(d)] = true
+		}
+	}
+	return ex
+}
+
+// excluded reports whether path is in an excluded subtree. Caller holds
+// w.mu (or w is not shared yet).
+func (w *Workspace) excluded(path string) bool {
+	if len(w.excl) == 0 {
+		return false
+	}
+	for d := path; ; {
+		if w.excl[w.key(d)] {
+			return true
+		}
+		if w.IsRoot(d) {
+			return false
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			return false
+		}
+		d = parent
+	}
+}
 
 // Snapshot is the current immutable snapshot.
 func (w *Workspace) Snapshot() *analysis.Snapshot { return w.snap.Load() }
@@ -187,7 +339,7 @@ func (w *Workspace) SetOverlay(path string, version int, text []byte) {
 	// Opening a document that equals its file on disk is the common case:
 	// reuse the facts the walk built instead of parsing the same bytes again.
 	var e *entry
-	if d := w.disk[key(path)]; d != nil && d.hash == hash && d.path == path {
+	if d := w.disk[w.key(path)]; d != nil && d.hash == hash && d.path == path {
 		e = d
 	}
 	w.mu.Unlock()
@@ -202,7 +354,7 @@ func (w *Workspace) SetOverlay(path string, version int, text []byte) {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.overlays[key(path)] = &overlay{entry: e}
+	w.overlays[w.key(path)] = &overlay{entry: e}
 	w.rebuild()
 }
 
@@ -221,7 +373,7 @@ func (w *Workspace) CloseOverlay(path string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	p := w.canon(path, true)
-	k := key(p)
+	k := w.key(p)
 	if _, ok := w.overlays[k]; !ok {
 		return
 	}
@@ -230,9 +382,20 @@ func (w *Workspace) CloseOverlay(path string) {
 	w.rebuild()
 }
 
-// Refresh re-reads the given paths from disk (created, changed or deleted).
-// With no paths it reconciles the whole workspace: size and mtime first, then
-// content hash. A path is accepted exactly when the full walk would list it.
+// maxRefreshPaths is the batch size above which Refresh re-walks the root
+// instead of checking each path (each check reads the .gitignore files of
+// every directory above the path; the walk reads each once).
+const maxRefreshPaths = 512
+
+// Refresh re-reads the given paths from disk (created, changed or deleted:
+// the state on disk decides, so a delete and a create of one path arrive in
+// either order) and rebuilds at most once. With no paths it reconciles the
+// whole workspace: size and mtime first, then content hash. A path is
+// accepted exactly when the full walk would list it. Paths outside the root
+// or in an excluded subtree are ignored, and so is a path with an open
+// overlay: the editor's text wins, and CloseOverlay re-reads the file. A
+// directory (created, or deleted while files below it are held), a
+// .gitignore, or more than maxRefreshPaths paths re-walk the whole root.
 func (w *Workspace) Refresh(paths ...string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -240,13 +403,33 @@ func (w *Workspace) Refresh(paths ...string) {
 	if changed {
 		w.rcCache = map[string]rcInfo{}
 	}
-	if len(paths) == 0 {
+	full := len(paths) == 0 || len(paths) > maxRefreshPaths
+	var todo []string
+	for _, p := range paths {
+		if full {
+			break
+		}
+		if p == "" || !filepath.IsAbs(p) {
+			continue
+		}
+		c := w.canon(p, false)
+		k := w.key(c)
+		if !w.within(c) || w.excluded(c) || w.overlays[k] != nil {
+			continue
+		}
+		if filepath.Base(c) == ".gitignore" || w.isDirEvent(c, k) {
+			full = true
+			break
+		}
+		todo = append(todo, c)
+	}
+	if full {
 		if w.reconcileAll() {
 			changed = true
 		}
 	} else {
-		for _, p := range paths {
-			if w.refreshOne(w.canon(p, false)) {
+		for _, c := range todo {
+			if w.refreshOne(c) {
 				changed = true
 			}
 		}
@@ -254,6 +437,35 @@ func (w *Workspace) Refresh(paths ...string) {
 	if changed {
 		w.rebuild()
 	}
+}
+
+// isDirEvent reports whether the canonical path c (key k) names a directory
+// now, or named one the walk held files under. Caller holds w.mu.
+func (w *Workspace) isDirEvent(c, k string) bool {
+	if fi, err := os.Stat(c); err == nil {
+		return fi.IsDir()
+	}
+	if _, ok := w.disk[k]; ok {
+		return false
+	}
+	if _, ok := w.skips[k]; ok {
+		return false
+	}
+	if _, ok := w.dirName[k]; ok {
+		return true
+	}
+	prefix := k + string(filepath.Separator)
+	for dk := range w.disk {
+		if strings.HasPrefix(dk, prefix) {
+			return true
+		}
+	}
+	for sk := range w.skips {
+		if strings.HasPrefix(sk, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // Report summarises discovery and the files currently held from disk.
@@ -297,8 +509,9 @@ func (w *Workspace) Skipped() []Skip {
 
 // Canon returns the key SetOverlay would store path under: the spelling the
 // discovery walk uses (symlinks in parent directories and in the final element
-// resolved, directory aliases renamed to the walk's names). Snapshot queries
-// take this spelling.
+// resolved, directory aliases renamed to the walk's names, and on a folding
+// volume the spelling of the file on disk or of its overlay). Snapshot
+// queries take this spelling.
 func (w *Workspace) Canon(path string) string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -323,10 +536,12 @@ func (w *Workspace) canon(p string, followFinal bool) string {
 			rdir = filepath.Clean(rdir)
 		}
 	}
+	out := filepath.Join(rdir, base)
 	for d := rdir; ; {
-		if name, ok := w.dirName[key(d)]; ok {
+		if name, ok := w.dirName[w.key(d)]; ok {
 			rest, _ := filepath.Rel(d, rdir)
-			return filepath.Join(name, rest, base)
+			out = filepath.Join(name, rest, base)
+			break
 		}
 		parent := filepath.Dir(d)
 		if parent == d {
@@ -334,7 +549,19 @@ func (w *Workspace) canon(p string, followFinal bool) string {
 		}
 		d = parent
 	}
-	return filepath.Join(rdir, base)
+	if w.fold { // the spelling the workspace already holds the file under
+		k := w.key(out)
+		if e := w.disk[k]; e != nil {
+			return e.path
+		}
+		if o := w.overlays[k]; o != nil {
+			return o.entry.path
+		}
+		if s, ok := w.skips[k]; ok {
+			return s.path
+		}
+	}
+	return out
 }
 
 // resolveExisting resolves symlinks in the longest existing prefix of dir.
@@ -482,7 +709,7 @@ func hasShellShebang(path string) bool {
 }
 
 func (w *Workspace) within(real string) bool {
-	rel, err := filepath.Rel(w.root, real)
+	rel, err := filepath.Rel(w.key(w.root), w.key(real))
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
@@ -499,8 +726,8 @@ func (w *Workspace) bigLine(rel string, size int64) string {
 // w.skips and w.dirName. Caller holds w.mu.
 func (w *Workspace) walk() (cands []candidate) {
 	w.skips = map[string]skipInfo{}
-	w.dirName = map[string]string{key(w.root): w.root}
-	visited := map[string]bool{key(w.root): true}
+	w.dirName = map[string]string{w.key(w.root): w.root}
+	visited := map[string]bool{w.key(w.root): true}
 	var rec func(dir, real, rel string, set *ignore.Set)
 	rec = func(dir, real, rel string, set *ignore.Set) {
 		if data, ok := w.readConfig(filepath.Join(dir, ".gitignore"), maxIgnoreBytes); ok {
@@ -532,11 +759,11 @@ func (w *Workspace) walk() (cands []candidate) {
 				isDir, target = true, rt
 			}
 			if isDir {
-				if skipDirs[name] || set.Ignored(relp, true) || visited[key(target)] {
+				if skipDirs[name] || set.Ignored(relp, true) || visited[w.key(target)] || w.excluded(target) {
 					continue
 				}
-				visited[key(target)] = true
-				w.dirName[key(target)] = full
+				visited[w.key(target)] = true
+				w.dirName[w.key(target)] = full
 				rec(full, target, relp, set)
 				continue
 			}
@@ -545,7 +772,7 @@ func (w *Workspace) walk() (cands []candidate) {
 			}
 			switch classify(full) {
 			case isZsh:
-				w.skips[key(full)] = w.zshSkip(full)
+				w.skips[w.key(full)] = w.zshSkip(full)
 				continue
 			case notShell:
 				continue
@@ -555,11 +782,11 @@ func (w *Workspace) walk() (cands []candidate) {
 				continue
 			}
 			if fi.Size() > w.lim.MaxFileBytes {
-				w.skips[key(full)] = w.bigSkip(full, fi.Size())
+				w.skips[w.key(full)] = w.bigSkip(full, fi.Size())
 				continue
 			}
 			if len(cands) >= w.lim.MaxFiles {
-				w.skips[key(full)] = w.countSkip(full)
+				w.skips[w.key(full)] = w.countSkip(full)
 				continue
 			}
 			cands = append(cands, candidate{full, fi.Size(), fi.ModTime().UnixNano()})
@@ -580,7 +807,7 @@ func (w *Workspace) reconcileAll() (changed bool) {
 	seen := make(map[string]bool, len(cands))
 	var todo []candidate
 	for _, c := range cands {
-		k := key(c.path)
+		k := w.key(c.path)
 		seen[k] = true
 		if e := w.disk[k]; e != nil && e.size == c.size && e.mtime == c.mtime {
 			continue
@@ -610,7 +837,7 @@ func (w *Workspace) reconcileAll() (changed bool) {
 				return
 			}
 			h := sha256.Sum256(src)
-			if e := w.disk[key(c.path)]; e != nil && e.hash == h { // map is only read during this phase
+			if e := w.disk[w.key(c.path)]; e != nil && e.hash == h { // map is only read during this phase
 				loaded[i].e = &entry{path: e.path, size: c.size, mtime: c.mtime, hash: h, dialect: e.dialect, facts: e.facts}
 				return
 			}
@@ -621,7 +848,7 @@ func (w *Workspace) reconcileAll() (changed bool) {
 	}
 	wg.Wait()
 	for i, r := range loaded {
-		k := key(todo[i].path)
+		k := w.key(todo[i].path)
 		if r.e == nil {
 			if _, ok := w.disk[k]; ok {
 				delete(w.disk, k)
@@ -643,7 +870,7 @@ func (w *Workspace) reconcileAll() (changed bool) {
 // refreshOne re-reads one canonical path, accepting it exactly when the full
 // walk would list it. Caller holds w.mu.
 func (w *Workspace) refreshOne(path string) (changed bool) {
-	k := key(path)
+	k := w.key(path)
 	drop := func() bool {
 		delete(w.skips, k)
 		if _, ok := w.disk[k]; ok {
@@ -651,6 +878,9 @@ func (w *Workspace) refreshOne(path string) (changed bool) {
 			return true
 		}
 		return false
+	}
+	if !w.within(path) || w.excluded(path) { // nothing outside is even stat'ed
+		return drop()
 	}
 	fi, err := os.Lstat(path) // a symlink is never listed by the walk
 	if err != nil || !fi.Mode().IsRegular() {
@@ -696,13 +926,19 @@ func (w *Workspace) refreshOne(path string) (changed bool) {
 }
 
 // accepts applies the walk's rules to one canonical path: inside the root,
-// not under a skipped or git-ignored directory, and a shell (or zsh) file.
+// not in an excluded subtree, not under a skipped or git-ignored directory,
+// and a shell (or zsh) file.
 func (w *Workspace) accepts(path string) status {
 	rel, err := filepath.Rel(w.root, path)
-	if err != nil || !w.within(path) {
+	if err != nil || !w.within(path) || w.excluded(path) {
 		return notShell
 	}
 	parts := strings.Split(filepath.ToSlash(rel), "/")
+	for _, part := range parts[:len(parts)-1] { // before any .gitignore is read
+		if skipDirs[part] {
+			return notShell
+		}
+	}
 	set := &ignore.Set{}
 	dir, relDir := w.root, ""
 	for i, part := range parts {
