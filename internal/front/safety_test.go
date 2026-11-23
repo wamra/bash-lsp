@@ -137,11 +137,21 @@ var wraps = []struct{ pre, open, close, post string }{
 }
 
 // wrap nests seed n levels deep in one construct. Bits of shape leave the
-// nesting unclosed and put a line with an unterminated quote in front, so
-// that the deep part is first parsed by resync.
+// nesting unclosed (1), put a line with an unterminated quote in front so
+// that the deep part is first parsed by resync (2), and multiply the depth
+// by 64, up to what fits in the file limit (4): at 3,000 levels no
+// construct uses half the stack the guard allows, so without that bit every
+// input would be one the guard accepts.
 func wrap(seed []byte, construct, shape uint8, n uint16) []byte {
 	w := wraps[int(construct)%len(wraps)]
 	levels := int(n) % 3001
+	if shape&4 != 0 {
+		per := len(w.open)
+		if shape&1 == 0 {
+			per += len(w.close)
+		}
+		levels = min(levels*64, (2<<20-len(seed)-len(w.pre)-len(w.post)-8)/per)
+	}
 	var b strings.Builder
 	if shape&2 != 0 {
 		b.WriteString("echo '\n")
@@ -206,6 +216,8 @@ func FuzzNestingGuard(f *testing.F) {
 		for shape := range uint8(4) {
 			f.Add([]byte("a"), uint8(c), shape, uint16(3000))
 		}
+		f.Add([]byte("a"), uint8(c), uint8(4), uint16(400))
+		f.Add([]byte("a"), uint8(c), uint8(7), uint16(3000))
 	}
 	if raceBuild {
 		defer debug.SetMaxStack(debug.SetMaxStack(safetyStack))

@@ -349,8 +349,13 @@ func TestDeepestTreesReachEveryConsumer(t *testing.T) {
 				t.Fatal(err)
 			}
 			start := time.Now()
-			ast := runOK(t, "ast", path)
-			if strings.Contains(ast, "ErrorGap") || !strings.Contains(ast, "after_all") {
+			// The text view of 3,900 nested loops is 366 MB: count it, keep none.
+			view := &scanWriter{want: []string{"after_all", "ErrorGap"}, seen: map[string]bool{}}
+			var errb bytes.Buffer
+			if code := run([]string{"ast", path}, strings.NewReader(""), view, &errb); code != 0 {
+				t.Fatalf("ast: exit %d: %s", code, errb.String())
+			}
+			if view.seen["ErrorGap"] || !view.seen["after_all"] {
 				t.Fatal("the text view lacks the tree")
 			}
 			syms := runOK(t, "symbols", "--json", dir)
@@ -358,7 +363,7 @@ func TestDeepestTreesReachEveryConsumer(t *testing.T) {
 			if name != "cmdsubst" {
 				wantLines(t, syms, "inner_most")
 			}
-			t.Logf("%d bytes of source: ast %d bytes, symbols %d bytes, %v", len(src), len(ast), len(syms), time.Since(start).Round(time.Millisecond))
+			t.Logf("%d bytes of source: ast %d bytes, symbols %d bytes, %v", len(src), view.n, len(syms), time.Since(start).Round(time.Millisecond))
 			if name != "brace" {
 				return
 			}
@@ -372,4 +377,24 @@ func TestDeepestTreesReachEveryConsumer(t *testing.T) {
 			t.Logf("ast --json: exit %d, %d bytes, %v", code, len(out), time.Since(start).Round(time.Millisecond))
 		})
 	}
+}
+
+// scanWriter counts what is written and notes which of want appeared.
+type scanWriter struct {
+	n    int
+	want []string
+	seen map[string]bool
+	tail []byte // the end of the previous write, for a match across two
+}
+
+func (w *scanWriter) Write(p []byte) (int, error) {
+	w.n += len(p)
+	buf := append(w.tail, p...)
+	for _, s := range w.want {
+		if bytes.Contains(buf, []byte(s)) {
+			w.seen[s] = true
+		}
+	}
+	w.tail = append([]byte(nil), buf[max(0, len(buf)-16):]...)
+	return len(p), nil
 }
