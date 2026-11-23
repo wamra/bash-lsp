@@ -3,8 +3,15 @@
 A Bash language server written in Go. It resolves definitions, references and
 symbols across `source`d files, over LSP on stdio.
 
-Status: milestone 1 in progress. Nothing is released yet; there are no binaries
-and no stable interface.
+Status: milestone 1 is built and not yet released. Go to definition,
+references, implementation, hover, document and workspace symbols work across
+`source`d files (static, `$(dirname "$0")`-relative and glob loaders), through
+aliases and with locals scoped to their function; syntax errors are reported
+and the files around them still analysed. It passes 20 of the 28 cases of the
+comparison benchmark (`docs/m1-acceptance.md`); call hierarchy, rename, lint
+and string or variable call edges are later milestones, and known gaps are
+listed there and in `docs/m1-deferred.md`. There are no published binaries and
+no stable interface yet, and CI has not run.
 
 Licence: MIT (see `LICENSE`). Third-party attribution is in `NOTICE`.
 
