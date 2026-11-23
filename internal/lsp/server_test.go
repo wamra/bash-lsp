@@ -862,3 +862,25 @@ func TestShutdownExitReturnsNil(t *testing.T) {
 }
 
 func nilLogger() *log.Logger { return log.New(io.Discard, "", 0) }
+
+// review I1 over the wire: didClose after a save serves the saved file.
+func TestDidCloseRereadsDisk(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.sh"), []byte("old_fn() { :; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := client(t, root)
+	c.open("a.sh")
+	c.change("a.sh", fullText("new_fn() { :; }\n"))
+	if err := os.WriteFile(filepath.Join(root, "a.sh"), []byte("new_fn() { :; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c.notify("textDocument/didClose", map[string]any{"textDocument": map[string]any{"uri": c.uri("a.sh")}})
+	var out []SymbolInformation
+	if err := json.Unmarshal(c.call("workspace/symbol", map[string]any{"query": "_fn"}), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].Name != "new_fn" {
+		t.Fatalf("after close: %+v", out)
+	}
+}

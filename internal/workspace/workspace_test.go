@@ -514,3 +514,36 @@ func TestOverlayOverSizeLimit(t *testing.T) {
 		t.Fatal("disk content not back after close")
 	}
 }
+
+// review I1: closing a document re-reads its file. It used to revert to the
+// disk entry read at start, and a file created during the session vanished.
+func TestCloseOverlayRereadsDisk(t *testing.T) {
+	root := t.TempDir()
+	a, b := filepath.Join(root, "a.sh"), filepath.Join(root, "b.sh")
+	write(t, a, "old_fn() { :; }\n")
+	w := open(t, root)
+	count := func(name string) int { return len(w.Snapshot().WorkspaceSymbols(name, 5)) }
+
+	w.SetOverlay(a, 1, []byte("new_fn() { :; }\n"))
+	write(t, a, "new_fn() { :; }\n") // the editor saves
+	w.CloseOverlay(a)
+	if count("new_fn") != 1 || count("old_fn") != 0 {
+		t.Fatalf("after close: new_fn %d, old_fn %d", count("new_fn"), count("old_fn"))
+	}
+
+	w.SetOverlay(b, 1, []byte("b_fn() { :; }\n"))
+	write(t, b, "b_fn() { :; }\n") // created during the session
+	w.CloseOverlay(b)
+	if count("b_fn") != 1 {
+		t.Fatal("a file created during the session left the index on close")
+	}
+
+	w.SetOverlay(a, 2, []byte("new_fn() { :; }\n"))
+	if err := os.Remove(a); err != nil {
+		t.Fatal(err)
+	}
+	w.CloseOverlay(a)
+	if count("new_fn") != 0 {
+		t.Fatal("a file deleted while open is still indexed after close")
+	}
+}

@@ -189,16 +189,19 @@ func OversizeFile(path, reason string) *tree.File {
 	return f
 }
 
-// CloseOverlay drops the overlay of path: the file reverts to its disk
-// content, or disappears if it is not on disk.
+// CloseOverlay drops the overlay of path and re-reads the file: it takes its
+// content on disk now (the editor may have saved it, or created it, while it
+// was open), or disappears if it is not on disk or not a file the walk lists.
 func (w *Workspace) CloseOverlay(path string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	k := key(w.canon(path, true))
+	p := w.canon(path, true)
+	k := key(p)
 	if _, ok := w.overlays[k]; !ok {
 		return
 	}
 	delete(w.overlays, k)
+	w.refreshOne(p)
 	w.rebuild()
 }
 
