@@ -95,20 +95,31 @@ func TestDiscoveryRules(t *testing.T) {
 	write(t, filepath.Join(root, "node_modules", "y.sh"), "echo y\n")
 	write(t, filepath.Join(root, ".git", "h.sh"), "echo h\n")
 	write(t, filepath.Join(root, ".Wammy", "w.sh"), "echo w\n")
-	if err := os.Symlink("/etc", filepath.Join(root, "link")); err != nil {
-		t.Logf("symlink unsupported: %v", err)
+	check := func(t *testing.T) {
+		t.Helper()
+		w := open(t, root)
+		if got, want := rels(w), []string{"a.sh", "noext"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("paths %v, want %v", got, want)
+		}
+		r := w.Report()
+		if r.Skipped != 2 || r.Files != 2 {
+			t.Fatalf("%+v", r)
+		}
+		if len(r.LimitsHit) != 1 || !strings.Contains(r.LimitsHit[0], "big.sh") {
+			t.Fatalf("LimitsHit %v", r.LimitsHit)
+		}
 	}
-	w := open(t, root)
-	if got, want := rels(w), []string{"a.sh", "noext"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("paths %v, want %v", got, want)
-	}
-	r := w.Report()
-	if r.Skipped != 2 || r.Files != 2 {
-		t.Fatalf("%+v", r)
-	}
-	if len(r.LimitsHit) != 1 || !strings.Contains(r.LimitsHit[0], "big.sh") {
-		t.Fatalf("LimitsHit %v", r.LimitsHit)
-	}
+	check(t)
+	// A directory symlink leading out of the root is not followed. Skipped,
+	// visibly, where links cannot be made (Windows without the privilege).
+	t.Run("symlink out of root", func(t *testing.T) {
+		outside := t.TempDir()
+		write(t, filepath.Join(outside, "out.sh"), "echo out\n")
+		if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+			t.Skipf("symlink unsupported: %v", err)
+		}
+		check(t)
+	})
 }
 
 func TestDiscoverySymlinks(t *testing.T) {
