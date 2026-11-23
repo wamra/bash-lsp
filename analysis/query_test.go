@@ -331,3 +331,71 @@ func TestSymbolAtOnDeclarationAndSourcePath(t *testing.T) {
 		t.Fatalf("paths %d", n)
 	}
 }
+
+func TestDiamondFunction(t *testing.T) {
+	q := buildMem(t, map[string]string{
+		"app1.sh":      ". ./lib/hooks.sh\non_start() { :; }\n",
+		"app2.sh":      ". ./lib/hooks.sh\non_start() { :; }\n",
+		"lib/hooks.sh": "run() {\n  on_start\n}\n",
+	})
+	wantEq(t, q.def("lib/hooks.sh", "on_start", 0, 2), "app1.sh:2", "app2.sh:2")
+	p, off := q.at("lib/hooks.sh", "on_start", 0, 2)
+	sym, _ := q.s.SymbolAt(p, off)
+	for _, b := range q.s.BindingsOf(sym) {
+		if b.Res != Resolved || b.Reason != "direct" {
+			t.Fatalf("binding %+v", b)
+		}
+	}
+	// References from either declaration include the library call but not the sibling declaration.
+	wantEq(t, q.refs("app1.sh", "on_start", 0, 2), "app1.sh:2", "lib/hooks.sh:2")
+	wantEq(t, q.refs("app2.sh", "on_start", 0, 2), "app2.sh:2", "lib/hooks.sh:2")
+	wantEq(t, q.strs(func() []Location { p, o := q.at("lib/hooks.sh", "on_start", 0, 2); return q.s.Implementation(p, o) }()), "app1.sh:2", "app2.sh:2")
+}
+
+func TestDiamondVariable(t *testing.T) {
+	q := buildMem(t, map[string]string{
+		"app1.sh":      ". ./lib/hooks.sh\nMODE=a\n",
+		"app2.sh":      ". ./lib/hooks.sh\nMODE=b\n",
+		"lib/hooks.sh": "echo \"$MODE\"\n",
+	})
+	wantEq(t, q.def("lib/hooks.sh", "MODE", 0, 1), "app1.sh:2", "app2.sh:2")
+	p, off := q.at("lib/hooks.sh", "MODE", 0, 1)
+	for _, b := range q.s.hitBindings(p, off) {
+		if b.Res != Resolved || b.Reason != "direct" {
+			t.Fatalf("binding %+v", b)
+		}
+	}
+	wantEq(t, q.refs("app1.sh", "MODE", 0, 1), "app1.sh:2", "lib/hooks.sh:1")
+	wantEq(t, q.refs("app2.sh", "MODE", 0, 1), "app2.sh:2", "lib/hooks.sh:1")
+}
+
+func TestSourceWordWithVariable(t *testing.T) {
+	q := buildMem(t, map[string]string{
+		"main.sh": "SCRIPT_DIR=\"$(dirname \"$0\")\"\n. \"$SCRIPT_DIR/lib.sh\"\n",
+		"lib.sh":  ":\n",
+	})
+	wantEq(t, q.def("main.sh", "$SCRIPT_DIR", 0, 3), "main.sh:1")
+	wantEq(t, q.refs("main.sh", "$SCRIPT_DIR", 0, 3), "main.sh:1", "main.sh:2")
+	p, off := q.at("main.sh", "$SCRIPT_DIR", 0, 3)
+	if _, ok := q.s.SymbolAt(p, off); !ok {
+		t.Fatal("no symbol on $SCRIPT_DIR")
+	}
+	wantEq(t, q.def("main.sh", "/lib.sh", 0, 2), "lib.sh:1")
+}
+
+func TestBindingsOfReturnsCopy(t *testing.T) {
+	q := buildMem(t, map[string]string{"m.sh": "f() { :; }\nf\n"})
+	p, off := q.at("m.sh", "f\n", 0, 0)
+	sym, _ := q.s.SymbolAt(p, off)
+	bs := q.s.BindingsOf(sym)
+	bs[0].Reason = "corrupted"
+	if q.s.BindingsOf(sym)[0].Reason != "direct" {
+		t.Fatal("BindingsOf exposes the snapshot's slice")
+	}
+}
+
+// hitBindings returns every binding of the use under the cursor.
+func (s *Snapshot) hitBindings(path string, offset int) []Binding {
+	h, _, _ := s.at(path, offset)
+	return h.binds
+}

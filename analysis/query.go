@@ -32,12 +32,6 @@ func (s *Snapshot) at(path string, offset int) (h hit, file int, ok bool) {
 }
 
 func (s *Snapshot) hitAt(file, offset int) hit {
-	for i := range s.edges[file] {
-		e := &s.edges[file][i]
-		if e.Ref.Word != nil && e.Ref.Word.Range.Contains(offset) {
-			return hit{edge: e}
-		}
-	}
 	for _, d := range s.facts[file].Decls {
 		if d.NameRange.Contains(offset) && s.declSym[d] != nil {
 			return hit{decl: d}
@@ -47,6 +41,15 @@ func (s *Snapshot) hitAt(file, offset int) hit {
 	for _, b := range s.bindings[file] {
 		if b.Use.Range.Contains(offset) && (h.binds == nil || h.binds[0].Use == b.Use) {
 			h.binds = append(h.binds, b)
+		}
+	}
+	if h.binds != nil {
+		return h
+	}
+	for i := range s.edges[file] {
+		e := &s.edges[file][i]
+		if e.Ref.Word != nil && e.Ref.Word.Range.Contains(offset) {
+			return hit{edge: e}
 		}
 	}
 	return h

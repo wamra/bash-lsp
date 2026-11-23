@@ -337,6 +337,20 @@ func (s *Snapshot) group(kind DeclKind, name string, es []declEntry) []*Symbol {
 
 // pick returns the symbol among syms that has a declaration visible from
 // file, preferring one declared in file itself.
+// pickAll returns every distinct symbol among syms with a declaration visible from file.
+func (s *Snapshot) pickAll(syms []*Symbol, file int) []*Symbol {
+	var out []*Symbol
+	for _, sym := range syms {
+		for _, d := range sym.Decls {
+			if s.visible[file].has(s.declFile[d]) {
+				out = append(out, sym)
+				break
+			}
+		}
+	}
+	return out
+}
+
 func (s *Snapshot) pick(syms []*Symbol, file int) *Symbol {
 	var best *Symbol
 	for _, sym := range syms {
@@ -362,7 +376,7 @@ func (s *Snapshot) bindAll() {
 			case UseCall:
 				out = s.bindCall(out, i, u)
 			case UseVarRead, UseVarWrite:
-				out = append(out, s.bindVar(i, u))
+				out = s.bindVar(out, i, u)
 			}
 		}
 		sort.SliceStable(out, func(a, b int) bool { return out[a].Use.Range.Start.Offset < out[b].Use.Range.Start.Offset })
@@ -373,12 +387,12 @@ func (s *Snapshot) bindAll() {
 	}
 }
 
-func (s *Snapshot) bindVar(file int, u *Use) Binding {
+func (s *Snapshot) bindVar(out []Binding, file int, u *Use) []Binding {
 	b := Binding{Use: u, File: s.paths[file], Res: Resolved, Reason: "direct"}
 	if u.Kind == UseVarWrite {
 		if sym := s.tempSyms[posKey{file, u.Range.Start.Offset}]; sym != nil {
 			b.Sym = sym
-			return b
+			return append(out, b)
 		}
 	}
 	fn := ""
@@ -387,44 +401,50 @@ func (s *Snapshot) bindVar(file int, u *Use) Binding {
 	}
 	if fn != "" && s.locals[file][fn][u.Name] {
 		b.Sym = s.localSyms[localKey{file, fn, u.Name}]
-		return b
+		return append(out, b)
 	}
-	if sym := s.pick(s.varSyms[u.Name], file); sym != nil {
-		b.Sym = sym
-		return b
+	if syms := s.pickAll(s.varSyms[u.Name], file); len(syms) > 0 {
+		for _, sym := range syms {
+			b.Sym = sym
+			out = append(out, b)
+		}
+		return out
 	}
 	sym := s.envSyms[u.Name]
 	if sym == nil {
 		sym = &Symbol{Kind: DeclVariable, Name: u.Name}
 		s.envSyms[u.Name] = sym
 	}
-	b.Sym, b.Res, b.Reason = sym, Unresolved, "no-declaration"
-	return b
+	b.Sym, b.Res, b.Reason = sym, Unresolved, "not-found"
+	return append(out, b)
 }
 
 // resolveCall finds what name means in file: an alias (followed to its
-// target when that resolves) or a function. followed is true when an alias
-// led to a different symbol.
-func (s *Snapshot) resolveCall(file int, name string, depth int) (sym *Symbol, followed bool) {
+// target when that resolves) or every function symbol in view. followed is
+// true when an alias led to a different symbol.
+func (s *Snapshot) resolveCall(file int, name string, depth int) (syms []*Symbol, followed bool) {
 	if a := s.pick(s.aliasSyms[name], file); a != nil {
 		if to := a.Decls[len(a.Decls)-1].AliasTo; to != "" && depth < maxAliasDepth {
-			if t, _ := s.resolveCall(file, to, depth+1); t != nil && t != a {
-				return t, true
+			if ts, _ := s.resolveCall(file, to, depth+1); len(ts) > 0 && ts[0] != a {
+				return ts, true
 			}
 		}
-		return a, false
+		return []*Symbol{a}, false
 	}
-	return s.pick(s.funcSyms[name], file), false
+	return s.pickAll(s.funcSyms[name], file), false
 }
 
 func (s *Snapshot) bindCall(out []Binding, file int, u *Use) []Binding {
 	b := Binding{Use: u, File: s.paths[file], Res: Resolved, Reason: "direct"}
-	if sym, followed := s.resolveCall(file, u.Name, 0); sym != nil {
-		b.Sym = sym
+	if syms, followed := s.resolveCall(file, u.Name, 0); len(syms) > 0 {
 		if followed {
 			b.Reason = "alias"
 		}
-		return append(out, b)
+		for _, sym := range syms {
+			b.Sym = sym
+			out = append(out, b)
+		}
+		return out
 	}
 	if bashWords[u.Name] {
 		return out
@@ -481,4 +501,4 @@ func (s *Snapshot) GraphIncomplete(path string) bool {
 }
 
 // BindingsOf lists every use bound to sym, in (path, offset) order.
-func (s *Snapshot) BindingsOf(sym *Symbol) []Binding { return s.bySym[sym] }
+func (s *Snapshot) BindingsOf(sym *Symbol) []Binding { return append([]Binding(nil), s.bySym[sym]...) }
