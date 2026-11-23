@@ -47,8 +47,10 @@ func (s *Snapshot) sortedDecls(file int) []*Decl {
 func atFileLevel(d *Decl) bool { return d.Scope == nil || d.Scope.Func == "" }
 
 // DocumentSymbols lists the functions, aliases and file-level variables of
-// path in source order; each function carries its locals as children. A name
-// appears once per scope, at its first declaration.
+// path in source order; each function definition carries its own locals as
+// children. Every function definition is listed (one file may define a
+// function once per branch of an `if`); any other name appears once per
+// scope, at its first declaration.
 func (s *Snapshot) DocumentSymbols(path string) []DocSymbol {
 	file, ok := s.idx[path]
 	if !ok {
@@ -61,10 +63,6 @@ func (s *Snapshot) DocumentSymbols(path string) []DocSymbol {
 	for _, d := range s.sortedDecls(file) {
 		switch {
 		case d.Kind == DeclFunction:
-			if seen[symKey{d.Kind, d.Name}] {
-				continue
-			}
-			seen[symKey{d.Kind, d.Name}] = true
 			fnAt[d.Node] = len(out)
 			out = append(out, DocSymbol{Name: d.Name, Kind: d.Kind, Detail: s.signature(d),
 				Range: d.Node.Range, Selection: d.NameRange})

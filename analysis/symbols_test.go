@@ -64,7 +64,9 @@ FOO=1 env
 read line
 `})
 	ds := q.s.DocumentSymbols(q.abs("a.sh"))
-	if got := topNames(ds); !eq(got, "X", "Y", "f", "line") {
+	// Each function definition is listed (review T8: the second one keeps its
+	// own locals); other names once.
+	if got := topNames(ds); !eq(got, "X", "Y", "f", "f", "line") {
 		t.Fatal(got)
 	}
 	// Temp is never listed, each name once, function-body globals are not file-level.

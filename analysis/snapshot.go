@@ -105,9 +105,13 @@ type declEntry struct {
 	d    *Decl
 }
 
+// localKey names a local variable: the function body it belongs to (the
+// KFuncDecl node, not the name: one file may define a function twice, once
+// per branch of an `if`, with different locals) and its name.
 type localKey struct {
-	file     int
-	fn, name string
+	file int
+	fn   *tree.Node
+	name string
 }
 
 type posKey struct{ file, offset int }
@@ -131,7 +135,7 @@ type Snapshot struct {
 	localSyms                    map[localKey]*Symbol
 	envSyms                      map[string]*Symbol
 	tempSyms                     map[posKey]*Symbol
-	locals                       []map[string]map[string]bool // file -> function -> names declared local
+	locals                       []map[*tree.Node]map[string]bool // file -> function body -> names declared local
 	declSym                      map[*Decl]*Symbol
 	declFile                     map[*Decl]int
 
@@ -365,10 +369,24 @@ func sccs(adj [][]int) (comp []int, nc int) {
 	return comp, nc
 }
 
+// funcBody returns the KFuncDecl node of the function sc lies in (the nearest
+// function scope), nil at file level or in a function without a name.
+func funcBody(sc *Scope) *tree.Node {
+	if sc == nil || sc.Func == "" {
+		return nil
+	}
+	for ; sc != nil; sc = sc.Parent {
+		if sc.Kind == ScopeFunction {
+			return sc.Node
+		}
+	}
+	return nil
+}
+
 // collectSymbols groups every declaration into symbols.
 func (s *Snapshot) collectSymbols() {
 	n := len(s.paths)
-	s.locals = make([]map[string]map[string]bool, n)
+	s.locals = make([]map[*tree.Node]map[string]bool, n)
 	sorted := make([][]*Decl, n)
 	total := 0
 	for _, ff := range s.facts {
@@ -385,14 +403,14 @@ func (s *Snapshot) collectSymbols() {
 		sorted[i] = ds
 		for _, d := range ds {
 			s.declFile[d] = i
-			if d.Kind == DeclVariable && d.Attrs.Local && d.Scope != nil && d.Scope.Func != "" {
+			if fn := funcBody(d.Scope); d.Kind == DeclVariable && d.Attrs.Local && fn != nil {
 				if s.locals[i] == nil {
-					s.locals[i] = map[string]map[string]bool{}
+					s.locals[i] = map[*tree.Node]map[string]bool{}
 				}
-				if s.locals[i][d.Scope.Func] == nil {
-					s.locals[i][d.Scope.Func] = map[string]bool{}
+				if s.locals[i][fn] == nil {
+					s.locals[i][fn] = map[string]bool{}
 				}
-				s.locals[i][d.Scope.Func][d.Name] = true
+				s.locals[i][fn][d.Name] = true
 			}
 		}
 	}
@@ -406,20 +424,17 @@ func (s *Snapshot) collectSymbols() {
 			case DeclAlias:
 				aliases[d.Name] = append(aliases[d.Name], e)
 			case DeclVariable:
-				fn := ""
-				if d.Scope != nil {
-					fn = d.Scope.Func
-				}
+				fn := funcBody(d.Scope)
 				switch {
 				case d.Temp:
 					sym := &Symbol{Kind: DeclVariable, Name: d.Name, Decls: []*Decl{d}}
 					s.declSym[d] = sym
 					s.tempSyms[posKey{i, d.NameRange.Start.Offset}] = sym
-				case fn != "" && s.locals[i][fn][d.Name]:
+				case fn != nil && s.locals[i][fn][d.Name]:
 					k := localKey{i, fn, d.Name}
 					sym := s.localSyms[k]
 					if sym == nil {
-						sym = &Symbol{Kind: DeclVariable, Name: d.Name, Func: fn, File: s.paths[i]}
+						sym = &Symbol{Kind: DeclVariable, Name: d.Name, Func: d.Scope.Func, File: s.paths[i]}
 						s.localSyms[k] = sym
 					}
 					sym.Decls = append(sym.Decls, d)
@@ -561,11 +576,7 @@ func (s *Snapshot) bindVar(out []Binding, file int, u *Use) []Binding {
 			return append(out, b)
 		}
 	}
-	fn := ""
-	if u.Scope != nil {
-		fn = u.Scope.Func
-	}
-	if fn != "" && s.locals[file][fn][u.Name] {
+	if fn := funcBody(u.Scope); fn != nil && s.locals[file][fn][u.Name] {
 		b.Sym = s.localSyms[localKey{file, fn, u.Name}]
 		return append(out, b)
 	}
