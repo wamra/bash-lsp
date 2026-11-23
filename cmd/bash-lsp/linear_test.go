@@ -20,7 +20,9 @@ import (
 // alias run 3,900 subshells deep: 7 min 25 s at 1 MiB, with the first cost).
 // Each command must finish in bounded time on these shapes.
 func TestCLIOutputInBoundedTime(t *testing.T) {
-	size, bound := 2<<20-64, 5*time.Second
+	// 1 MiB: the old code took minutes on each shape; the fixed code takes
+	// a few hundred milliseconds
+	size, bound := 1<<20, 5*time.Second
 	if raceBuild {
 		size, bound = size/4, 60*time.Second
 	}
