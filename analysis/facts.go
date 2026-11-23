@@ -5,7 +5,9 @@ package analysis
 import (
 	"bytes"
 	"regexp"
+	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/wamra/bash-lsp/internal/front"
 	"github.com/wamra/bash-lsp/tree"
@@ -49,7 +51,7 @@ type Decl struct {
 	NameRange tree.Range
 	Scope     *Scope
 	Attrs     VarAttrs
-	Doc       string // contiguous '#' comment lines ending on the line directly above the declaration, joined with "\n"; not the shebang
+	Doc       string // contiguous '#' comment lines ending on the line directly above the declaration, joined with "\n"; not the shebang; at most the 50 lines and 4 KiB nearest the declaration
 	Node      *tree.Node
 	AliasTo   string // DeclAlias: first word of the alias value when literal, else ""
 	Literal   string // DeclVariable: assigned value when it is a single literal or fully-literal quoted string, else ""
@@ -514,17 +516,48 @@ func (b *binder) aliasArg(call, w *tree.Node, sc *Scope) {
 	b.ff.Decls = append(b.ff.Decls, d)
 }
 
-// docAbove joins the contiguous whole-line comments ending on the line above line.
+// A declaration's doc is cut to the comment lines nearest it: a block of
+// thousands of lines above a function (a licence glued to it, or a generated
+// file) would otherwise be copied into every hover and rescanned per edit.
+const (
+	maxDocLines = 50
+	maxDocBytes = 4096
+)
+
+// docAbove joins the contiguous whole-line comments ending on the line above
+// line: at most maxDocLines lines and maxDocBytes bytes, the nearest kept.
+// It reads at most maxDocLines comments, so it is O(1) per declaration.
 func (b *binder) docAbove(line int) string {
-	var lines []string
-	for l := line - 1; l >= 1; l-- {
+	var lines []string // nearest first
+	size := 0
+	for l := line - 1; l >= 1 && len(lines) < maxDocLines; l-- {
 		c := b.wholeCmt[l]
 		if c == nil {
 			break
 		}
-		lines = append([]string{c.Value}, lines...)
+		v := c.Value
+		if size+len(v) > maxDocBytes {
+			if len(lines) == 0 { // a single over-long line: keep its start
+				lines = append(lines, truncUTF8(v, maxDocBytes))
+			}
+			break
+		}
+		size += len(v) + 1
+		lines = append(lines, v)
 	}
+	slices.Reverse(lines)
 	return strings.Join(lines, "\n")
+}
+
+// truncUTF8 cuts s to at most n bytes without splitting a UTF-8 sequence.
+func truncUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // directiveAbove returns the path of a `# shellcheck source=` comment on the line above line.
