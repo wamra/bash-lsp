@@ -617,15 +617,32 @@ func (l *lowerer) part1(p syntax.WordPart) *tree.Node {
 		}
 		n := l.mk(tree.KLit, p.ValuePos, p.ValueEnd)
 		n.Value = p.Value
-		if r := l.rng(p.ValuePos, p.ValueEnd); r.Start.Offset >= n.Range.Start.Offset && r.End.Offset <= n.Range.End.Offset {
-			n.Range = r // without the NUL bytes the lexer dropped at either end
+		// Only a literal that is, or sits in a word that holds, a NUL byte is touched: the
+		// range of every other literal stays the parser's (the lexer also drops line
+		// continuations from a value).
+		if r := l.rng(p.ValuePos, p.ValueEnd); n.Range.End.Offset <= len(l.f.Src) && n.Range.Start.Offset <= n.Range.End.Offset &&
+			r.Start.Offset >= n.Range.Start.Offset && r.End.Offset <= n.Range.End.Offset {
+			src := l.f.Src
+			inside := bytes.IndexByte(src[n.Range.Start.Offset:n.Range.End.Offset], 0) >= 0
+			before := false // a NUL earlier in the same word, e.g. in the name of `name=value`
+			for k := n.Range.Start.Offset - 1; k >= 0 && !strings.ContainsRune(" \t\r\n;&|()", rune(src[k])); k-- {
+				if src[k] == 0 {
+					before = true
+					break
+				}
+			}
+			if inside {
+				n.Range = r // without the NUL bytes the lexer dropped at either end
+			}
 			// An assignment value's position is computed from the lexer's name length,
 			// so a NUL inside the name leaves it that many bytes early: start at the
 			// value's own text when the source (minus NUL) only ends with it.
-			if raw := bytes.ReplaceAll(l.f.Src[r.Start.Offset:r.End.Offset], []byte{0}, nil); len(raw) > len(p.Value) && bytes.HasSuffix(raw, []byte(p.Value)) {
-				start := l.valueEnd(&syntax.Lit{ValuePos: p.ValuePos}, len(raw)-len(p.Value), true)
-				if start <= r.End.Offset {
-					n.Range.Start = l.f.PosAt(start)
+			if inside || before {
+				if raw := bytes.ReplaceAll(src[n.Range.Start.Offset:n.Range.End.Offset], []byte{0}, nil); len(raw) > len(p.Value) && bytes.HasSuffix(raw, []byte(p.Value)) {
+					start := l.valueEnd(&syntax.Lit{ValuePos: p.ValuePos}, len(raw)-len(p.Value), true)
+					if start <= n.Range.End.Offset {
+						n.Range.Start = l.f.PosAt(start)
+					}
 				}
 			}
 		}
@@ -797,7 +814,7 @@ func (l *lowerer) declArg(w *syntax.Word) *tree.Node {
 					var parts []*tree.Node
 					if eq < len(lit.Value) {
 						ls := l.f.PosAt(l.valueEnd(lit, eq, true))
-						ln := &tree.Node{Kind: tree.KLit, Value: lit.Value[eq:], Range: tree.Range{Start: ls, End: l.pos(lit.ValueEnd)}}
+						ln := &tree.Node{Kind: tree.KLit, Value: lit.Value[eq:], Range: tree.Range{Start: ls, End: l.rng(lit.ValuePos, lit.ValueEnd).End}}
 						parts = append(parts, ln)
 					}
 					for _, p := range w.Parts[1:] {

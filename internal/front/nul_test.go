@@ -14,7 +14,7 @@ func TestNameRangeExcludesNUL(t *testing.T) {
 		checkNameRanges(t, s, Bash)
 	}
 	// declCall/declArg serve the dialects whose parser gives declarations as calls
-	for _, s := range []string{"declare A\x00B=1\n", "typeset \x00A\x00=1\n", "local A\x00B\n", "declare -i A=1\x002 B=3\n", "local A=\x001\x00\n", "declare A+=\x00x\n"} {
+	for _, s := range []string{"declare A\x00B=1\n", "typeset \x00A\x00=1\n", "local A\x00B\n", "declare -i A=1\x002 B=3\n", "local A=\x001\x00\n", "declare A+=\x00x\n", "declare A\x00B=\x001\x002\x00\n"} {
 		for _, d := range []Dialect{POSIX, Mksh} {
 			checkNameRanges(t, s, d)
 		}
@@ -34,10 +34,11 @@ func checkNameRanges(t *testing.T, s string, d Dialect) {
 					t.Errorf("%q (%v): %v name %q has range text %q", s, d, n.Kind, n.Name, got)
 				}
 			}
-			// value literals start and end at their own bytes, not at a NUL the lexer dropped
+			// a value literal starts and ends at a byte of its own, never at a NUL the lexer dropped
 			if n.Kind == tree.KLit && n.Parent != nil && n.Parent.Kind == tree.KWord && n.Parent.Parent != nil && n.Parent.Parent.Kind == tree.KAssign {
 				raw := bytes.ReplaceAll(src[n.Range.Start.Offset:n.Range.End.Offset], []byte{0}, nil)
-				if string(raw) != n.Value || (len(n.Value) > 0 && src[n.Range.Start.Offset] == 0) {
+				first, last := src[n.Range.Start.Offset], src[n.Range.End.Offset-1]
+				if string(raw) != n.Value || (len(n.Value) > 0 && (first == 0 || last == 0)) {
 					t.Errorf("%q (%v): literal %q has range text %q", s, d, n.Value, src[n.Range.Start.Offset:n.Range.End.Offset])
 				}
 			}
@@ -72,6 +73,41 @@ func TestDeclValueSurvivesNULInName(t *testing.T) {
 		walk(f.Root)
 		if len(got) != 1 || got[0] != want {
 			t.Errorf("%q: value literals %q, want [%q]", s, got, want)
+		}
+	}
+}
+
+// Without NUL bytes in the source a literal's range is the parser's, whatever
+// the lexer dropped from its value (here a line continuation).
+func TestLiteralRangeWithoutNULIsTheParsers(t *testing.T) {
+	for _, c := range []struct {
+		src        string
+		start, end int
+	}{
+		{"x=\\\nfoo\n", 2, 7},
+		{"local A=\\\n1\n", 8, 11},
+		{"declare A=\\\n12 B=3\n", 10, 14},
+	} {
+		for _, d := range []Dialect{Bash, POSIX, Mksh} {
+			f := Parse("/ws/f.sh", []byte(c.src), d)
+			var lit *tree.Node
+			var walk func(n *tree.Node)
+			walk = func(n *tree.Node) {
+				if lit == nil && n.Kind == tree.KLit && n.Parent != nil && n.Parent.Kind == tree.KWord && n.Parent.Parent != nil && n.Parent.Parent.Kind == tree.KAssign {
+					lit = n
+				}
+				for _, ch := range n.Children {
+					walk(ch)
+				}
+			}
+			walk(f.Root)
+			if lit == nil {
+				t.Errorf("%q (%v): no value literal", c.src, d)
+				continue
+			}
+			if lit.Range.Start.Offset != c.start || lit.Range.End.Offset != c.end {
+				t.Errorf("%q (%v): literal range %d-%d, want %d-%d", c.src, d, lit.Range.Start.Offset, lit.Range.End.Offset, c.start, c.end)
+			}
 		}
 	}
 }
