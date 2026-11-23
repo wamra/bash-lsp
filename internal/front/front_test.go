@@ -417,3 +417,42 @@ func TestDeclOutsideBashEdges(t *testing.T) {
 		t.Fatalf("`X=1 local y` must stay a call; %d local decls", n)
 	}
 }
+
+// Nodes and child arrays come from shared chunks. Growing one node's Children
+// must copy, never write into the array of the node next to it, and every node
+// must be its own object with the parent links intact.
+func TestChunkedNodesDoNotAlias(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 400; i++ { // more nodes than the largest chunk
+		b.WriteString("f() {\n  if [[ -n \"$a\" ]]; then echo \"${x:-1}\" | cat <<EOF\nbody\nEOF\n  fi\n  case $a in s) :;; esac\n}\n")
+	}
+	f := Parse("a.sh", []byte(b.String()), Bash)
+	var all []*tree.Node
+	f.Root.Walk(func(n *tree.Node) bool { all = append(all, n); return true })
+	if len(all) < 3*maxChunk {
+		t.Fatalf("only %d nodes, the test must span several chunks", len(all))
+	}
+	seen := map[*tree.Node]bool{}
+	before := make([][]*tree.Node, len(all))
+	for i, n := range all {
+		if seen[n] {
+			t.Fatal("a node was returned twice")
+		}
+		seen[n] = true
+		before[i] = append([]*tree.Node(nil), n.Children...)
+		for _, c := range n.Children {
+			if c.Parent != n {
+				t.Fatalf("child %v of %v has parent %v", c.Kind, n.Kind, c.Parent)
+			}
+		}
+	}
+	sentinel := &tree.Node{}
+	for _, n := range all {
+		_ = append(n.Children, sentinel)
+	}
+	for i, n := range all {
+		if !reflect.DeepEqual(n.Children, before[i]) {
+			t.Fatalf("appending to a node's children changed another node's array (%v)", n.Kind)
+		}
+	}
+}

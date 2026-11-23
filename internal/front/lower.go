@@ -18,6 +18,52 @@ type lowerer struct {
 	base   tree.Pos
 	errs   []tree.SyntaxError
 	cursor int // largest absolute end offset produced so far: "nearest valid position"
+
+	// Nodes and the arrays behind their Children come from chunks that grow as
+	// the lowering goes, instead of one heap object each: a node is 176 bytes
+	// and a 561 KB script has about 220,000 of them.
+	nodes []tree.Node
+	ptrs  []*tree.Node
+}
+
+const (
+	firstChunk = 32   // nodes (and child pointers) in the first chunk
+	maxChunk   = 2048 // chunks double up to this many entries
+)
+
+// newNode returns a zeroed node from the current chunk.
+func (l *lowerer) newNode() *tree.Node {
+	if len(l.nodes) == cap(l.nodes) {
+		l.nodes = make([]tree.Node, 0, nextChunk(cap(l.nodes)))
+	}
+	l.nodes = l.nodes[:len(l.nodes)+1]
+	return &l.nodes[len(l.nodes)-1]
+}
+
+// kidSlice returns an empty slice with capacity n carved from the current
+// pointer chunk. The capacity is capped, so an append by a caller copies
+// instead of writing into the neighbour's array.
+func (l *lowerer) kidSlice(n int) []*tree.Node {
+	if cap(l.ptrs)-len(l.ptrs) < n {
+		c := nextChunk(cap(l.ptrs))
+		for c < n {
+			c *= 2
+		}
+		l.ptrs = make([]*tree.Node, 0, c)
+	}
+	at := len(l.ptrs)
+	l.ptrs = l.ptrs[:at+n]
+	return l.ptrs[at : at : at+n]
+}
+
+func nextChunk(prev int) int {
+	if prev < firstChunk {
+		return firstChunk
+	}
+	if prev >= maxChunk {
+		return maxChunk
+	}
+	return prev * 2
 }
 
 // lowerStmts lowers a statement list parsed from f.Src[base.Offset:]. A
@@ -72,11 +118,21 @@ func (l *lowerer) pos(p syntax.Pos) tree.Pos {
 // mk builds a node. A missing (invalid or recovered) start falls back to the
 // first child, then to the cursor; a missing end to the last child's end.
 func (l *lowerer) mk(k tree.Kind, start, end syntax.Pos, kids ...*tree.Node) *tree.Node {
-	n := &tree.Node{Kind: k}
+	n := l.newNode()
+	n.Kind = k
+	live := 0
 	for _, c := range kids {
 		if c != nil {
-			c.Parent = n
-			n.Children = append(n.Children, c)
+			live++
+		}
+	}
+	if live > 0 {
+		n.Children = l.kidSlice(live)
+		for _, c := range kids {
+			if c != nil {
+				c.Parent = n
+				n.Children = append(n.Children, c)
+			}
 		}
 	}
 	switch {
