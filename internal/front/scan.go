@@ -5,29 +5,32 @@ import "bytes"
 // The parser (mvdan.cc/sh) is recursive descent with no depth limit, and a
 // Go stack overflow is fatal: no recover() catches it. Parse therefore
 // measures how deeply a file nests before handing it to the parser and
-// refuses one that nests deeper than maxNesting.
+// refuses one that nests too deeply.
 //
 // Two measures are taken, and either one over its limit refuses the file:
 //
 //   - a small lexer that follows bash quoting (single and double quotes,
-//     backslashes, comments, heredoc bodies, case patterns) and keeps a stack
-//     of the constructs that are open: ( { $(( $[ " ` case, plus runs of
-//     ternary `?` and of `!` words, the two operator chains the parser
-//     recurses on. Its deepest stack must stay within maxNesting.
+//     backslashes, comments, heredoc bodies, case patterns, glob brackets)
+//     and keeps a stack of everything the parser recurses on: ( { ${ $(( $[
+//     " ` and test or subscript brackets; if, while, until, for, select,
+//     case and elif until they close; chains of time, coproc and function
+//     headers; and, inside expressions, runs of unary operators and of the
+//     operators the parser nests on (?: = ** && ||). Its deepest stack must
+//     stay within maxNesting.
 //   - a raw count of ( { [ against ) } ] over every byte, quotes and comments
 //     included, that never goes below zero. It must stay within
 //     maxRawNesting. It is a backstop for input on which the lexer and the
 //     parser disagree about where a quote, comment or heredoc starts.
 //
-// Measured on the parser at head 4f8e524, the cheapest overflow costs about
-// 5 KB of stack per level and needs some 200,000 levels (`(` repeated). A file
-// within both limits makes the parser recurse a few tens of thousands of
-// levels at most, a few hundred megabytes of stack in the worst case and far
-// less for real scripts, which nest a few dozen levels.
-//
-// Keyword nesting (if, while, for, case, functions) is not counted: the
-// parser recursed through 2 MiB of it without trouble, and the lowerer's own
-// depth limit (maxDepth in lower.go) bounds the tree that comes out.
+// Measured at 4f8e524: `(` repeated overflowed the 1 GB stack limit between
+// 125,000 and 150,000 levels (the stack doubles, so about 512 MB is usable),
+// and every shape above, at the 2 MiB file limit, either overflowed or used
+// more than 128 MB. Nesting just under maxNesting parses within an 8 MB stack
+// limit (TestNestingAtTheBoundParses runs it at 64 MB). Real scripts stay far
+// below: the deepest of 1,691 on the development machine reached 55.
+// Long chains the parser builds without recursing (&&, ||, |, 1+1+...) are not
+// counted; the lowerer flattens them, and its own depth limit (maxDepth in
+// lower.go) bounds whatever tree comes out.
 const (
 	maxNesting    = 1000
 	maxRawNesting = 20000
