@@ -112,6 +112,12 @@ paths but its test rewrites them to absolute before feeding the reader
 `internal/indexer/edges_test.go:205`). The golden file for this repository
 replaces the root with `<root>/` so it is the same on every machine.
 
+Keys are written in this fixed order, each omitted when empty (the order is
+not significant to code-index, which decodes by name; `TestExtractRawKeyOrder`
+pins it): `t`, `file`, `line`, `col`, `endLine`, `endCol`, `name`, `alias`,
+`target`, `path`, `expr`, `in`, `message`, `first`, `count`, `to`,
+`resolution`, `reason`.
+
 | `t` | keys written | from |
 |---|---|---|
 | `func` | `name`, `line`, `col`, `endLine`, `endCol` | every function declaration; span of the whole definition. Ignored by code-index (function symbols come from the LSP). |
@@ -129,9 +135,13 @@ Choices where the PowerShell extractor gives no direct model:
   literal name, else the last string literal in the expression, else `''`,
   and `expr` = the clipped text (`powershell-ast.ps1:44-50,121-124`).
   `extract` does the same: a plain literal word goes to `path`; an
-  expression (`"$DIR/x.sh"`) leaves `path` empty. code-index drops it either
-  way, because `resolveFile` returns nil for an empty or unknown path
-  (`edges.go:551-553,576-583`).
+  expression (`"$DIR/x.sh"`) leaves `path` empty. code-index drops an empty
+  `path` (`edges.go:551-553`). A literal `path` is tried relative to the
+  importing file, then `path.Clean(lit)` relative to the root, each also
+  case-insensitively (`edges.go:576-583`); it is dropped when none matches,
+  but if code-index indexed a file bash-lsp does not (an extension the
+  workspace skips, say), it could store an `exact` edge for a source
+  bash-lsp calls unresolved.
 - **Call-site column.** The PowerShell `call` and `dotsource` columns are those
   of the first command element (`powershell-ast.ps1:119`), after the `.` for a
   dot-source. For bash a `call` is at the command word and a `dotsource` at the
@@ -151,7 +161,20 @@ Choices where the PowerShell extractor gives no direct model:
 - **`candidate` calls are written as `call`.** code-index has no notion of
   candidate: it would store them as `exact` (`edges.go:519`). The
   `resolution` and `reason` keys carry the truth for any consumer that reads
-  them.
+  them. This applies to `call` only: a `RelSources` edge is `resolved` or
+  `unresolved` (`analysis/edges.go:377,383`, also for glob-loop targets) and a
+  `RelInvokes` edge is always `resolved` (`analysis/dynamic.go:897`); the
+  `unset -f` relabelling to candidate touches only edges with a target
+  function (`analysis/dynamic.go:587-589`). So `dotsource` and `invoke` never
+  carry `candidate`, and code-index storing a resolvable `dotsource` as
+  `exact` (`edges.go:537`) loses nothing.
+- **Calls through an alias lose the `alias` confidence.** The PowerShell
+  extractor writes `name` as the alias as written (`gw`, sample line 4);
+  code-index finds it in `aliasTarget` and stores confidence `alias`
+  (`edges.go:512-514`). `extract` writes `name` as the function (`reason`
+  `alias` says how it was reached; golden `main.sh` line 7), so code-index
+  takes the `pickFunc` path and stores `exact` (`edges.go:518-519`). See
+  change 5.
 
 ## 4. How it was verified
 
@@ -174,6 +197,10 @@ Choices where the PowerShell extractor gives no direct model:
   `lib/util.sh` and `orphan.sh`, can be bound to the wrong file. `extract`
   writes `to` for this; code-index does not read it yet (change 5 below).
 - **Candidate calls become `exact`** (`edges.go:507-522`), as above.
+- **Alias-reached calls become `exact`, not `alias`**: `extract` names the
+  function, not the alias, so the `ConfAlias` branch (`edges.go:512-514`) is
+  never taken (section 3). The alias symbol and its `alias_of` edge are still
+  created from the `alias` record.
 - **Function symbols come from bash-language-server** (`edges.go:90-95,130-133`),
   so `name` must match what that server reports for the function. For bash
   function names that is the declared word.
@@ -209,7 +236,11 @@ would make; none was made.
    (`edges.go:284-285`).
 3. **File filter**, `internal/indexer/edges.go:272-276`: only files ending
    in `.ps1` or `.psm1` are given to the extractor, whatever the language's
-   `extensions` say. Select by the language's own extension list.
+   `extensions` say. Select by the language's own extension list. As
+   written, that list for bash includes `.zsh` (`config.go:371`), and `extract`
+   answers each zsh file with an `error` record ("zsh is not supported yet"),
+   which code-index turns into a note (`edges.go:297-301`): noisy, harmless.
+   Avoid it by dropping `.zsh` from the files passed.
 4. **Toolchain**: code-index's `go.mod` says `go 1.24.1` (line 3); this
    repository's says `go 1.26.0` (line 3). A code-index that imports
    bash-lsp as a library (AC-21) must raise its `go` line, and
@@ -218,8 +249,10 @@ would make; none was made.
 5. **Use `to`, `resolution` and `reason`** (optional, for exactness):
    add the keys to `astRec` (`ast.go:36-52`); in the `call` case
    (`edges.go:507-522`) pick the symbol in the file `to` instead of
-   `pickFunc`, and map `candidate` to a confidence other than `exact` (the
-   four constants at `edges.go:28-31` have no candidate value).
+   `pickFunc`, map `candidate` to a confidence other than `exact` (the four
+   constants at `edges.go:28-31` have no candidate value), and when
+   `reason == "alias"` set `ConfAlias` so alias-reached calls keep the
+   confidence the PowerShell path gives them.
 6. **`invoke` records** (optional): add a case in `astEdges`
    (`edges.go:498-538`) and an edge kind next to `dot_sources`
    (`edges.go:22-26`, `internal/store/schema.sql:43`), or keep ignoring

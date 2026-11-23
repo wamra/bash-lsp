@@ -472,3 +472,71 @@ func openCorpus(t *testing.T) *workspace.Workspace {
 	}
 	return ws
 }
+
+func TestExtractListFileSymlinkOutsideRoot(t *testing.T) {
+	root := writeRoot(t, map[string]string{"a.sh": "f() { :; }\nf\n"})
+	outside := writeRoot(t, map[string]string{"evil.sh": "h() { :; }\nh\n"})
+	link := filepath.Join(root, "link.sh")
+	if err := os.Symlink(filepath.Join(outside, "evil.sh"), link); err != nil {
+		t.Skipf("cannot create a symlink: %v", err)
+	}
+	code, out, errs := runCode(t, "extract", "--root", root, "--list-file", writeList(t, link))
+	if code != 0 || out != "" {
+		t.Fatalf("exit %d, stdout %q, stderr %q", code, out, errs)
+	}
+	if !strings.Contains(errs, "link.sh") || !strings.Contains(errs, "outside the root") {
+		t.Errorf("stderr lacks the outside-the-root note:\n%s", errs)
+	}
+}
+
+// keyOrder is the keys of one JSON object line in the order written.
+func keyOrder(t *testing.T, line string) []string {
+	t.Helper()
+	dec := json.NewDecoder(strings.NewReader(line))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		t.Fatalf("not an object: %s", line)
+	}
+	var keys []string
+	for dec.More() {
+		k, err := dec.Token()
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, k.(string))
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return keys
+}
+
+// The key order of a record is documented (docs/code-index-integration.md
+// section 3 and the golden-file note): pin it on raw output.
+func TestExtractRawKeyOrder(t *testing.T) {
+	root := writeRoot(t, map[string]string{"a.sh": "alias g=f\nf() { :; }\nrun() {\n  f\n  \"$x\"\n}\nsource ./gone.sh\n"})
+	out := runOK(t, "extract", "--root", root)
+	want := map[string][]string{
+		"func":      {"t", "file", "line", "col", "endLine", "endCol", "name"},
+		"alias":     {"t", "file", "line", "col", "endLine", "endCol", "alias", "target"},
+		"call":      {"t", "file", "line", "col", "name", "in", "to", "resolution", "reason"},
+		"dynamic":   {"t", "file", "line", "col", "expr", "in", "resolution", "reason"},
+		"dotsource": {"t", "file", "line", "col", "path", "expr", "resolution", "reason"},
+	}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+		var r struct{ T string }
+		mustJSON(t, line, &r)
+		if w, ok := want[r.T]; ok {
+			seen[r.T] = true
+			if got := keyOrder(t, line); !slices.Equal(got, w) {
+				t.Errorf("%s keys %v, want %v\n%s", r.T, got, w, line)
+			}
+		}
+	}
+	for typ := range want {
+		if !seen[typ] {
+			t.Errorf("no %s record in\n%s", typ, out)
+		}
+	}
+}
