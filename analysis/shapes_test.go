@@ -57,7 +57,9 @@ func parseClean(t *testing.T, name, src string) *FileFacts {
 // its edges in bounded time. "$cmd" calls each scanned every declaration of
 // the variable's symbol: O(calls x assignments), 9.3 s at 128 KiB. The
 // dynamic-scope pass listed the targets of every call of a function once
-// per definition: O(definitions^2) for one call, 1.2 s at 176 KB.
+// per definition: O(definitions^2) for one call, 1.2 s at 176 KB. Resolving
+// `. $f` scanned every declaration of the file for f's (varIsScriptDir):
+// O(sources x declarations), 63 s at 900 KB.
 func TestM2bShapesBuildInBoundedTime(t *testing.T) {
 	size, bound := shapeSize()
 	cases := map[string]string{
@@ -65,6 +67,7 @@ func TestM2bShapesBuildInBoundedTime(t *testing.T) {
 		"assign and call cmd, private":   fillTo(size, "f() { :; }\ng() { (", " cmd=f; \"$cmd\";", " ); }\n"),
 		"many definitions with reads":    fillTo(size, "", "f() { x=1; echo $y; }\n", "f\n"),
 		"many definitions, local caller": fillTo(size, "g() { local y; f; }\n", "f() { echo $y; }\n", ""),
+		"assignments, then sources":      strings.Repeat("x=1\n", size/8) + strings.Repeat(". $f\n", size/10),
 	}
 	for name, src := range cases {
 		ff := parseClean(t, name, src)

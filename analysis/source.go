@@ -60,6 +60,12 @@ type resolver struct {
 	dir    string
 	exists func(string) bool
 	glob   func(string) []string
+
+	// only maps each variable name to its single non-temporary declaration,
+	// nil for a name declared more than once; filled on first use, so that
+	// varIsScriptDir does not scan every declaration per reference (O(sources
+	// x declarations): 63 s for 900 KB).
+	only map[string]*Decl
 }
 
 func (r *resolver) resolve(ref SourceRef) SourceEdge {
@@ -199,15 +205,19 @@ func (r *resolver) scriptDir(w *tree.Node) string {
 }
 
 func (r *resolver) varIsScriptDir(name string) bool {
-	var d *Decl
-	for _, c := range r.ff.Decls {
-		if c.Kind == DeclVariable && c.Name == name && !c.Temp {
-			if d != nil {
-				return false
+	if r.only == nil {
+		r.only = map[string]*Decl{}
+		for _, c := range r.ff.Decls {
+			if c.Kind == DeclVariable && !c.Temp {
+				if _, seen := r.only[c.Name]; seen {
+					r.only[c.Name] = nil
+				} else {
+					r.only[c.Name] = c
+				}
 			}
-			d = c
 		}
 	}
+	d := r.only[name]
 	if d == nil || d.Implicit != "" || d.Node == nil || d.Node.Kind != tree.KAssign {
 		return false
 	}
