@@ -137,6 +137,9 @@ func NewFile(path string, src []byte) *File {
 }
 
 // NodeAt returns the deepest node whose Range contains offset; Root if none.
+// It is the reference implementation that Locator.At must match (the tests
+// use it as the oracle); production code uses a Locator, which is faster when
+// many offsets are looked up in one tree.
 // Sibling ranges may overlap (a heredoc body lies inside the first stage of a
 // pipeline whose second stage starts earlier), so at each level it descends
 // into the containing child with the greatest Range.Start.Offset; on a tie,

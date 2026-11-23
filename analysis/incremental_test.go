@@ -8,6 +8,11 @@ import (
 	"github.com/wamra/bash-lsp/internal/front"
 )
 
+// sharesVisibility reports whether s uses the very visibility sets of p.
+func (s *Snapshot) sharesVisibility(p *Snapshot) bool {
+	return len(s.visible) > 0 && len(p.visible) > 0 && &s.visible[0] == &p.visible[0]
+}
+
 func memFiles(root string, srcs map[string]string) map[string]*FileFacts {
 	files := map[string]*FileFacts{}
 	for name, s := range srcs {

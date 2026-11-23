@@ -219,11 +219,6 @@ func (s *Snapshot) sameGraph(p *Snapshot) bool {
 	return true
 }
 
-// sharesVisibility reports whether s uses the very visibility sets of p (tests).
-func (s *Snapshot) sharesVisibility(p *Snapshot) bool {
-	return len(s.visible) > 0 && len(p.visible) > 0 && &s.visible[0] == &p.visible[0]
-}
-
 // computeVisibility fills visible and incomplete. Visible(A) is everything
 // reached from any file that reaches A (A included).
 //
@@ -513,8 +508,6 @@ func (s *Snapshot) group(kind DeclKind, name string, es []declEntry) []*Symbol {
 	return out
 }
 
-// pick returns the symbol among syms that has a declaration visible from
-// file, preferring one declared in file itself.
 // pickAll returns every distinct symbol among syms with a declaration visible from file.
 func (s *Snapshot) pickAll(syms []*Symbol, file int) []*Symbol {
 	var out []*Symbol
@@ -529,6 +522,8 @@ func (s *Snapshot) pickAll(syms []*Symbol, file int) []*Symbol {
 	return out
 }
 
+// pick returns the symbol among syms that has a declaration visible from
+// file, preferring one declared in file itself.
 func (s *Snapshot) pick(syms []*Symbol, file int) *Symbol {
 	var best *Symbol
 	for _, sym := range syms {

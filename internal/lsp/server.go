@@ -650,8 +650,7 @@ func (s *server) workspaceSymbol(raw json.RawMessage) (any, *rpcError) {
 	out := make([]SymbolInformation, 0, len(infos))
 	for _, i := range infos {
 		out = append(out, SymbolInformation{Name: i.Name, Kind: symbolKind(i.Kind),
-			Location:      Location{URI: s.uriOf(i.Path), Range: s.rangeIn(snap, i.Path, i.Range)},
-			ContainerName: i.Container})
+			Location: Location{URI: s.uriOf(i.Path), Range: s.rangeIn(snap, i.Path, i.Range)}})
 	}
 	return out, nil
 }

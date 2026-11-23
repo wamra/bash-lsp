@@ -17,14 +17,13 @@ type DocSymbol struct {
 	Children  []DocSymbol
 }
 
-// SymbolInfo is one workspace-wide symbol match. Container is the enclosing
-// function for locals and "" otherwise (workspace symbols never list locals).
+// SymbolInfo is one workspace-wide symbol match. Workspace symbols never list
+// locals, so there is no container.
 type SymbolInfo struct {
-	Name      string
-	Kind      DeclKind
-	Path      string
-	Range     tree.Range
-	Container string
+	Name  string
+	Kind  DeclKind
+	Path  string
+	Range tree.Range
 }
 
 type symKey struct {

@@ -88,9 +88,6 @@ func TestWorkspaceSymbols(t *testing.T) { // C22
 		t.Fatalf("%+v", r)
 	}
 	for _, x := range q.s.WorkspaceSymbols("name", 50) {
-		if x.Container != "" {
-			t.Fatal("local leaked into workspace symbols")
-		}
 		if x.Name == "name" {
 			t.Fatalf("local %+v listed", x)
 		}

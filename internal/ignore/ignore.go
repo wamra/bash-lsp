@@ -1,5 +1,5 @@
-// Package ignore implements .gitignore-style pattern matching, used for
-// .gitignore files and the index.ignore config globs.
+// Package ignore implements .gitignore-style pattern matching, used for the
+// .gitignore files the workspace walk honours.
 package ignore
 
 import (
