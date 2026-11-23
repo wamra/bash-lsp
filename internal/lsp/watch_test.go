@@ -164,6 +164,9 @@ func TestWatchedDeleteOfSourcedLibrary(t *testing.T) {
 	root := libRoot(t)
 	c := client(t, root)
 	c.open("main.sh")
+	if got := c.definition("main.sh", "lib_fn", 0); !eq(got, "lib.sh:1") {
+		t.Fatal(got)
+	}
 	if err := os.Remove(filepath.Join(root, "lib.sh")); err != nil {
 		t.Fatal(err)
 	}
@@ -221,6 +224,9 @@ func TestWatchedDirectories(t *testing.T) {
 	root := t.TempDir()
 	put(t, filepath.Join(root, "a.sh"), "a_fn() { :; }\n")
 	c := client(t, root)
+	if got := c.symbols("x_fn"); len(got) != 0 { // the workspace is open: the walk has passed
+		t.Fatal(got)
+	}
 	put(t, filepath.Join(root, "sub", "deep", "x.sh"), "x_fn() { :; }\n")
 	c.watched(c.ev("sub", 1))
 	if got := c.symbols("x_fn"); !eq(got, "sub/deep/x.sh:1 x_fn") {
@@ -293,6 +299,9 @@ func TestDidSave(t *testing.T) {
 	put(t, filepath.Join(root, "a.sh"), "one_fn() { :; }\n")
 	put(t, filepath.Join(root, "b.sh"), "b_fn() { :; }\n")
 	c := client(t, root)
+	if got := c.symbols("_fn"); !eq(got, "a.sh:1 one_fn", "b.sh:1 b_fn") { // the walk has passed
+		t.Fatal(got)
+	}
 	put(t, filepath.Join(root, "a.sh"), "two_fn() { :; }\n")
 	c.notify("textDocument/didSave", map[string]any{"textDocument": map[string]any{"uri": c.uri("a.sh")}})
 	if got := c.symbols("_fn"); !eq(got, "a.sh:1 two_fn", "b.sh:1 b_fn") {
