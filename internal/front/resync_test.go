@@ -1,0 +1,212 @@
+package front
+
+import (
+	"io/fs"
+	"os"
+	"path/filepath"
+	"reflect"
+	"testing"
+	"time"
+
+	"github.com/wamra/bash-lsp/tree"
+)
+
+// count returns the number of nodes of kind k in the tree.
+func count(f *tree.File, k tree.Kind) int {
+	n := 0
+	f.Root.Walk(func(x *tree.Node) bool {
+		if x.Kind == k {
+			n++
+		}
+		return true
+	})
+	return n
+}
+
+// checkInvariants fails the test when the tree is malformed: ranges outside
+// [0, len(Src)], inverted ranges, broken parent links, or a child outside its
+// parent. Comments are not tree children, so only their range is checked.
+func checkInvariants(t *testing.T, f *tree.File) {
+	t.Helper()
+	size := len(f.Src)
+	inside := func(r tree.Range) bool {
+		return 0 <= r.Start.Offset && r.Start.Offset <= r.End.Offset && r.End.Offset <= size
+	}
+	if f.Root == nil || f.Root.Kind != tree.KFile || f.Root.Parent != nil {
+		t.Fatalf("bad root %+v", f.Root)
+	}
+	f.Root.Walk(func(n *tree.Node) bool {
+		if !inside(n.Range) {
+			t.Errorf("%v range %+v outside [0,%d]", n.Kind, n.Range, size)
+		}
+		for _, c := range n.Children {
+			if c.Parent != n {
+				t.Errorf("%v child %v has wrong Parent", n.Kind, c.Kind)
+			}
+			if c.Range.Start.Offset < n.Range.Start.Offset || c.Range.End.Offset > n.Range.End.Offset {
+				t.Errorf("%v %+v escapes parent %v %+v", c.Kind, c.Range, n.Kind, n.Range)
+			}
+		}
+		return true
+	})
+	for _, c := range f.Comments {
+		if !inside(c.Range) {
+			t.Errorf("comment range %+v outside [0,%d]", c.Range, size)
+		}
+	}
+	for _, e := range f.Errors {
+		if !inside(e.Range) {
+			t.Errorf("error range %+v outside [0,%d]", e.Range, size)
+		}
+	}
+}
+
+func TestResync(t *testing.T) {
+	cases := []struct {
+		file    string
+		funcs   []string
+		errLine int
+	}{
+		{"unclosed_quote.sh", []string{"a", "c"}, 2},
+		{"stray_tokens.sh", []string{"a", "c"}, 2},
+		{"bad_expansion.sh", []string{"before_exp", "after_exp"}, 3},
+	}
+	for _, c := range cases {
+		f := Parse(c.file, mustRead(t, "../../testdata/broken/"+c.file), Bash)
+		if got := funcNames(f); !reflect.DeepEqual(got, c.funcs) {
+			t.Errorf("%s funcs %v", c.file, got)
+		}
+		if len(f.Errors) != 1 || f.Errors[0].Range.Start.Line != c.errLine {
+			t.Errorf("%s errors %+v", c.file, f.Errors)
+		}
+		if n := count(f, tree.KErrorGap); n != 1 {
+			t.Errorf("%s gaps %d", c.file, n)
+		}
+		checkInvariants(t, f)
+	}
+}
+
+func TestResyncGapShape(t *testing.T) {
+	src := mustRead(t, "../../testdata/broken/stray_tokens.sh")
+	f := Parse("s.sh", src, Bash)
+	var gap *tree.Node
+	for _, c := range f.Root.Children {
+		if c.Kind == tree.KErrorGap {
+			gap = c
+		}
+	}
+	if gap == nil || !gap.Recovered || gap.Parent != f.Root {
+		t.Fatalf("gap %+v", gap)
+	}
+	// The gap covers exactly the broken line 2.
+	if gap.Range.Start.Line != 2 || gap.Range.Start.Col != 1 || gap.Range.End.Line != 3 || gap.Range.End.Col != 1 {
+		t.Fatalf("gap range %+v", gap.Range)
+	}
+	if f.Errors[0].Msg == "" {
+		t.Fatal("empty message")
+	}
+}
+
+func TestUnclosedQuoteMessage(t *testing.T) {
+	f := Parse("q.sh", mustRead(t, "../../testdata/broken/unclosed_quote.sh"), Bash)
+	if len(f.Errors) != 1 || f.Errors[0].Msg != "unterminated quote" {
+		t.Fatalf("%+v", f.Errors)
+	}
+	if f.Errors[0].Range.Start.Line != 2 || f.Errors[0].Range.Start.Col != 6 {
+		t.Fatalf("%+v", f.Errors[0].Range)
+	}
+	// The call `c` after the recovered tail is still lowered.
+	if find(f, tree.KFuncDecl, "c") == nil {
+		t.Fatal("c missing")
+	}
+}
+
+func TestResyncPositionsAreFileAbsolute(t *testing.T) {
+	f := Parse("b.sh", mustRead(t, "../../testdata/broken/bad_expansion.sh"), Bash)
+	d := find(f, tree.KFuncDecl, "after_exp")
+	if d == nil {
+		t.Fatal("after_exp missing")
+	}
+	if d.NameRange.Start.Line != 4 || d.NameRange.Start.Col != 1 {
+		t.Fatalf("%+v", d.NameRange)
+	}
+	src := mustRead(t, "../../testdata/broken/bad_expansion.sh")
+	if got := string(src[d.NameRange.Start.Offset:d.NameRange.End.Offset]); got != "after_exp" {
+		t.Fatalf("name range covers %q", got)
+	}
+	checkInvariants(t, f)
+}
+
+func TestUnclosedBraceKeepsAllFunctions(t *testing.T) { // parser recovers this one itself; must still report it
+	f := Parse("u.sh", mustRead(t, "../../testdata/broken/unclosed_brace.sh"), Bash)
+	if got := funcNames(f); !reflect.DeepEqual(got, []string{"a", "b", "c"}) {
+		t.Fatal(got)
+	}
+	if len(f.Errors) == 0 {
+		t.Fatal("no error reported")
+	}
+	checkInvariants(t, f)
+}
+
+func TestNoResyncPointGapsToEOF(t *testing.T) {
+	src := "ok() { echo hi; }\nfi\n"
+	f := Parse("e.sh", []byte(src), Bash)
+	var gap *tree.Node
+	for _, c := range f.Root.Children {
+		if c.Kind == tree.KErrorGap {
+			gap = c
+		}
+	}
+	if gap == nil || gap.Range.Start.Line != 2 || gap.Range.End.Offset != len(src) {
+		t.Fatalf("gap %+v", gap)
+	}
+	checkInvariants(t, f)
+}
+
+func TestResyncBudget(t *testing.T) {
+	// 80 candidate lines that each fail to parse: only 50 are tried, so a good
+	// function after them is not recovered.
+	var src []byte
+	src = append(src, "a() { echo hi; }\n) ) fi done\n"...)
+	for i := 0; i < 80; i++ {
+		src = append(src, "echo ${x\n"...)
+	}
+	src = append(src, "z() { :; }\n"...)
+	f := Parse("budget.sh", src, Bash)
+	if find(f, tree.KFuncDecl, "z") != nil {
+		t.Fatal("budget exceeded: z was recovered")
+	}
+	if find(f, tree.KFuncDecl, "a") == nil || count(f, tree.KErrorGap) == 0 {
+		t.Fatal("a or gap missing")
+	}
+	checkInvariants(t, f)
+}
+
+func TestJunkIsBounded(t *testing.T) {
+	start := time.Now()
+	f := Parse("junk.sh", mustRead(t, "../../testdata/broken/junk.sh"), Bash)
+	if time.Since(start) > time.Second {
+		t.Fatal("too slow")
+	}
+	if len(f.Errors) == 0 || count(f, tree.KErrorGap) == 0 {
+		t.Fatal("expected error and gap")
+	}
+	checkInvariants(t, f)
+}
+
+func FuzzParse(f *testing.F) {
+	for _, root := range []string{"../../testdata/corpus", "../../testdata/broken"} {
+		filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+			if err == nil && !d.IsDir() {
+				if b, rerr := os.ReadFile(p); rerr == nil && len(b) < 1<<16 {
+					f.Add(b)
+				}
+			}
+			return nil
+		})
+	}
+	f.Fuzz(func(t *testing.T, src []byte) {
+		file := Parse("f.sh", src, Bash)
+		checkInvariants(t, file)
+	})
+}

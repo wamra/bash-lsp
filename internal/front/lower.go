@@ -366,7 +366,11 @@ func (l *lowerer) redirect(r *syntax.Redirect) *tree.Node {
 	}
 	n := l.mk(tree.KRedirect, r.OpPos, syntax.Pos{}, kids...)
 	if r.N != nil {
-		n.Range.Start = l.pos(r.N.ValuePos)
+		// The fd number precedes the operator; never shrink past a child that a
+		// recovered position pulled further left.
+		if p := l.pos(r.N.ValuePos); p.Offset < n.Range.Start.Offset {
+			n.Range.Start = p
+		}
 	}
 	if r.Hdoc != nil {
 		var body []*tree.Node
@@ -439,6 +443,14 @@ func (l *lowerer) word(w *syntax.Word) *tree.Node {
 	for _, c := range kids {
 		if c.Recovered {
 			n.Recovered = true
+		}
+		// A recovered part can lie outside the parser's word range; the word
+		// still covers every child.
+		if c.Range.Start.Offset < n.Range.Start.Offset {
+			n.Range.Start = c.Range.Start
+		}
+		if c.Range.End.Offset > n.Range.End.Offset {
+			n.Range.End = c.Range.End
 		}
 	}
 	return n
