@@ -370,9 +370,18 @@ func (s *Snapshot) collectSymbols() {
 	n := len(s.paths)
 	s.locals = make([]map[string]map[string]bool, n)
 	sorted := make([][]*Decl, n)
+	total := 0
+	for _, ff := range s.facts {
+		total += len(ff.Decls)
+	}
+	s.declFile = make(map[*Decl]int, total)
+	s.declSym = make(map[*Decl]*Symbol, total)
+	byOffset := func(a, b *Decl) int { return a.NameRange.Start.Offset - b.NameRange.Start.Offset }
 	for i, ff := range s.facts {
 		ds := append([]*Decl(nil), ff.Decls...)
-		sort.SliceStable(ds, func(a, b int) bool { return ds[a].NameRange.Start.Offset < ds[b].NameRange.Start.Offset })
+		if !slices.IsSortedFunc(ds, byOffset) {
+			slices.SortStableFunc(ds, byOffset)
+		}
 		sorted[i] = ds
 		for _, d := range ds {
 			s.declFile[d] = i
@@ -509,7 +518,7 @@ func (s *Snapshot) pick(syms []*Symbol, file int) *Symbol {
 func (s *Snapshot) bindAll() {
 	s.bindings = make([][]Binding, len(s.paths))
 	for i, ff := range s.facts {
-		var out []Binding
+		out := make([]Binding, 0, len(ff.Uses))
 		for _, u := range ff.Uses {
 			switch u.Kind {
 			case UseCall:
@@ -518,7 +527,10 @@ func (s *Snapshot) bindAll() {
 				out = s.bindVar(out, i, u)
 			}
 		}
-		sort.SliceStable(out, func(a, b int) bool { return out[a].Use.Range.Start.Offset < out[b].Use.Range.Start.Offset })
+		byUse := func(a, b Binding) int { return a.Use.Range.Start.Offset - b.Use.Range.Start.Offset }
+		if !slices.IsSortedFunc(out, byUse) {
+			slices.SortStableFunc(out, byUse)
+		}
 		s.bindings[i] = out
 		for _, b := range out {
 			s.bySym[b.Sym] = append(s.bySym[b.Sym], b)
