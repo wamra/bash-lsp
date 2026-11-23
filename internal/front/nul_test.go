@@ -115,20 +115,28 @@ func TestLiteralRangeWithoutNULIsTheParsers(t *testing.T) {
 	}
 }
 
-// A NUL earlier in an assignment's name, before a line continuation, still
-// moves the value's start: the parser computed it from the lexer's name, which
-// has neither (a re-review asked whether a boundary byte between the NUL and
-// the value stopped the correction; the newline of `\<newline>` did).
+// A NUL earlier in an assignment, before a line continuation or between `+`
+// and `=` after an index, still moves the value's start: the parser computed
+// it from lexer lengths, which count neither (a re-review asked whether a
+// boundary byte between the NUL and the value stopped the correction; the
+// newline of `\<newline>` did).
 func TestValueAfterNULAndContinuationInName(t *testing.T) {
 	for _, d := range []Dialect{Bash, POSIX, Mksh} {
-		for _, s := range []string{"A\x00\\\nBCDE=1\n", "A\x00\\\nBCDE=12 B=3\n", "x=1 A\x00\\\nBCDE=1 echo\n"} {
+		for _, s := range []string{"A\x00=1\n", "A\x00\\\nBCDE=1\n", "A\x00\\\nBCDE=12 B=3\n", "x=1 A\x00\\\nBCDE=1 echo\n", "a[\x001]=x\n", "a[1]\x00=x\n"} {
 			checkNameRanges(t, s, d)
 		}
 	}
-	for _, s := range []string{"A\x00\\\nBCDE+=1\n", "declare A\x00\\\nBCDE=1\n", "local -i A\x00\\\nBCDE+=1\n"} {
+	// the parser also counts `+` and `=` after an index with the lexer's lengths
+	for _, d := range []Dialect{Bash, Mksh} {
+		for _, s := range []string{"A\x00\\\nBCDE+=1\n", "a[1]+\x00=x\n", "a[1]+\x00=\\\nx\n", "a[1]\x00+=x\n"} {
+			checkNameRanges(t, s, d)
+		}
+	}
+	for _, s := range []string{"declare A\x00\\\nBCDE=1\n", "local -i A\x00\\\nBCDE+=1\n", "declare a[1]+\x00=x\n"} {
 		checkNameRanges(t, s, Bash)
 	}
 	checkNameRanges(t, "typeset A\x00\\\nBCDE=1\n", Mksh)
+	checkNameRanges(t, "typeset a[1]+\x00=x\n", Mksh)
 }
 
 // Lowering costs O(1) per node on a NUL-free source and O(log n) with NULs: a

@@ -482,8 +482,9 @@ func (l *lowerer) assign(a *syntax.Assign) *tree.Node {
 	kids = append(kids, l.arith(a.Index)...)
 	if a.Value != nil {
 		// getAssign positions a `name=value` value at the name's start plus the
-		// lexer's length of `name=`; a NUL from there on leaves it early.
-		if l.nul != nil && a.Name != nil && a.Index == nil && len(a.Value.Parts) > 0 {
+		// lexer's length of `name=`, and an `a[i]+=value` value one column per
+		// `+` and `=` after the index; a NUL from the name on leaves it early.
+		if l.nul != nil && a.Name != nil && len(a.Value.Parts) > 0 {
 			if lit, ok := a.Value.Parts[0].(*syntax.Lit); ok {
 				l.valueLit, l.valueFrom = lit, l.base.Offset+int(a.Name.ValuePos.Offset())
 			}
@@ -701,8 +702,8 @@ func (l *lowerer) part1(p syntax.WordPart) *tree.Node {
 }
 
 // nulLit corrects the range of a literal in a source holding NUL bytes. Only a
-// literal that holds a NUL, or is an assignment value with a NUL between the
-// name's start and the value, is touched: the range of every other literal
+// literal that holds a NUL, or is the first literal of an assignment value with
+// a NUL between the name's start and the value, is touched: the range of every other literal
 // stays the parser's (the lexer also drops line continuations from a value).
 // O(log n) plus the literal's own length.
 func (l *lowerer) nulLit(n *tree.Node, p *syntax.Lit) {
