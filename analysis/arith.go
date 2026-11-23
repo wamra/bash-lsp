@@ -127,6 +127,7 @@ func (b *binder) arithAccess(start, end, lo, limit int) (read, write bool) {
 // by the rules the snapshot binds with: a private scope on the way up (passing
 // function scopes), a local of the enclosing function, then any plain one.
 func (b *binder) isDeclared(name string, sc *Scope) bool {
+	b.startTracking()
 	for s := sc; s != nil && s.Kind != ScopeFile; s = s.Parent {
 		if s.Kind.Private() && b.declPriv[privDecl{s, name}] > 0 {
 			return true
@@ -148,9 +149,23 @@ type localDecl struct {
 	name string
 }
 
+// startTracking builds the declaration index on the first arithmetic write, from
+// the declarations made so far, so files without arithmetic writes never pay for it.
+func (b *binder) startTracking() {
+	if b.tracking {
+		return
+	}
+	b.tracking = true
+	for _, d := range b.ff.Decls {
+		if !d.Temp {
+			b.noteDecl(d, 1)
+		}
+	}
+}
+
 // noteDecl records (delta 1) or forgets (delta -1) a variable declaration for isDeclared.
 func (b *binder) noteDecl(d *Decl, delta int) {
-	if d.Kind != DeclVariable {
+	if !b.tracking || d.Kind != DeclVariable {
 		return
 	}
 	switch fn := funcBody(d.Scope); {
@@ -183,6 +198,17 @@ func (b *binder) arithName(name string, start, end, lo, limit int, n *tree.Node,
 	if write {
 		b.arithWrite(name, r, n, sc)
 	}
+}
+
+// intern returns the string for b without allocating when it was seen before
+// (the map lookup on string(b) does not copy).
+func (b *binder) intern(raw []byte) string {
+	if s, ok := b.names[string(raw)]; ok {
+		return s
+	}
+	s := string(raw)
+	b.names[s] = s
+	return s
 }
 
 // arithText records the names in the arithmetic source b.src[s:e]. masks are
@@ -219,11 +245,11 @@ func (b *binder) arithText(s, e int, masks []span, sc *Scope, n *tree.Node) {
 			}
 			next := j
 			if ascii && (i == s || src[i-1] != '$') {
-				name, exprEnd := string(src[i:j]), j
+				name, exprEnd := b.intern(src[i:j]), j
 				if j < e && src[j] == '[' {
 					if cl := b.matchBracket(j, e); cl > 0 {
 						exprEnd = cl + 1
-						if b.assoc[name] { // the subscript is a string
+						if b.isAssoc(name) { // the subscript is a string
 							next = exprEnd
 						}
 					}
@@ -324,7 +350,7 @@ func (b *binder) paramArith(n *tree.Node, sc *Scope) {
 	p := i
 	if b.src[p] == '[' {
 		if cl := b.matchBracket(p, end); cl > 0 {
-			if !b.assoc[n.Name] {
+			if !b.isAssoc(n.Name) {
 				scan(p+1, cl)
 			}
 			p = cl + 1
@@ -342,12 +368,40 @@ func (b *binder) paramArith(n *tree.Node, sc *Scope) {
 // assignSubscript handles `name[expr]=value`.
 func (b *binder) assignSubscript(n *tree.Node, assoc bool, sc *Scope) {
 	i, end := n.NameRange.End.Offset, min(n.Range.End.Offset, len(b.src))
-	if n.Name == "" || assoc || i <= 0 || i >= end || b.src[i] != '[' {
+	if n.Name == "" || i <= 0 || i >= end || b.src[i] != '[' || assoc || b.isAssoc(n.Name) {
 		return
 	}
 	if cl := b.matchBracket(i, end); cl > 0 {
 		b.arithText(i+1, cl, collectMasks(n.Children), sc, n)
 	}
+}
+
+// isAssoc reports whether name is declared with the associative attribute
+// anywhere in the file. The file is scanned on the first call, and only when
+// its text could hold an option cluster with an `A`.
+func (b *binder) isAssoc(name string) bool {
+	if !b.assocScanned {
+		b.assocScanned = true
+		if mayDeclareAssoc(b.src) && b.ff.File.Root != nil {
+			b.scanAssoc(b.ff.File.Root)
+		}
+	}
+	return b.assoc[name]
+}
+
+// mayDeclareAssoc reports whether src holds a `-` followed by letters with an `A` among them.
+func mayDeclareAssoc(src []byte) bool {
+	for i := 0; i < len(src); i++ {
+		if src[i] != '-' {
+			continue
+		}
+		for j := i + 1; j < len(src) && (src[j]|0x20 >= 'a' && src[j]|0x20 <= 'z'); j++ {
+			if src[j] == 'A' {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // scanAssoc records every name declared with the associative attribute

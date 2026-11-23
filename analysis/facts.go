@@ -134,10 +134,13 @@ type binder struct {
 	bats     bool
 	wholeCmt map[int]*tree.Node // line -> comment that is alone on its line (shebang excluded)
 
-	assoc      map[string]bool // names declared -A anywhere in the file: their subscripts are strings
-	declGlobal map[string]int  // declarations in view, by where they bind (see isDeclared)
-	declLocal  map[localDecl]int
-	declPriv   map[privDecl]int
+	tracking     bool // declGlobal, declLocal and declPriv are maintained (from the first arithmetic write)
+	assocScanned bool
+	names        map[string]string // interned arithmetic names
+	assoc        map[string]bool   // names declared -A anywhere in the file: their subscripts are strings
+	declGlobal   map[string]int    // declarations in view, by where they bind (see isDeclared)
+	declLocal    map[localDecl]int
+	declPriv     map[privDecl]int
 }
 
 // Bind walks f once, carrying a scope stack, and returns its facts.
@@ -149,7 +152,7 @@ func Bind(f *tree.File) *FileFacts {
 	}
 	ff.Path = f.Path
 	ff.Root = &Scope{Kind: ScopeFile, Node: f.Root}
-	b := &binder{ff: ff, src: f.Src, wholeCmt: map[int]*tree.Node{}, assoc: map[string]bool{},
+	b := &binder{ff: ff, src: f.Src, wholeCmt: map[int]*tree.Node{}, assoc: map[string]bool{}, names: map[string]string{},
 		declGlobal: map[string]int{}, declLocal: map[localDecl]int{}, declPriv: map[privDecl]int{}}
 	b.bats = f.Dialect == tree.Bats
 	for _, c := range f.Comments {
@@ -163,7 +166,6 @@ func Bind(f *tree.File) *FileFacts {
 		}
 	}
 	if f.Root != nil {
-		b.scanAssoc(f.Root)
 		b.children(f.Root, ff.Root)
 	}
 	return ff
@@ -298,7 +300,7 @@ func (b *binder) assign(n *tree.Node, sc *Scope, attrs VarAttrs, implicit string
 			attrs.Array = true
 		}
 		b.variable(n.Name, n.NameRange, n, sc, attrs, b.assignLiteral(n), implicit)
-		b.assignSubscript(n, attrs.Assoc || b.assoc[n.Name], sc)
+		b.assignSubscript(n, attrs.Assoc, sc)
 	}
 	b.children(n, sc)
 }
