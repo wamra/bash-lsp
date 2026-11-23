@@ -7,13 +7,15 @@ spec's section 0.7. Every script prints JSON on stdout. Python only through
 
 | File | What it does |
 |---|---|
-| `bench.py NAME -- CMD...` | Runs the 28 cases against a copy of the corpus; prints `{name, caps, timings, results}`. `BENCH_CORPUS` is the absolute path of the corpus directory (`testdata/corpus`; the annotated variant lives in the evidence kit). `BENCH_STDERR` is a file that receives the server's stderr. |
+| `bench.py NAME -- CMD...` | Runs the 28 cases against a copy of the corpus; prints `{name, caps, timings, results}`. `BENCH_CORPUS` is the absolute path of the corpus directory: `testdata/corpus`, or `testdata/corpus-annotated` (a copy of `bash-lsp-evidence/corpus-annotated`, with `# shellcheck source=` directives, copied into the repo so the `*-ann.json` results can be reproduced). `BENCH_STDERR` is a file that receives the server's stderr. |
 | `scale.py NAME BIGFILE -- CMD...` | One large script: didOpen to first documentSymbol, edit to refreshed documentSymbol, definition, RSS. |
-| `scale_ws.py NAME WSDIR -- CMD...` | Workspace scale: didOpen of a file in the middle of a source chain, then six edits each timed to a refreshed cross-file definition; also the time from start to the first workspace answer. |
+| `scale_ws.py NAME WSDIR -- CMD...` | Workspace scale: didOpen of a file in the middle of a source chain, then two kinds of edit timed separately to a refreshed cross-file definition, six samples each: body edits (the source graph is untouched) and edits that add or remove a `source` line (visibility is recomputed). Also the time from start to the first workspace answer. |
 | `gen_big.py OUT` | Writes the large script: 2,000 functions, 560,711 bytes (about 561 KB). Each function has a doc comment, a `local`, an `if [[ ]]` with a pipeline, a `for` loop and a `case`, and every function is called by the next one. |
+| `gen_comments.py OUTDIR` | Writes `c.sh`, 24,000 comment lines (1,860,930 bytes), the input for timing `ast --json`. |
+| `repeat.py OUT LABEL N [--wall] -- CMD...` / `summarize.py FILE KEY...` | Run a measurement N times and keep every raw sample in `results/repeat-*.json` with date, commit and machine; recompute min, median, p95, max. Every number in `docs/m1-acceptance.md` comes from such a file. |
 | `gen_workspace.py OUTDIR [FILES=1000] [FUNCS=20]` | Writes the workspace: file `i` does `source ./s{i-1}.sh`, and function `i_k` calls function `(i-1)_k`, so every call crosses a file and the last file sees the whole chain. |
 | `report.py` | Builds `results/REPORT.md` from `results/*.json` (run it from this directory). |
-| `results/` | Raw results. `bls`, `shuck`, `bashd`, `mvdan` and `scale-bls/shuck/bashd` are copies of the evidence kit's results; the `bash-lsp*` files were produced here. |
+| `results/` | Raw results. `bls`, `shuck`, `bashd`, `*-ann` for those three, `mvdan` and `scale-bls/shuck/bashd` are copies of the evidence kit's results. `bash-lsp.json` is `bench.py` on `testdata/corpus`, `bash-lsp-ann.json` is `bench.py` with `BENCH_CORPUS` set to `testdata/corpus-annotated`, `scale-bash-lsp.json` and `scale-ws-bash-lsp.json` are single runs of `scale.py` and `scale_ws.py`; `repeat-*.json`, `go-benchmarks.txt` and `profile-setoverlay-big.txt` are the repeated measurements and profile behind the acceptance document. The final numbers were all taken after the harness I/O change below. |
 
 Local divergence from the evidence copy of `bench.py`: the server pipes are
 unbuffered. With a buffered reader a notification and a reply arriving in one
@@ -36,5 +38,5 @@ uv run --no-project python bench/scale_ws.py "bash-lsp 0.1.0" /private/tmp/bash-
 ```
 
 `serve` is also the default with no arguments. The first launch of a freshly
-built binary on macOS measures 180 to 230 ms for `initialize` (the system
-scans a new executable); every later launch measures 3 ms. Discard the first.
+built binary on macOS is slower (the system scans a new executable); launch it
+once before measuring.

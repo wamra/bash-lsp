@@ -37,13 +37,13 @@ Last column is not a server: it says whether the mvdan/sh tree alone contains th
 | Timing, small corpus | bash-language-server 5.8.1 | shuck 0.2.11 | bashd 0.4.0 | bash-lsp 0.1.0 |
 |---|---|---|---|---|
 | Initialise, ms | 157 | 5 | 14 | 3 |
-| Definition, warm median, ms | 0.6 | 0.2 | 0.2 | 0.2 |
+| Definition, warm median, ms | 0.6 | 0.2 | 0.2 | 0.1 |
 | Memory, MB | 196 | 16 | 12 | 8 |
 
 | One 561 KB script, 2,000 functions | bash-language-server 5.8.1 | shuck 0.2.11 | bashd 0.4.0 | bash-lsp 0.1.0 | mvdan/sh parse only |
 |---|---|---|---|---|---|
 | Open to first symbols, ms | 727 | 394 | exited (message too long for its reader) | 116 | 16 |
-| Edit to refreshed symbols, ms | 596 | 366 | - | 104 | 16 |
+| Edit to refreshed symbols, ms | 596 | 366 | - | 106 | 16 |
 | Definition after the edit, ms | 319.8 | 6.1 | - | 1.9 | - |
 | Memory, MB | 592 | 255 | - | 155 | - |
 

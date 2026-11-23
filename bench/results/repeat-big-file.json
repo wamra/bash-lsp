@@ -1,0 +1,122 @@
+{
+ "label": "big file 561 KB, scale.py",
+ "date": "2026-11-22T20:51:25-05:00",
+ "commit": "0d3e005",
+ "dirty": false,
+ "machine": "Mac Studio Apple M1 Ultra, macOS-26.5.1-arm64-arm-64bit-Mach-O",
+ "cmd": [
+  "uv",
+  "run",
+  "--no-project",
+  "python",
+  "bench/scale.py",
+  "bash-lsp",
+  "/private/tmp/bash-lsp/big.sh",
+  "--",
+  "/private/tmp/bash-lsp/bash-lsp",
+  "serve"
+ ],
+ "n": 10,
+ "runs": [
+  {
+   "name": "bash-lsp",
+   "bytes": 560711,
+   "symbols": 2000,
+   "open_to_symbols_ms": 122,
+   "edit_to_symbols_ms": 114,
+   "definition_ms": 1.9,
+   "definition_found": true,
+   "rss_mb": 148
+  },
+  {
+   "name": "bash-lsp",
+   "bytes": 560711,
+   "symbols": 2000,
+   "open_to_symbols_ms": 123,
+   "edit_to_symbols_ms": 114,
+   "definition_ms": 2.0,
+   "definition_found": true,
+   "rss_mb": 153
+  },
+  {
+   "name": "bash-lsp",
+   "bytes": 560711,
+   "symbols": 2000,
+   "open_to_symbols_ms": 126,
+   "edit_to_symbols_ms": 114,
+   "definition_ms": 2.0,
+   "definition_found": true,
+   "rss_mb": 149
+  },
+  {
+   "name": "bash-lsp",
+   "bytes": 560711,
+   "symbols": 2000,
+   "open_to_symbols_ms": 123,
+   "edit_to_symbols_ms": 116,
+   "definition_ms": 2.1,
+   "definition_found": true,
+   "rss_mb": 156
+  },
+  {
+   "name": "bash-lsp",
+   "bytes": 560711,
+   "symbols": 2000,
+   "open_to_symbols_ms": 123,
+   "edit_to_symbols_ms": 110,
+   "definition_ms": 2.0,
+   "definition_found": true,
+   "rss_mb": 154
+  },
+  {
+   "name": "bash-lsp",
+   "bytes": 560711,
+   "symbols": 2000,
+   "open_to_symbols_ms": 120,
+   "edit_to_symbols_ms": 110,
+   "definition_ms": 2.0,
+   "definition_found": true,
+   "rss_mb": 151
+  },
+  {
+   "name": "bash-lsp",
+   "bytes": 560711,
+   "symbols": 2000,
+   "open_to_symbols_ms": 124,
+   "edit_to_symbols_ms": 112,
+   "definition_ms": 1.9,
+   "definition_found": true,
+   "rss_mb": 153
+  },
+  {
+   "name": "bash-lsp",
+   "bytes": 560711,
+   "symbols": 2000,
+   "open_to_symbols_ms": 125,
+   "edit_to_symbols_ms": 111,
+   "definition_ms": 2.0,
+   "definition_found": true,
+   "rss_mb": 155
+  },
+  {
+   "name": "bash-lsp",
+   "bytes": 560711,
+   "symbols": 2000,
+   "open_to_symbols_ms": 120,
+   "edit_to_symbols_ms": 113,
+   "definition_ms": 2.1,
+   "definition_found": true,
+   "rss_mb": 155
+  },
+  {
+   "name": "bash-lsp",
+   "bytes": 560711,
+   "symbols": 2000,
+   "open_to_symbols_ms": 123,
+   "edit_to_symbols_ms": 112,
+   "definition_ms": 1.9,
+   "definition_found": true,
+   "rss_mb": 155
+  }
+ ]
+}

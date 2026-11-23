@@ -30,7 +30,7 @@
  },
  "timings": {
   "initialize_ms": 3,
-  "definition_ms_median": 0.2,
+  "definition_ms_median": 0.1,
   "rss_mb": 8
  },
  "results": {
