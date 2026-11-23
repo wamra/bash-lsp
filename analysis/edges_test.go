@@ -2,7 +2,10 @@ package analysis
 
 import (
 	"fmt"
+	"slices"
 	"testing"
+
+	"github.com/wamra/bash-lsp/internal/front"
 )
 
 // edgeStr is "site rel res/reason from -> to": from is "file" or "file:func",
@@ -47,18 +50,7 @@ func (q *qworld) sym(file, needle string, occ, off int) *Symbol {
 
 func wantSame(t *testing.T, got []string, want ...string) {
 	t.Helper()
-	g := append([]string(nil), got...)
-	wantEq(t, sortedCopy(g), want...)
-}
-
-func sortedCopy(s []string) []string {
-	out := append([]string(nil), s...)
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j] < out[j-1]; j-- {
-			out[j], out[j-1] = out[j-1], out[j]
-		}
-	}
-	return out
+	wantEq(t, slices.Sorted(slices.Values(got)), want...)
 }
 
 func TestEdgesToBuildReleaseCorpus(t *testing.T) {
@@ -180,10 +172,26 @@ func TestEdgesAliasChainDepth(t *testing.T) {
 	}
 	wantSame(t, q8.edgeStrs(calls), "m.sh:10 calls resolved/alias m.sh -> f@m.sh:1:1")
 
+	var a1 []Edge
+	for _, e := range q8.s.EdgesTo(f8) {
+		if e.Rel == RelAliases && e.From.Func != nil && e.From.Func.Name == "a1" {
+			a1 = append(a1, e)
+		}
+	}
+	wantSame(t, q8.edgeStrs(a1), "m.sh:2 aliases resolved/alias m.sh:a1 -> f@m.sh:1:1")
+
+	// Nine aliases: neither a call to a1 nor alias a1 itself reaches f, by
+	// any relation (the defining alias counts as one level).
 	q9 := buildMem(t, map[string]string{"m.sh": aliasChain(9)})
+	f9 := q9.sym("m.sh", "f()", 0, 0)
 	for _, e := range q9.s.Edges() {
 		if e.Rel == RelCalls {
 			t.Fatalf("alias chain of 9 gave a call edge: %s", q9.edgeStr(e))
+		}
+	}
+	for _, e := range q9.s.EdgesTo(f9) {
+		if e.From.Func != nil && e.From.Func.Name == "a1" {
+			t.Fatalf("alias chain of 9: a1 reaches f: %s", q9.edgeStr(e))
 		}
 	}
 
@@ -358,4 +366,61 @@ func TestEdgesOneDefinitionInViewOfTwo(t *testing.T) {
 		"w.sh:1 sources resolved/direct w.sh -> y.sh",
 		"w.sh:2 calls resolved/direct w.sh -> f@y.sh:1:1",
 	)
+}
+
+func TestEdgesMutualRecursionBuiltinWrappersUnset(t *testing.T) {
+	q := buildMem(t, map[string]string{
+		"m.sh": "g() {\n  h\n}\nh() {\n  g\n}\ng\n",
+		"c.sh": "cd() {\n  builtin cd \"$@\"\n  command cd x\n}\ncd /\n",
+		"u.sh": "k() { :; }\nunset -f k\nk\n",
+	})
+	wantSame(t, q.edgeStrs(q.s.EdgesFrom(Caller{Path: q.abs("m.sh"), Func: q.sym("m.sh", "g()", 0, 0)})),
+		"m.sh:2 calls resolved/direct m.sh:g -> h@m.sh:4:1")
+	wantSame(t, q.edgeStrs(q.s.EdgesFrom(Caller{Path: q.abs("m.sh"), Func: q.sym("m.sh", "h()", 0, 0)})),
+		"m.sh:5 calls resolved/direct m.sh:h -> g@m.sh:1:1")
+	// `builtin cd` and `command cd` bypass the function: no self-edge.
+	wantSame(t, q.edgeStrs(q.s.EdgesTo(q.sym("c.sh", "cd()", 0, 0))),
+		"c.sh:5 calls resolved/direct c.sh -> cd@c.sh:1:1")
+	// Binding is flow-insensitive (a call above its definition binds too), so
+	// `unset -f` does not remove the edge; this pins today's behaviour.
+	wantSame(t, q.edgeStrs(q.s.EdgesTo(q.sym("u.sh", "k()", 0, 0))),
+		"u.sh:3 calls resolved/direct u.sh -> k@u.sh:1:1")
+}
+
+func TestEdgesPipelineProcSubstCoprocDefinitions(t *testing.T) {
+	q := buildMem(t, map[string]string{
+		"p.sh": "echo | { p() { :; }; p; }\np\n",
+		"s.sh": "cat <(s() { :; }; s)\ns\n",
+		"k.sh": "coproc { k() { :; }; k; }\nk\n",
+	})
+	wantSame(t, q.edgeStrs(q.s.EdgesTo(q.sym("p.sh", "p()", 0, 0))),
+		"p.sh:1 calls resolved/direct p.sh -> p@p.sh:1:10",
+		"p.sh:2 calls candidate/conditional-definition p.sh -> p@p.sh:1:10")
+	wantSame(t, q.edgeStrs(q.s.EdgesTo(q.sym("s.sh", "s()", 0, 0))),
+		"s.sh:1 calls resolved/direct s.sh -> s@s.sh:1:7",
+		"s.sh:2 calls candidate/conditional-definition s.sh -> s@s.sh:1:7")
+	wantSame(t, q.edgeStrs(q.s.EdgesTo(q.sym("k.sh", "k()", 0, 0))),
+		"k.sh:1 calls resolved/direct k.sh -> k@k.sh:1:10",
+		"k.sh:2 calls candidate/conditional-definition k.sh -> k@k.sh:1:10")
+}
+
+func TestEdgesEditThenRebuildWithPrev(t *testing.T) {
+	q := buildCorpus(t)
+	files := map[string]*FileFacts{}
+	for _, p := range q.s.Paths() {
+		files[p] = q.s.Facts(p)
+	}
+	main := q.abs("main.sh")
+	src := append([]byte(nil), q.src("main.sh")...)
+	src = append(src, []byte("deploy again\nlog done\n")...)
+	files[main] = Bind(front.Parse(main, src, front.Detect(main, src)))
+	with := &qworld{t: t, root: q.root, s: Build(files, Options{Root: q.root, Prev: q.s}, 8)}
+	without := &qworld{t: t, root: q.root, s: Build(files, Options{Root: q.root}, 8)}
+	got, want := with.edgeStrs(with.s.Edges()), without.edgeStrs(without.s.Edges())
+	if !slices.Equal(got, want) {
+		t.Fatalf("edges with Prev differ after an edit:\n%v\n%v", got, want)
+	}
+	if !slices.Contains(got, "main.sh:23 calls resolved/direct main.sh -> log@lib/util.sh:3:1") {
+		t.Fatalf("edit not reflected: %v", got)
+	}
 }

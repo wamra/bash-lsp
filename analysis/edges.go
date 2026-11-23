@@ -47,17 +47,22 @@ func (r Resolution) String() string {
 }
 
 // Caller is the source end of an edge: the innermost named function around
-// the site, or the top level of the file Path when Func is nil. For a
-// RelAliases edge Func is the alias symbol. Path is always the file of the
-// site, so a function whose definitions lie in two files is two Callers
-// (one per file); the definitions of one file (both branches of an `if`)
-// share one.
+// the site, or the top level of the file Path when Func is nil. Path is
+// always the file of the site, so a function whose definitions lie in two
+// files is two Callers (one per file); the definitions of one file (both
+// branches of an `if`) share one.
+//
+// Func is a function symbol (Kind DeclFunction) for every relation except
+// RelAliases: there it is the alias symbol (Kind DeclAlias) whose value
+// names the target. Consumers that want function callers must check
+// Func.Kind; an alias is never a function caller.
 type Caller struct {
 	Path string
 	Func *Symbol
 }
 
-// Edge is one labelled edge of the call graph. To is the target symbol and
+// Edge is one labelled edge of the call graph. From is described on Caller
+// (for RelAliases, From.Func is the alias symbol). To is the target symbol and
 // ToDecl the one definition of it this edge goes to: a function with several
 // definitions in view gets one edge per definition. To and ToDecl are nil for
 // RelSources, RelInvokes and dynamic or unresolved edges; ToFile is the target

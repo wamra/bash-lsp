@@ -657,7 +657,14 @@ func (s *Snapshot) resolveCall(file int, name string, depth int) (syms []*Symbol
 
 func (s *Snapshot) bindCall(out []Binding, file int, u *Use) []Binding {
 	b := Binding{Use: u, File: s.paths[file], Res: Resolved, Reason: ReasonDirect}
-	if syms, followed := s.resolveCall(file, u.Name, 0); len(syms) > 0 {
+	// The target named inside an alias definition is one level down already:
+	// a call to that alias resolves it at depth 1, so it must too, or the
+	// alias would reach a function no call through it reaches.
+	depth := 0
+	if u.ViaAlias {
+		depth = 1
+	}
+	if syms, followed := s.resolveCall(file, u.Name, depth); len(syms) > 0 {
 		if followed {
 			b.Reason = ReasonAlias
 		}
