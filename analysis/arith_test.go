@@ -1,0 +1,235 @@
+package analysis
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/wamra/bash-lsp/internal/front"
+)
+
+func bindSrcT(src string) *FileFacts {
+	b := []byte(src)
+	return Bind(front.Parse("/ws/a.sh", b, front.Bash))
+}
+
+// usesOf returns the uses of name with their kinds, each checked to be an exact byte range of the name.
+func usesOf(t *testing.T, ff *FileFacts, name string) []*Use {
+	t.Helper()
+	var out []*Use
+	for _, u := range ff.Uses {
+		if u.Name != name || (u.Kind != UseVarRead && u.Kind != UseVarWrite) {
+			continue
+		}
+		if got := string(ff.File.Src[u.Range.Start.Offset:u.Range.End.Offset]); got != name {
+			t.Fatalf("use of %q has range text %q", name, got)
+		}
+		out = append(out, u)
+	}
+	return out
+}
+
+func countKinds(us []*Use) (reads, writes int) {
+	for _, u := range us {
+		if u.Kind == UseVarRead {
+			reads++
+		} else {
+			writes++
+		}
+	}
+	return
+}
+
+const arithProgram = "n=3\nfor ((i=0;i<n;i++)); do echo $((n+1)); done\n(( n++ ))\nlet n=n+1\narr=(a b); echo \"${arr[n]}\"\n"
+
+func TestArithmeticReferences(t *testing.T) {
+	q := buildMem(t, map[string]string{"m.sh": arithProgram})
+	// n=3, i<n, n+1, n++ (one location for its read and write), both n in let, arr[n]
+	got := q.refs("m.sh", "n=3", 0, 0)
+	if len(got) != 7 {
+		t.Fatalf("references of n: %v", got)
+	}
+	wantEq(t, got, "m.sh:1", "m.sh:2", "m.sh:2", "m.sh:3", "m.sh:4", "m.sh:4", "m.sh:5")
+	// i has a symbol: i=0, i<n, i++
+	wantEq(t, q.refs("m.sh", "i=0", 0, 0), "m.sh:2", "m.sh:2", "m.sh:2")
+	wantEq(t, q.def("m.sh", "i<n", 0, 0), "m.sh:2")
+}
+
+func TestArithmeticWriteKinds(t *testing.T) {
+	ff := bindSrcT(arithProgram)
+	n := usesOf(t, ff, "n")
+	r, w := countKinds(n)
+	// writes: n=3, n++, let n=; reads: i<n, n+1, n++, let n+1, arr[n]
+	if r != 5 || w != 3 {
+		t.Fatalf("n: %d reads, %d writes", r, w)
+	}
+	var decls int
+	for _, d := range ff.Decls {
+		if d.Kind == DeclVariable && d.Name == "n" {
+			decls++
+			if d.Implicit == "arith" {
+				t.Fatalf("n already declared by n=3: arithmetic wrote a new declaration")
+			}
+		}
+	}
+	if decls != 1 {
+		t.Fatalf("n decls: %d", decls)
+	}
+	for _, d := range ff.Decls {
+		if d.Name == "i" && d.Implicit != "arith" {
+			t.Fatalf("i decl implicit %q", d.Implicit)
+		}
+	}
+}
+
+func TestArithmeticOperators(t *testing.T) {
+	cases := []struct {
+		src          string
+		reads, write int
+	}{
+		{"(( x = 1 ))", 0, 1},
+		{"(( x == 1 ))", 1, 0},
+		{"(( x <= 1 ))", 1, 0},
+		{"(( x != 1 ))", 1, 0},
+		{"(( x += 1 ))", 1, 1},
+		{"(( x -= 1 ))", 1, 1},
+		{"(( x *= 1 ))", 1, 1},
+		{"(( x /= 1 ))", 1, 1},
+		{"(( x %= 1 ))", 1, 1},
+		{"(( x <<= 1 ))", 1, 1},
+		{"(( x >>= 1 ))", 1, 1},
+		{"(( x &= 1 ))", 1, 1},
+		{"(( x ^= 1 ))", 1, 1},
+		{"(( x |= 1 ))", 1, 1},
+		{"(( x++ ))", 1, 1},
+		{"(( x-- ))", 1, 1},
+		{"(( ++x ))", 1, 1},
+		{"(( --x ))", 1, 1},
+		{"(( x ))", 1, 0},
+		{"(( x ? 1 : 2 ))", 1, 0},
+		{"(( 1 + x ))", 1, 0},
+		{"let x=1", 0, 1},
+		{"let x++", 1, 1},
+		{"let \"x=x+1\"", 1, 1},
+		{"echo $((x+=2))", 1, 1},
+		{"for ((x=0;x<3;x++)); do :; done", 2, 2},
+	}
+	for _, c := range cases {
+		r, w := countKinds(usesOf(t, bindSrcT(c.src+"\n"), "x"))
+		if r != c.reads || w != c.write {
+			t.Errorf("%q: %d reads %d writes, want %d and %d", c.src, r, w, c.reads, c.write)
+		}
+	}
+}
+
+func TestArithmeticNotNames(t *testing.T) {
+	for _, src := range []string{
+		"echo $(( 0x1F + 16#ff ))",
+		"echo $(( 1e3 + 64#a_b + 2#101 ))",
+		"(( 07 + 0XfF ))",
+	} {
+		for _, u := range bindSrcT(src + "\n").Uses {
+			if u.Kind != UseCall {
+				t.Errorf("%q: unexpected use %s at %d", src, u.Name, u.Range.Start.Offset)
+			}
+		}
+	}
+	// the associative subscript is a string
+	ff := bindSrcT("declare -A m\necho \"${m[key]}\"\nm[k2]=1\n(( m[k3] ))\n")
+	for _, name := range []string{"key", "k2", "k3"} {
+		if us := usesOf(t, ff, name); len(us) != 0 {
+			t.Errorf("%s used as a name inside an associative subscript", name)
+		}
+	}
+	// declared later in the file (a function above the declaration) is still associative
+	ff = bindSrcT("f() { echo \"${m[late]}\"; }\ndeclare -A m\n")
+	if us := usesOf(t, ff, "late"); len(us) != 0 {
+		t.Errorf("late used as a name")
+	}
+	// indexed arrays keep theirs
+	ff = bindSrcT("declare -a a\necho \"${a[idx]}\"\na[w]=1\n")
+	for _, name := range []string{"idx", "w"} {
+		if us := usesOf(t, ff, name); len(us) != 1 {
+			t.Errorf("%s: %d uses", name, len(us))
+		}
+	}
+}
+
+func TestArithmeticExpansionsAreNotCountedTwice(t *testing.T) {
+	ff := bindSrcT("echo $(( $x + y ))\necho $(( ${z} * $(echo w) + $((v+1)) ))\n")
+	for name, want := range map[string]int{"x": 1, "y": 1, "z": 1, "v": 1, "w": 0} {
+		if got := len(usesOf(t, ff, name)); got != want {
+			t.Errorf("%s: %d uses, want %d", name, got, want)
+		}
+	}
+	// $x and ${x} inside arithmetic stay with the parameter path: their range starts at the name
+	us := usesOf(t, ff, "x")
+	if len(us) != 1 || us[0].Node == nil || us[0].Node.Kind.String() != "ParamExp" {
+		t.Fatalf("x: %+v", us)
+	}
+}
+
+func TestArithmeticRangesAfterUTF8(t *testing.T) {
+	src := "echo \"héllo wörld ✓\" $((  yy  + zz )) \"ñ\"; (( kk++ ))\n"
+	ff := bindSrcT(src)
+	for _, name := range []string{"yy", "zz", "kk"} {
+		if us := usesOf(t, ff, name); len(us) == 0 { // usesOf asserts the exact range text
+			t.Errorf("%s not found", name)
+		}
+	}
+	for _, u := range ff.Uses {
+		if u.Kind != UseCall && strings.ContainsAny(u.Name, "éöñ✓") {
+			t.Errorf("non-ASCII token became a name: %q", u.Name)
+		}
+	}
+}
+
+func TestArithmeticSubscriptsAndSlices(t *testing.T) {
+	ff := bindSrcT("echo \"${arr[a+b]} ${s:off:len} ${s: -n} ${t:-dflt} ${arr[$i+j]}\"\narr[k+1]=2\n")
+	for name, want := range map[string]int{"a": 1, "b": 1, "off": 1, "len": 1, "n": 1, "dflt": 0, "i": 1, "j": 1, "k": 1} {
+		if got := len(usesOf(t, ff, name)); got != want {
+			t.Errorf("%s: %d uses, want %d", name, got, want)
+		}
+	}
+	// arithmetic-form subscript writes
+	ff = bindSrcT("(( arr[k] = 5, other[j]++ ))\n")
+	if r, w := countKinds(usesOf(t, ff, "arr")); r != 0 || w != 1 {
+		t.Errorf("arr: %d reads %d writes", r, w)
+	}
+	if r, w := countKinds(usesOf(t, ff, "other")); r != 1 || w != 1 {
+		t.Errorf("other: %d reads %d writes", r, w)
+	}
+	if len(usesOf(t, ff, "k")) != 1 || len(usesOf(t, ff, "j")) != 1 {
+		t.Errorf("subscript names missing")
+	}
+}
+
+func TestArithmeticWriteBindsExistingSymbol(t *testing.T) {
+	q := buildMem(t, map[string]string{"m.sh": "n=1\n(( n += 2 ))\necho \"$n\"\nf() {\n  (( g++ ))\n  (( loc++ ))\n}\necho \"$g\"\n"})
+	wantEq(t, q.refs("m.sh", "n=1", 0, 0), "m.sh:1", "m.sh:2", "m.sh:3")
+	// inside a function an undeclared write declares a global, exactly like g=1 does
+	wantEq(t, q.def("m.sh", "$g", 0, 1), "m.sh:5")
+	q = buildMem(t, map[string]string{"m.sh": "f() {\n  local c=0\n  (( c++ ))\n  (( c++ ))\n}\nc=9\n"})
+	wantEq(t, q.refs("m.sh", "local c", 0, 6), "m.sh:2", "m.sh:3", "m.sh:4")
+	wantEq(t, q.refs("m.sh", "c=9", 0, 0), "m.sh:6")
+}
+
+func TestArithmeticFollowsScopeRules(t *testing.T) {
+	// first declared inside the subshell: the outer read must not bind the inner write
+	q := buildMem(t, map[string]string{"m.sh": "( (( n++ )) )\necho \"$n\"\n"})
+	wantEq(t, q.def("m.sh", "$n", 0, 1))
+	if r := q.reasonAt("m.sh", "$n", 0, 1); r != ReasonEnvironment {
+		t.Fatalf("reason %q", r)
+	}
+	// declared outside: the subshell write is a write to the outer symbol
+	q = buildMem(t, map[string]string{"m.sh": "n=1\n( (( n++ )) )\necho \"$n\"\n"})
+	wantEq(t, q.def("m.sh", "$n", 0, 1), "m.sh:1")
+	wantEq(t, q.refs("m.sh", "n=1", 0, 0), "m.sh:1", "m.sh:2", "m.sh:3")
+	// pipeline stage and command substitution
+	q = buildMem(t, map[string]string{"m.sh": "echo | (( p++ ))\nv=$(( q = 1 ))\nw=$( (( r++ )) )\necho \"$p $q $r\"\n"})
+	wantEq(t, q.def("m.sh", "$p", 0, 1))
+	wantEq(t, q.def("m.sh", "$r", 0, 1))
+	wantEq(t, q.def("m.sh", "$q", 0, 1), "m.sh:2")
+	// an inner read still binds the inner write
+	q = buildMem(t, map[string]string{"m.sh": "( (( n = 5 )); echo \"$n\" )\n"})
+	wantEq(t, q.def("m.sh", "$n", 0, 1), "m.sh:1")
+}

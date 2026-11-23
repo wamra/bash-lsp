@@ -133,6 +133,11 @@ type binder struct {
 	src      []byte
 	bats     bool
 	wholeCmt map[int]*tree.Node // line -> comment that is alone on its line (shebang excluded)
+
+	assoc      map[string]bool // names declared -A anywhere in the file: their subscripts are strings
+	declGlobal map[string]int  // declarations in view, by where they bind (see isDeclared)
+	declLocal  map[localDecl]int
+	declPriv   map[privDecl]int
 }
 
 // Bind walks f once, carrying a scope stack, and returns its facts.
@@ -144,7 +149,8 @@ func Bind(f *tree.File) *FileFacts {
 	}
 	ff.Path = f.Path
 	ff.Root = &Scope{Kind: ScopeFile, Node: f.Root}
-	b := &binder{ff: ff, src: f.Src, wholeCmt: map[int]*tree.Node{}}
+	b := &binder{ff: ff, src: f.Src, wholeCmt: map[int]*tree.Node{}, assoc: map[string]bool{},
+		declGlobal: map[string]int{}, declLocal: map[localDecl]int{}, declPriv: map[privDecl]int{}}
 	b.bats = f.Dialect == tree.Bats
 	for _, c := range f.Comments {
 		start := c.Range.Start
@@ -157,6 +163,7 @@ func Bind(f *tree.File) *FileFacts {
 		}
 	}
 	if f.Root != nil {
+		b.scanAssoc(f.Root)
 		b.children(f.Root, ff.Root)
 	}
 	return ff
@@ -202,9 +209,18 @@ func (b *binder) visit(n *tree.Node, sc *Scope) {
 			b.children(stage, child(sc, ScopePipeline, stage))
 		}
 	case tree.KParamExp:
-		if n.Name != "" && !isSpecialParam(n.Name) {
-			b.use(UseVarRead, n.Name, n.NameRange, sc, n)
-		}
+		b.paramExp(n, sc)
+	case tree.KArith:
+		b.arithBody(n, sc, "((")
+		b.children(n, sc)
+	case tree.KArithExp:
+		b.arithBody(n, sc, "$((")
+		b.children(n, sc)
+	case tree.KLet:
+		b.letBody(n, sc)
+		b.children(n, sc)
+	case tree.KCStyleFor:
+		b.cStyleBody(n, sc)
 		b.children(n, sc)
 	case tree.KAssign:
 		b.assign(n, sc, VarAttrs{}, "")
@@ -224,6 +240,26 @@ func (b *binder) visit(n *tree.Node, sc *Scope) {
 	default:
 		b.children(n, sc)
 	}
+}
+
+// paramExp records the read of a parameter expansion and the arithmetic it
+// holds. `name[expr]` written inside arithmetic (no `$`) is also a write when
+// an assignment operator or `++`/`--` is attached to it.
+func (b *binder) paramExp(n *tree.Node, sc *Scope) {
+	if n.Name != "" && !isSpecialParam(n.Name) {
+		read, write := true, false
+		if s := n.Range.Start.Offset; s >= 0 && s < len(b.src) && b.src[s] != '$' {
+			read, write = b.arithAccess(s, n.Range.End.Offset, 0, len(b.src))
+		}
+		if read {
+			b.use(UseVarRead, n.Name, n.NameRange, sc, n)
+		}
+		if write {
+			b.arithWrite(n.Name, n.NameRange, n, sc)
+		}
+	}
+	b.paramArith(n, sc)
+	b.children(n, sc)
 }
 
 func isSpecialParam(name string) bool {
@@ -247,8 +283,10 @@ func (b *binder) use(k UseKind, name string, r tree.Range, sc *Scope, n *tree.No
 
 // variable records a DeclVariable and its UseVarWrite.
 func (b *binder) variable(name string, r tree.Range, n *tree.Node, sc *Scope, attrs VarAttrs, literal, implicit string) {
-	b.ff.Decls = append(b.ff.Decls, &Decl{Kind: DeclVariable, Name: name, NameRange: r, Scope: sc, Attrs: attrs,
-		Doc: b.docAbove(n.Range.Start.Line), Node: n, Literal: literal, Implicit: implicit})
+	d := &Decl{Kind: DeclVariable, Name: name, NameRange: r, Scope: sc, Attrs: attrs,
+		Doc: b.docAbove(n.Range.Start.Line), Node: n, Literal: literal, Implicit: implicit}
+	b.ff.Decls = append(b.ff.Decls, d)
+	b.noteDecl(d, 1)
 	b.use(UseVarWrite, name, r, sc, n)
 }
 
@@ -260,6 +298,7 @@ func (b *binder) assign(n *tree.Node, sc *Scope, attrs VarAttrs, implicit string
 			attrs.Array = true
 		}
 		b.variable(n.Name, n.NameRange, n, sc, attrs, b.assignLiteral(n), implicit)
+		b.assignSubscript(n, attrs.Assoc || b.assoc[n.Name], sc)
 	}
 	b.children(n, sc)
 }
@@ -319,10 +358,10 @@ func literalText(w *tree.Node) (string, bool) {
 	return sb.String(), true
 }
 
-func (b *binder) declClause(n *tree.Node, sc *Scope) {
-	var attrs VarAttrs
-	dashN := false // -n: nameref for declare/typeset/local, "remove the export attribute" for export/readonly
-	skip := false  // -f/-F/-p: function or listing form, no variables declared
+// declFlags reads the option words of a declaration command.
+func declFlags(n *tree.Node) (attrs VarAttrs, dashN, skip bool) {
+	// dashN: -n is nameref for declare/typeset/local, "remove the export attribute" for export/readonly
+	// skip: -f/-F/-p are the function or listing form, no variables declared
 	for _, a := range n.Children {
 		if a.Kind != tree.KAssign || a.Name != "" || len(a.Children) == 0 || a.Children[0].Kind != tree.KWord {
 			continue
@@ -352,6 +391,11 @@ func (b *binder) declClause(n *tree.Node, sc *Scope) {
 			}
 		}
 	}
+	return
+}
+
+func (b *binder) declClause(n *tree.Node, sc *Scope) {
+	attrs, dashN, skip := declFlags(n)
 	switch n.Name {
 	case "export":
 		attrs.Exported = !dashN
@@ -408,6 +452,7 @@ func (b *binder) callChildren(n *tree.Node, sc *Scope, hasCmd bool) {
 		for _, d := range b.ff.Decls[start:] {
 			if d.Node == c {
 				d.Temp = true
+				b.noteDecl(d, -1)
 			}
 		}
 	}
