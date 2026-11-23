@@ -1,8 +1,6 @@
 package front
 
 import (
-	"fmt"
-
 	"mvdan.cc/sh/v3/syntax"
 
 	"github.com/wamra/bash-lsp/tree"
@@ -24,7 +22,8 @@ func variant(d Dialect) syntax.LangVariant {
 
 // Parse never returns nil. For Zsh it returns a File with Skipped set and no
 // statements; likewise for a file that nests too deeply to parse safely
-// (scan.go), which also carries one error saying so. After an error the parser
+// (scan.go), which also carries one error saying so, placed where the parser
+// was stopped. After an error the parser
 // cannot recover from, the tree holds the statements before it, a KErrorGap
 // over the broken region, and (when a later line parses cleanly) the
 // statements after it; see resync.go.
@@ -34,14 +33,13 @@ func Parse(path string, src []byte, d Dialect) *tree.File {
 		f.Skipped = "zsh is not supported yet"
 		return f
 	}
-	if deep, at := nestingTooDeep(src); deep {
-		msg := fmt.Sprintf("nesting deeper than %d levels: file not parsed", maxNesting)
-		f.Skipped = msg
-		p := f.PosAt(at)
-		f.Errors = []tree.SyntaxError{{Range: tree.Range{Start: p, End: p}, Msg: msg}}
+	stmts, errs, comments, deepAt := parseFile(f, d)
+	if deepAt >= 0 {
+		f.Skipped = refusal
+		p := f.PosAt(deepAt)
+		f.Errors = []tree.SyntaxError{{Range: tree.Range{Start: p, End: p}, Msg: refusal}}
 		return f
 	}
-	stmts, errs, comments := parseFile(f, d)
 	f.Root.Children = stmts
 	for _, s := range stmts {
 		s.Parent = f.Root

@@ -33,7 +33,7 @@ func TestDeeplyNestedFileKeepsServerAlive(t *testing.T) {
 	d := c.waitDiag("opened.sh")
 	found := false
 	for _, x := range d {
-		if strings.Contains(x.Message, "nesting deeper than") {
+		if x.Message == "nesting too deep to parse safely" {
 			found = true
 		}
 	}

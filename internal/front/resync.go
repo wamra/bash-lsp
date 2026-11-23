@@ -19,7 +19,8 @@ const maxResyncAttempts = 50
 type resyncer struct {
 	f      *tree.File
 	d      Dialect
-	budget int // candidate lines still allowed, shared by the whole file
+	g      stackGuard // watches the parser's stack in every run (scan.go)
+	budget int        // candidate lines still allowed, shared by the whole file
 }
 
 // attempt is one parser run over f.Src[off:], lowered to absolute positions.
@@ -29,18 +30,30 @@ type attempt struct {
 	comments []*tree.Node
 	failOff  int // absolute offset of the failure, -1 when the run was clean
 	failErr  tree.SyntaxError
+	tooDeep  bool // the guard stopped the run at failOff; nothing was lowered
 }
 
-// parseFile parses all of f.Src and returns its statements, errors and comments.
-func parseFile(f *tree.File, d Dialect) ([]*tree.Node, []tree.SyntaxError, []*tree.Node) {
+// parseFile parses all of f.Src and returns its statements, errors and
+// comments. deepAt is -1, or the offset where the parse of the whole file was
+// stopped for nesting too deeply; nothing else is returned then.
+func parseFile(f *tree.File, d Dialect) (stmts []*tree.Node, errs []tree.SyntaxError, comments []*tree.Node, deepAt int) {
 	r := &resyncer{f: f, d: d, budget: maxResyncAttempts}
-	return r.resolve(r.raw(0))
+	defer r.g.release()
+	a := r.raw(0)
+	if a.tooDeep {
+		return nil, nil, nil, a.failOff
+	}
+	stmts, errs, comments = r.resolve(a)
+	return stmts, errs, comments, -1
 }
 
 // raw runs the parser once over f.Src[off:]. It does not resync.
 func (r *resyncer) raw(off int) attempt {
 	f := r.f
-	af, err, crashed := parseSafely(f.Src[off:], f.Path, r.d)
+	af, err, crashed, deepAt := parseSafely(&r.g, f.Src[off:], f.Path, r.d)
+	if deepAt >= 0 {
+		return attempt{tooDeep: true, failOff: off + deepAt}
+	}
 	if af == nil {
 		af = &syntax.File{}
 	}
@@ -68,15 +81,23 @@ func (r *resyncer) raw(off int) attempt {
 // parseSafely runs the parser over src. The parser can panic on some broken
 // input (`A=$((0 A` indexes past a slice in v3.14.1); crashed reports that,
 // with err describing it, instead of letting the panic end the process.
-func parseSafely(src []byte, path string, d Dialect) (af *syntax.File, err error, crashed bool) {
+//
+// The parser reads src through g's reader, which stops it when its stack
+// grows too deep: deepAt is then how many bytes it had been given, and the
+// partial tree is dropped. Otherwise deepAt is -1.
+func parseSafely(g *stackGuard, src []byte, path string, d Dialect) (af *syntax.File, err error, crashed bool, deepAt int) {
+	rd := &guardedReader{g: g, src: src}
 	defer func() {
 		if r := recover(); r != nil {
-			af, err, crashed = nil, fmt.Errorf("parser failure: %v", r), true
+			af, err, crashed, deepAt = nil, fmt.Errorf("parser failure: %v", r), true, -1
+		}
+		if rd.tripped {
+			af, err, crashed, deepAt = nil, errTooDeep, false, rd.off
 		}
 	}()
 	p := syntax.NewParser(syntax.KeepComments(true), syntax.RecoverErrors(50), syntax.Variant(variant(d)))
-	af, err = p.Parse(bytes.NewReader(src), path)
-	return af, err, false
+	af, err = p.Parse(rd, path)
+	return af, err, false, -1
 }
 
 // unclosedQuote returns the offset (relative to the parsed text) of the first
@@ -147,12 +168,19 @@ func (r *resyncer) resolve(a attempt) ([]*tree.Node, []tree.SyntaxError, []*tree
 	src := f.Src
 	// Candidates start after both the failure and the dropped statements: a
 	// gap must not end before it starts.
-	for pos := nextLine(src, max(a.failOff, gapStart)); pos < len(src) && r.budget > 0; pos = nextLine(src, pos) {
+	// A candidate the guard stopped is dropped like one that did not parse:
+	// the text from there may only look deep because the parse started in the
+	// middle of a heredoc or a string. Once the guard's own budget is spent,
+	// no further line is tried.
+	for pos := nextLine(src, max(a.failOff, gapStart)); pos < len(src) && r.budget > 0 && !r.g.spent(); pos = nextLine(src, pos) {
 		if !resyncPoint(src, pos) {
 			continue
 		}
 		r.budget--
 		t := r.raw(pos)
+		if t.tooDeep {
+			continue
+		}
 		_, tailKept := t.cut(f)
 		if len(tailKept) == 0 || errorAt(t.errs, tailKept[0].Range.Start.Offset) {
 			continue

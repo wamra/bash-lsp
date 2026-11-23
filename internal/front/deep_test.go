@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"mvdan.cc/sh/v3/syntax"
+
 	"github.com/wamra/bash-lsp/tree"
 )
 
@@ -44,10 +46,11 @@ func fill(prefix, unit, suffix string) string {
 	return prefix + strings.Repeat(unit, n) + suffix
 }
 
-// Parse must refuse these before parsing: a Skipped file with an error that
-// says why. Each drove mvdan's recursive-descent parser past Go's stack limit
-// (a fatal error no recover() catches; review finding C1), or used a quarter
-// of it or more, measured with debug.SetMaxStack.
+// Parse must refuse these: a Skipped file with an error that says why. Each
+// drove mvdan's recursive-descent parser past Go's stack limit (a fatal error
+// no recover() catches; review finding C1), or used a quarter of it or more,
+// measured with debug.SetMaxStack. TestNoCrashSubprocess runs the same
+// shapes, and more, under a 64 MiB stack limit.
 func TestDeepNestingIsSkipped(t *testing.T) {
 	cases := map[string]string{
 		"paren":       strings.Repeat("(", 200000) + "\n",
@@ -76,7 +79,6 @@ func TestDeepNestingIsSkipped(t *testing.T) {
 		"for":             fill("", "for a in b;do\n", ""),
 		"for-in-done":     fill("", "for x in done; do ", ":\n"),
 		"case":            fill("", "case a in b)\n", ""),
-		"elif":            fill("if a; then :\n", "elif a; then :\n", "fi\n"),
 		"time":            fill("", "time ", "a\n"),
 		"coproc":          fill("", "coproc ", "a\n"),
 		"funcs":           fill("", "f() ", "{ :; }\n"),
@@ -96,7 +98,7 @@ func TestDeepNestingIsSkipped(t *testing.T) {
 			if f.Skipped == "" {
 				t.Fatalf("not skipped (%d errors, depth %d)", len(f.Errors), treeDepth(f))
 			}
-			if !strings.Contains(f.Skipped, "nesting") || !hasErr(f, "nesting") {
+			if f.Skipped != refusal || len(f.Errors) != 1 || f.Errors[0].Msg != refusal {
 				t.Fatalf("skipped %q, errors %v", f.Skipped, f.Errors)
 			}
 			if len(f.Root.Children) != 0 {
@@ -107,9 +109,9 @@ func TestDeepNestingIsSkipped(t *testing.T) {
 	}
 }
 
-// Shapes the parser handles without recursing, but that recursed (or ran
-// quadratically) in the lowerer, mvdan's Walk or End: at the 2 MiB limit they
-// lower whole, to a shallow tree.
+// Shapes the parser handles without recursing, so the stack guard never sees
+// them, but that recursed (or ran quadratically) in the lowerer, mvdan's Walk
+// or End: at the 2 MiB limit they lower whole, to a shallow tree.
 func TestLongChainsLowerSafely(t *testing.T) {
 	cases := map[string]string{
 		"andor":       fill("a ", "&& a ", "\n"),
@@ -135,9 +137,11 @@ func TestLongChainsLowerSafely(t *testing.T) {
 	}
 }
 
-// The lowerer's own bound, below the pre-scan (parseFile skips it): a
-// statement nested deeper than maxDepth lowering levels is dropped and
-// reported, so analysis never sees a deep tree.
+// The lowerer's own bound, tested without the stack guard (the parser is
+// called directly): a statement nested deeper than maxDepth lowering levels
+// is dropped and reported, so analysis never sees a deep tree. Of these only
+// the elif chain reaches the lowerer through Parse: the parser builds it in a
+// loop, so the guard has nothing to stop.
 func TestLowererDepthBound(t *testing.T) {
 	cases := map[string]string{
 		"if":              strings.Repeat("if a;then\n", 2100) + ":\n" + strings.Repeat("fi\n", 2100),
@@ -151,7 +155,11 @@ func TestLowererDepthBound(t *testing.T) {
 	for name, src := range cases {
 		t.Run(name, func(t *testing.T) {
 			f := tree.NewFile("x.sh", []byte(src))
-			stmts, errs, _ := parseFile(f, Bash)
+			af, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(src), "x.sh")
+			if err != nil {
+				t.Fatal(err)
+			}
+			stmts, errs := lowerStmts(f, f.PosAt(0), af.Stmts)
 			f.Root.Children = stmts
 			f.Errors = errs
 			if !hasErr(f, "nested deeper") {
@@ -164,12 +172,11 @@ func TestLowererDepthBound(t *testing.T) {
 	}
 }
 
-// Nesting just under the pre-scan's bound parses, and within 64 MB of stack:
-// a 16th of the 1 GB limit, so the bound leaves a wide margin (the cheapest
-// overflow measured at 4f8e524 needed 125,000 to 150,000 levels of `(`).
+// Nesting far deeper than any real script, but under the stack guard's
+// limit, parses, and within 64 MB of stack: a 16th of the 1 GB limit.
 func TestNestingAtTheBoundParses(t *testing.T) {
 	defer debug.SetMaxStack(debug.SetMaxStack(64 << 20))
-	const n = maxNesting - 10
+	const n = 990
 	cases := map[string]string{
 		"cmdsubst": "echo " + strings.Repeat("$(", n) + "x" + strings.Repeat(")", n) + "\n",
 		"dq":       "echo " + strings.Repeat(`"$(`, n/2) + "x" + strings.Repeat(`)"`, n/2) + "\n",
