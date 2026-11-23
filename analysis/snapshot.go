@@ -110,6 +110,7 @@ type posKey struct{ file, offset int }
 // visibility and every name binding.
 type Snapshot struct {
 	gen        uint64
+	root       string
 	paths      []string
 	idx        map[string]int
 	facts      []*FileFacts
@@ -132,7 +133,7 @@ type Snapshot struct {
 
 // Build analyses files (keyed by absolute path) into a Snapshot.
 func Build(files map[string]*FileFacts, opt Options, generation uint64) *Snapshot {
-	s := &Snapshot{gen: generation, idx: map[string]int{},
+	s := &Snapshot{gen: generation, root: opt.Root, idx: map[string]int{},
 		funcSyms: map[string][]*Symbol{}, aliasSyms: map[string][]*Symbol{}, varSyms: map[string][]*Symbol{},
 		localSyms: map[localKey]*Symbol{}, envSyms: map[string]*Symbol{}, tempSyms: map[posKey]*Symbol{},
 		declSym: map[*Decl]*Symbol{}, declFile: map[*Decl]int{}, bySym: map[*Symbol][]Binding{}}
