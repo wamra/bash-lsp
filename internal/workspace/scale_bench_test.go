@@ -40,7 +40,9 @@ func BenchmarkSetOverlayBig(b *testing.B) {
 	b.SetBytes(int64(len(src)))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		w.SetOverlay(p, i+1, src)
+		// The text must differ from the disk file and from the last edit, or the
+		// overlay would reuse already-built facts and measure nothing.
+		w.SetOverlay(p, i+1, append(append([]byte{}, src...), fmt.Sprintf("# edit %d\n", i)...))
 	}
 }
 
