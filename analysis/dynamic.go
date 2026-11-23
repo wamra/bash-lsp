@@ -889,18 +889,23 @@ func (s *Snapshot) finishDynamic(r func(file int) *resolver) {
 // environment binding. Callers are the functions around resolved RelCalls
 // edges to the definition of g that holds the read (plain calls and calls
 // through an alias; not strings, variables or alias definitions), depth 1.
+//
+// Cost: callers are kept once per (file, function), and for each g the
+// caller locals of the names g reads unresolved are indexed once, looking at
+// the smaller of those names and each caller's locals. A scan of every call
+// of g per read cost O(reads x calls): 56 s for 1 MiB.
 func (s *Snapshot) dynamicScope(added map[int][]Binding, replaced map[*Use]bool) {
 	type callerLocal struct {
 		file int
 		fn   *tree.Node
 	}
-	// callersOf maps a definition to the functions around the resolved plain
-	// calls that reach it. Filled per symbol in one pass over its calls (each
-	// call's targets listed once): per definition, the pass cost
-	// O(definitions^2) for one call of a name defined many times.
-	callersOf := map[*Decl][]callerLocal{}
-	swept := map[*Symbol]bool{}
-	var scratch []edgeRec
+	// The unresolved reads inside a function, with that function.
+	type read struct {
+		file, k int
+		g       *Decl
+	}
+	var reads []read
+	names := map[*Decl]map[string]bool{} // per g, the names it reads unresolved
 	for f, bs := range s.bindings {
 		for k := range bs {
 			b := &bs[k]
@@ -912,47 +917,102 @@ func (s *Snapshot) dynamicScope(added map[int][]Binding, replaced map[*Use]bool)
 			if g == nil {
 				continue
 			}
-			if gs := s.declSym[g]; !swept[gs] {
-				swept[gs] = true
-				for _, cb := range s.bySym[gs] {
-					cu := cb.Use
-					if cu.Kind != UseCall || cu.Via != ViaNone || cu.ViaAlias || cb.Res != Resolved {
-						continue
-					}
-					cf := s.idx[cb.File]
-					scratch = s.appendTargets(scratch[:0], cf, edgeRec{}, &cb)
-					var d *Decl
-					for k, r := range scratch {
-						if r.res != Resolved || r.to == nil || s.declSym[r.to] != gs ||
-							slices.ContainsFunc(scratch[:k], func(q edgeRec) bool { return q.res == Resolved && q.to == r.to }) {
-							continue
-						}
-						if d == nil {
-							if d = s.callerOfScope(cf, cu.Scope); d == nil {
-								break
-							}
-						}
-						callersOf[r.to] = append(callersOf[r.to], callerLocal{cf, d.Node})
-					}
-				}
+			reads = append(reads, read{f, k, g})
+			if names[g] == nil {
+				names[g] = map[string]bool{}
 			}
-			cs := callersOf[g]
-			var syms []*Symbol
-			for _, c := range cs {
-				if !s.locals[c.file][c.fn][u.Name] {
-					continue
-				}
-				if sym := s.localSyms[localKey{c.file, c.fn, u.Name}]; sym != nil && !slices.Contains(syms, sym) {
-					syms = append(syms, sym)
-				}
-			}
-			if len(syms) == 0 {
+			names[g][u.Name] = true
+		}
+	}
+	if len(reads) == 0 {
+		return
+	}
+	// callersOf maps a definition to the distinct functions around the
+	// resolved plain calls that reach it, in order of their first call.
+	// Filled per symbol in one pass over its calls (each call's targets
+	// listed once): per definition, the pass cost O(definitions^2) for one
+	// call of a name defined many times.
+	callersOf := map[*Decl][]callerLocal{}
+	seenCaller := map[*Decl]map[callerLocal]bool{}
+	swept := map[*Symbol]bool{}
+	var scratch []edgeRec
+	sweep := func(gs *Symbol) {
+		for _, cb := range s.bySym[gs] {
+			cu := cb.Use
+			if cu.Kind != UseCall || cu.Via != ViaNone || cu.ViaAlias || cb.Res != Resolved {
 				continue
 			}
-			replaced[u] = true
-			for _, sym := range syms {
-				added[f] = append(added[f], Binding{Use: u, File: b.File, Sym: sym, Res: Candidate, Reason: ReasonDynamicScope})
+			cf := s.idx[cb.File]
+			scratch = s.appendTargets(scratch[:0], cf, edgeRec{}, &cb)
+			var d *Decl
+			for k, r := range scratch {
+				if r.res != Resolved || r.to == nil || s.declSym[r.to] != gs ||
+					slices.ContainsFunc(scratch[:k], func(q edgeRec) bool { return q.res == Resolved && q.to == r.to }) {
+					continue
+				}
+				if d == nil {
+					if d = s.callerOfScope(cf, cu.Scope); d == nil {
+						break
+					}
+				}
+				c := callerLocal{cf, d.Node}
+				if seenCaller[r.to] == nil {
+					seenCaller[r.to] = map[callerLocal]bool{}
+				}
+				if !seenCaller[r.to][c] {
+					seenCaller[r.to][c] = true
+					callersOf[r.to] = append(callersOf[r.to], c)
+				}
 			}
+		}
+	}
+	// localsOf[g][name] is the caller-local symbols of name, in caller order,
+	// each once: what each read of name in g binds to.
+	localsOf := map[*Decl]map[string][]*Symbol{}
+	index := func(g *Decl) map[string][]*Symbol {
+		if m, ok := localsOf[g]; ok {
+			return m
+		}
+		m := map[string][]*Symbol{}
+		want := names[g]
+		add := func(c callerLocal, name string) {
+			if sym := s.localSyms[localKey{c.file, c.fn, name}]; sym != nil && !slices.Contains(m[name], sym) {
+				m[name] = append(m[name], sym)
+			}
+		}
+		for _, c := range callersOf[g] {
+			ls := s.locals[c.file][c.fn]
+			if len(ls) < len(want) {
+				for name := range ls {
+					if want[name] {
+						add(c, name)
+					}
+				}
+				continue
+			}
+			for name := range want {
+				if ls[name] {
+					add(c, name)
+				}
+			}
+		}
+		localsOf[g] = m
+		return m
+	}
+	for _, rd := range reads {
+		b := &s.bindings[rd.file][rd.k]
+		u := b.Use
+		if gs := s.declSym[rd.g]; !swept[gs] {
+			swept[gs] = true
+			sweep(gs)
+		}
+		syms := index(rd.g)[u.Name]
+		if len(syms) == 0 {
+			continue
+		}
+		replaced[u] = true
+		for _, sym := range syms {
+			added[rd.file] = append(added[rd.file], Binding{Use: u, File: b.File, Sym: sym, Res: Candidate, Reason: ReasonDynamicScope})
 		}
 	}
 }

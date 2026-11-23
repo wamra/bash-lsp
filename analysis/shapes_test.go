@@ -145,3 +145,38 @@ func TestNestedFunctionDefinitionsBindIndependentOfDepth(t *testing.T) {
 		t.Errorf("Bind at 1,990 levels took %v, %.1fx its %v at 250", deep, float64(deep)/float64(shallow), shallow)
 	}
 }
+
+// dynamicShapes are the dynamic-scope shapes of fix round 1, about size
+// bytes each: unresolved reads of y in f and calls of f from one function
+// (with and without `local y`) or from many; and many distinct names read
+// in f with many callers declaring some other local. dynamicScope looped,
+// per unresolved read, over one entry per call of f (O(reads x calls):
+// 13.4 s at 512 KiB and 56 s at 1 MiB without locals, 88 s and 351 s with).
+func dynamicShapes(size int) map[string]string {
+	q := size / 2
+	var callers, names, localCallers strings.Builder
+	for i := 0; callers.Len() < q-20; i++ {
+		fmt.Fprintf(&callers, "h%d() { f; }\n", i)
+	}
+	for i := 0; names.Len() < q-20; i++ {
+		fmt.Fprintf(&names, "echo $v%d;", i)
+	}
+	for i := 0; localCallers.Len() < q-30; i++ {
+		fmt.Fprintf(&localCallers, "h%d() { local w; f; }\n", i)
+	}
+	reads := "f() { " + strings.Repeat("echo $y;", q/8) + " }\n"
+	return map[string]string{
+		"reads, calls":            reads + "h() { " + strings.Repeat("f;", q/2) + " }\n",
+		"reads, calls, local":     reads + "h() { local y; " + strings.Repeat("f;", q/2) + " }\n",
+		"reads, callers":          reads + callers.String(),
+		"distinct names, callers": "f() { " + names.String() + " }\n" + localCallers.String(),
+	}
+}
+
+func TestDynamicScopeInBoundedTime(t *testing.T) {
+	size, bound := shapeSize()
+	for name, src := range dynamicShapes(size) {
+		ff := parseClean(t, name, src)
+		withinBound(t, name, bound, func() { Build(map[string]*FileFacts{"/ws/a.sh": ff}, Options{Root: "/ws"}, 1) })
+	}
+}

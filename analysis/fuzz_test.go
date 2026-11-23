@@ -77,6 +77,9 @@ func FuzzBind(f *testing.F) {
 	for _, s := range deepCases(1 << 16) {
 		f.Add([]byte(s))
 	}
+	for _, s := range dynamicShapes(60000) { // fix round 1: O(reads x calls) took 1 to 8 s at this size
+		f.Add([]byte(s))
+	}
 	f.Fuzz(func(t *testing.T, src []byte) {
 		if len(src) > 1<<16 {
 			return
@@ -147,6 +150,9 @@ func FuzzEdges(f *testing.F) {
 		fillTo(n, "f() { :; }\neval \"", "f;", "\"\n"),
 		fillTo(n, "f() { :; }\n", "unset -f f; f\n", ""),
 	} {
+		f.Add([]byte(s))
+	}
+	for _, s := range dynamicShapes(n) {
 		f.Add([]byte(s))
 	}
 	f.Fuzz(func(t *testing.T, src []byte) {

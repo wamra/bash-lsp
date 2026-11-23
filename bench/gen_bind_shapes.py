@@ -85,6 +85,13 @@ shapes["alias_fn_70k"] = fdef + "".join(f"alias a{i}=f\n" for i in range(70000 *
 shapes["func_defs_reads_20k"] = lines("f() { x=1; echo $y; }\n", 20000) + "f\n"
 shapes["deep_func_sources_3900"] = deep(3900, ". $f;" * ((M - 4 * 3900 - 20) // 5), "g() { ", " }\n")
 shapes["deep_aliases_3900"] = deep(3900, "alias a=f;" * ((M - 4 * 3900 - 20) // 10), fdef)
+# dynamic scope (fix round 1): unresolved reads in f, calls of f from h or from many callers
+q = M // 2
+shapes["dyn_reads_calls"] = "f() { " + "echo $y;" * (q // 8) + " }\nh() { " + "f;" * (q // 2) + " }\n"
+shapes["dyn_reads_calls_local"] = "f() { " + "echo $y;" * (q // 8) + " }\nh() { local y; " + "f;" * (q // 2) + " }\n"
+shapes["dyn_reads_callers"] = "f() { " + "echo $y;" * (q // 8) + " }\n" + "".join(f"h{i}() {{ f; }}\n" for i in range(q // 17))
+shapes["dyn_names_callers_local"] = ("f() { " + "".join(f"echo $v{i};" for i in range(q // 14)) + " }\n"
+                                     + "".join(f"h{i}() {{ local w; f; }}\n" for i in range(q // 26)))
 for d in (1000, 1990):
     shapes[f"nested_funcs_defs_{d}"] = "f() { " * d + "h() { :; };" * ((M - 8 * d) // 11) + " }" * d + "\n"
 for k, v in shapes.items():
