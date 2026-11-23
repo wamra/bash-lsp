@@ -149,7 +149,7 @@ func TestGraphLookup(t *testing.T) {
 	wantSeq(t, q.nodeStrs(q.look("a.sh:3:3")), "a.sh:f")
 	wantSeq(t, q.nodeStrs(q.look("a.sh:2:1")), "a.sh:g")
 	wantSeq(t, q.nodeStrs(q.look("a.sh:5:1")), "a.sh:g")
-	wantSeq(t, q.nodeStrs(q.look("a.sh:1:99")), "a.sh:f")
+	wantSeq(t, q.nodeStrs(q.look("a.sh:1:11")), "a.sh:f") // one past the last byte is in range
 	wantSeq(t, q.nodeStrs(q.look("sub/b.sh:1:1")), "sub/b.sh:f")
 	for _, bad := range []string{"nope", "nope.sh:1:1", "a.sh:1", ""} {
 		if ns, err := q.s.Lookup(bad); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("%q", bad)) {
@@ -364,4 +364,37 @@ func wantSeq(t *testing.T, got []string, want ...string) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("got  %q\nwant %q", got, want)
 	}
+}
+
+func TestGraphLookupOutOfRange(t *testing.T) {
+	q := buildMem(t, map[string]string{"main.sh": "f() { :; }\nf\n"})
+	for _, bad := range []string{"main.sh:99:1", "main.sh:3:1", "main.sh:1:99", "main.sh:2:3"} {
+		if ns, err := q.s.Lookup(bad); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("%q", bad)) {
+			t.Errorf("Lookup(%q) = %v, %v; want an error naming the spec", bad, q.nodeStrs(ns), err)
+		}
+	}
+	// The end of a line (one past its last byte) is in range.
+	wantSeq(t, q.nodeStrs(q.look("main.sh:1:11")), "main.sh:f")
+	wantSeq(t, q.nodeStrs(q.look("main.sh:2:2")), "main.sh:f")
+}
+
+func TestGraphInvokesEdges(t *testing.T) {
+	q := buildMem(t, map[string]string{
+		"main.sh": "run() { ./tool.sh; }\nrun\n",
+		"tool.sh": "echo hi\n",
+	})
+	tool := q.node("tool.sh")
+	wantSeq(t, q.stepStrs(q.s.Callers(tool, 1)), "main.sh:run -> tool.sh @1 invokes resolved/direct")
+	wantSeq(t, q.nodeStrs(q.s.Impact(tool, 0)), "main.sh:run", "main.sh")
+	wantSeq(t, q.stepStrs(q.s.Trace(q.node("main.sh"), tool)),
+		"main.sh -> main.sh:run @2 calls resolved/direct",
+		"main.sh:run -> tool.sh @1 invokes resolved/direct")
+	if c := q.s.SourceCycles(); len(c) != 0 {
+		t.Fatalf("SourceCycles = %v, invokes must not count", c)
+	}
+}
+
+func TestGraphLookupFileBeatsFunction(t *testing.T) {
+	q := buildMem(t, map[string]string{"util.sh": "echo hi\n", "a.sh": "util.sh() { :; }\n"})
+	wantSeq(t, q.nodeStrs(q.look("util.sh")), "util.sh")
 }

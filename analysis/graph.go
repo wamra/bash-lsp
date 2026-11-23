@@ -130,8 +130,8 @@ func (s *Snapshot) compareNodes(a, b Node) int {
 // it, sorted by path and offset. A spec that matches a file is never read as a
 // name. An unknown spec is an error naming it.
 func (s *Snapshot) Lookup(spec string) ([]Node, error) {
-	if n, ok := s.lookupPosition(spec); ok {
-		return n, nil
+	if n, ok, err := s.lookupPosition(spec); ok {
+		return n, err
 	}
 	if p, ok := s.resolvePath(spec); ok {
 		return []Node{{Path: p}}, nil
@@ -154,22 +154,23 @@ func (s *Snapshot) Lookup(spec string) ([]Node, error) {
 }
 
 // lookupPosition handles "path:line:col". ok is false when spec has no such
-// shape or names no file of the snapshot (then it is tried as path or name).
-func (s *Snapshot) lookupPosition(spec string) ([]Node, bool) {
+// shape or names no file of the snapshot (then it is tried as path or name);
+// a line or column outside the file is an error naming spec.
+func (s *Snapshot) lookupPosition(spec string) (nodes []Node, ok bool, err error) {
 	i := strings.LastIndexByte(spec, ':')
 	if i < 0 {
-		return nil, false
+		return nil, false, nil
 	}
 	col, err1 := strconv.Atoi(spec[i+1:])
 	rest := spec[:i]
 	j := strings.LastIndexByte(rest, ':')
 	if err1 != nil || j < 0 {
-		return nil, false
+		return nil, false, nil
 	}
 	line, err2 := strconv.Atoi(rest[j+1:])
 	path, ok := s.resolvePath(rest[:j])
 	if err2 != nil || !ok || line < 1 || col < 1 {
-		return nil, false
+		return nil, false, nil
 	}
 	file := s.idx[path]
 	src := s.facts[file].File.Src
@@ -177,17 +178,22 @@ func (s *Snapshot) lookupPosition(spec string) ([]Node, bool) {
 	for l < line {
 		k := slices.Index(src[off:], '\n')
 		if k < 0 {
-			off = len(src)
-			break
+			return nil, true, fmt.Errorf("analysis: line %d of %q is past the end of the file", line, spec)
 		}
 		off += k + 1
 		l++
+	}
+	if line > 1 && off == len(src) { // the empty "line" after a final newline
+		return nil, true, fmt.Errorf("analysis: line %d of %q is past the end of the file", line, spec)
 	}
 	end := off
 	for end < len(src) && src[end] != '\n' {
 		end++
 	}
-	if end > off { // a column past the line end means its last byte
+	if col-1 > end-off { // one past the last byte is the end of the line
+		return nil, true, fmt.Errorf("analysis: column %d of %q is past the end of the line", col, spec)
+	}
+	if end > off { // the column one past the line end means its last byte
 		end--
 	}
 	off = min(off+col-1, end)
@@ -212,10 +218,10 @@ func (s *Snapshot) lookupPosition(spec string) ([]Node, bool) {
 			}
 		}
 		slices.SortFunc(out, s.compareNodes)
-		return out, true
+		return out, true, nil
 	}
 	c := s.CallerAt(path, off)
-	return []Node{{Path: c.Path, Func: c.Func}}, true
+	return []Node{{Path: c.Path, Func: c.Func}}, true, nil
 }
 
 // sortSteps orders steps of one depth by site path, site offset, relation and
@@ -273,8 +279,10 @@ func (s *Snapshot) walk(n Node, depth int, forward bool) []Step {
 
 // Callers returns the steps leading to n through resolved and candidate
 // calls, sources and invokes, breadth-first, up to depth levels (1 = direct;
-// 0 or less = unlimited), each edge once. A step's To is the node it was
-// reached from. Consumers filter by Step.Edge.Res.
+// 0 or less = unlimited), each edge once. Step.From and Step.To always follow
+// the edge's direction (From calls, sources or invokes To), so the first
+// level's To is n and a deeper level's To is a node an earlier step had as
+// its From. Consumers filter by Step.Edge.Res.
 func (s *Snapshot) Callers(n Node, depth int) []Step { return s.walk(n, depth, false) }
 
 // Callees returns the steps leaving n, as Callers does the steps entering it.
