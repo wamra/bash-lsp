@@ -1,0 +1,9 @@
+{
+  "bash": {
+    "command": "${CLAUDE_PLUGIN_ROOT}/bin/bash-lsp",
+    "args": ["serve"],
+    "extensionToLanguage": { ".sh": "shellscript", ".bash": "shellscript", ".bats": "shellscript", ".ksh": "shellscript" },
+    "startupTimeout": 10000,
+    "maxRestarts": 3
+  }
+}

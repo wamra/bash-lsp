@@ -1,0 +1,9 @@
+{
+  "name": "bash-lsp",
+  "version": "0.1.0",
+  "description": "Bash language server: go to definition, find references, hover, symbols and syntax diagnostics for shell scripts.",
+  "license": "MIT",
+  "author": {
+    "name": "wamra"
+  }
+}

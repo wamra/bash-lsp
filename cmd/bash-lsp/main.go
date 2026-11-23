@@ -2,11 +2,20 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 
+	"github.com/wamra/bash-lsp/analysis"
+	"github.com/wamra/bash-lsp/internal/front"
 	"github.com/wamra/bash-lsp/internal/lsp"
+	"github.com/wamra/bash-lsp/internal/workspace"
+	"github.com/wamra/bash-lsp/tree"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -16,8 +25,9 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
-const usage = "usage: bash-lsp [serve|version]"
+const usage = "usage: bash-lsp [serve|version|ast FILE [--json]|symbols [PATH...] [--json]|doctor [PATH]]"
 
+// Exit codes: 0 success, 1 runtime failure, 2 usage error.
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	// No arguments means serve: editors start the binary bare.
 	if len(args) == 0 {
@@ -37,8 +47,350 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case "version":
 		fmt.Fprintf(stdout, "bash-lsp %s\n", version)
 		return 0
+	case "ast":
+		return cmdAst(args[1:], stdout, stderr)
+	case "symbols":
+		return cmdSymbols(args[1:], stdout, stderr)
+	case "doctor":
+		return cmdDoctor(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "bash-lsp: unknown command %q\n%s\n", args[0], usage)
 		return 2
 	}
+}
+
+// parseArgs splits args into positionals and the --json flag. Any other
+// dash-prefixed argument is a usage error. allowJSON false rejects --json.
+func parseArgs(args []string, allowJSON bool) (pos []string, asJSON bool, err error) {
+	for _, a := range args {
+		switch {
+		case a == "--json" && allowJSON:
+			asJSON = true
+		case strings.HasPrefix(a, "-") && a != "-":
+			return nil, false, fmt.Errorf("unknown flag %q", a)
+		default:
+			pos = append(pos, a)
+		}
+	}
+	return pos, asJSON, nil
+}
+
+func usageError(stderr io.Writer, msg string) int {
+	fmt.Fprintf(stderr, "bash-lsp: %s\n%s\n", msg, usage)
+	return 2
+}
+
+func fail(stderr io.Writer, err error) int {
+	fmt.Fprintf(stderr, "bash-lsp: %v\n", err)
+	return 1
+}
+
+func writeJSON(stdout io.Writer, v any) error {
+	enc := json.NewEncoder(stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
+}
+
+// relSlash is p relative to root with forward slashes on every OS.
+func relSlash(root, p string) string {
+	if r, err := filepath.Rel(root, p); err == nil {
+		p = r
+	}
+	return filepath.ToSlash(p)
+}
+
+// --- ast ---
+
+type astNode struct {
+	Kind      string    `json:"kind"`
+	Start     [2]int    `json:"start"`
+	End       [2]int    `json:"end"`
+	Name      string    `json:"name"`
+	Value     string    `json:"value"`
+	Recovered bool      `json:"recovered"`
+	Children  []astNode `json:"children"`
+}
+
+type astError struct {
+	Line int    `json:"line"`
+	Col  int    `json:"col"`
+	Msg  string `json:"msg"`
+}
+
+type astDoc struct {
+	Path    string     `json:"path"`
+	Dialect string     `json:"dialect"`
+	Errors  []astError `json:"errors"`
+	Root    astNode    `json:"root"`
+}
+
+// astView is a tree node plus its children with comments merged in: the
+// parser keeps comments in File.Comments, outside the node tree.
+type astView struct {
+	n    *tree.Node
+	kids []*astView
+}
+
+func buildView(n *tree.Node) *astView {
+	v := &astView{n: n}
+	for _, c := range n.Children {
+		v.kids = append(v.kids, buildView(c))
+	}
+	return v
+}
+
+// insertComment places c under the deepest node whose range holds it, before
+// the first sibling that starts after it.
+func (v *astView) insertComment(c *tree.Node) {
+	for _, k := range v.kids {
+		if k.n.Range.Start.Offset <= c.Range.Start.Offset && c.Range.End.Offset <= k.n.Range.End.Offset {
+			k.insertComment(c)
+			return
+		}
+	}
+	i := 0
+	for i < len(v.kids) && v.kids[i].n.Range.Start.Offset <= c.Range.Start.Offset {
+		i++
+	}
+	v.kids = append(v.kids, nil)
+	copy(v.kids[i+1:], v.kids[i:])
+	v.kids[i] = &astView{n: c}
+}
+
+func fileView(f *tree.File) *astView {
+	v := buildView(f.Root)
+	for _, c := range f.Comments {
+		v.insertComment(c)
+	}
+	return v
+}
+
+func (v *astView) json() astNode {
+	n := v.n
+	out := astNode{
+		Kind:      n.Kind.String(),
+		Start:     [2]int{n.Range.Start.Line, n.Range.Start.Col},
+		End:       [2]int{n.Range.End.Line, n.Range.End.Col},
+		Name:      n.Name,
+		Value:     n.Value,
+		Recovered: n.Recovered,
+		Children:  []astNode{},
+	}
+	for _, k := range v.kids {
+		out.Children = append(out.Children, k.json())
+	}
+	return out
+}
+
+func (v *astView) print(w io.Writer, depth int) {
+	n := v.n
+	label := n.Name
+	if label == "" {
+		label = n.Value
+	}
+	line := fmt.Sprintf("%s%s %d:%d-%d:%d", strings.Repeat("  ", depth), n.Kind,
+		n.Range.Start.Line, n.Range.Start.Col, n.Range.End.Line, n.Range.End.Col)
+	if label != "" {
+		line += " " + strconv.Quote(label)
+	}
+	if n.Recovered {
+		line += " (recovered)"
+	}
+	fmt.Fprintln(w, line)
+	for _, k := range v.kids {
+		k.print(w, depth+1)
+	}
+}
+
+func cmdAst(args []string, stdout, stderr io.Writer) int {
+	pos, asJSON, err := parseArgs(args, true)
+	if err != nil {
+		return usageError(stderr, err.Error())
+	}
+	if len(pos) != 1 {
+		return usageError(stderr, "ast takes exactly one FILE")
+	}
+	src, err := os.ReadFile(pos[0])
+	if err != nil {
+		return fail(stderr, err)
+	}
+	d := front.Detect(pos[0], src)
+	f := front.Parse(pos[0], src, d)
+	if f.Skipped != "" {
+		return fail(stderr, fmt.Errorf("%s: %s", pos[0], f.Skipped))
+	}
+	if asJSON {
+		doc := astDoc{Path: filepath.ToSlash(pos[0]), Dialect: d.String(), Errors: []astError{}, Root: fileView(f).json()}
+		for _, e := range f.Errors {
+			doc.Errors = append(doc.Errors, astError{e.Range.Start.Line, e.Range.Start.Col, e.Msg})
+		}
+		if err := writeJSON(stdout, doc); err != nil {
+			return fail(stderr, err)
+		}
+		return 0
+	}
+	fileView(f).print(stdout, 0)
+	for _, e := range f.Errors {
+		fmt.Fprintf(stderr, "%s:%d:%d: %s\n", filepath.ToSlash(pos[0]), e.Range.Start.Line, e.Range.Start.Col, e.Msg)
+	}
+	return 0
+}
+
+// --- symbols ---
+
+type symOut struct {
+	Path      string `json:"path"`
+	Line      int    `json:"line"`
+	Col       int    `json:"col"`
+	Kind      string `json:"kind"`
+	Name      string `json:"name"`
+	Container string `json:"container"`
+}
+
+func kindName(k analysis.DeclKind) string {
+	switch k {
+	case analysis.DeclFunction:
+		return "function"
+	case analysis.DeclAlias:
+		return "alias"
+	}
+	return "variable"
+}
+
+// flattenSymbols lists a file's outline in source order, each function
+// followed by its locals (Container set). Depth 1 marks a local.
+func flattenSymbols(rel string, ds []analysis.DocSymbol) (out []symOut, depth []int) {
+	for _, d := range ds {
+		out = append(out, symOut{rel, d.Selection.Start.Line, d.Selection.Start.Col, kindName(d.Kind), d.Name, ""})
+		depth = append(depth, 0)
+		for _, c := range d.Children {
+			out = append(out, symOut{rel, c.Selection.Start.Line, c.Selection.Start.Col, kindName(c.Kind), c.Name, d.Name})
+			depth = append(depth, 1)
+		}
+	}
+	return out, depth
+}
+
+func cmdSymbols(args []string, stdout, stderr io.Writer) int {
+	pos, asJSON, err := parseArgs(args, true)
+	if err != nil {
+		return usageError(stderr, err.Error())
+	}
+	if len(pos) == 0 {
+		pos = []string{"."}
+	}
+	var all []symOut
+	var depths []int
+	var gen uint64
+	for _, p := range pos {
+		fi, err := os.Stat(p)
+		if err != nil {
+			return fail(stderr, err)
+		}
+		root, only := p, ""
+		if !fi.IsDir() {
+			root, only = filepath.Dir(p), filepath.Base(p)
+		}
+		ws, err := workspace.Open(root, workspace.Limits{})
+		if err != nil {
+			return fail(stderr, err)
+		}
+		snap := ws.Snapshot()
+		if snap.Generation() > gen {
+			gen = snap.Generation()
+		}
+		paths := snap.Paths()
+		if only != "" {
+			target := filepath.Join(ws.Root(), only)
+			found := false
+			for _, sp := range paths {
+				if sp == target {
+					found = true
+				}
+			}
+			if !found {
+				return fail(stderr, fmt.Errorf("%s: not a shell file the workspace loads", p))
+			}
+			paths = []string{target}
+		}
+		sort.Strings(paths)
+		for _, sp := range paths {
+			syms, ds := flattenSymbols(relSlash(ws.Root(), sp), snap.DocumentSymbols(sp))
+			all = append(all, syms...)
+			depths = append(depths, ds...)
+		}
+	}
+	if asJSON {
+		if all == nil {
+			all = []symOut{}
+		}
+		if err := writeJSON(stdout, struct {
+			Generation uint64   `json:"generation"`
+			Symbols    []symOut `json:"symbols"`
+		}{gen, all}); err != nil {
+			return fail(stderr, err)
+		}
+		return 0
+	}
+	for i, s := range all {
+		fmt.Fprintf(stdout, "%s%s:%d:%d  %s  %s\n", strings.Repeat("  ", depths[i]), s.Path, s.Line, s.Col, s.Kind, s.Name)
+	}
+	return 0
+}
+
+// --- doctor ---
+
+func cmdDoctor(args []string, stdout, stderr io.Writer) int {
+	pos, _, err := parseArgs(args, false)
+	if err != nil {
+		return usageError(stderr, err.Error())
+	}
+	if len(pos) > 1 {
+		return usageError(stderr, "doctor takes at most one PATH")
+	}
+	root := "."
+	if len(pos) == 1 {
+		root = pos[0]
+	}
+	ws, err := workspace.Open(root, workspace.Limits{})
+	if err != nil {
+		return fail(stderr, err)
+	}
+	rep := ws.Report()
+	snap := ws.Snapshot()
+	fmt.Fprintf(stdout, "version: %s\n", version)
+	fmt.Fprintf(stdout, "root: %s\n", ws.Root())
+	fmt.Fprintf(stdout, "files: %d\n", rep.Files)
+	fmt.Fprintf(stdout, "skipped: %d\n", rep.Skipped)
+	var ds []string
+	for d := range rep.Dialects {
+		ds = append(ds, d)
+	}
+	sort.Strings(ds)
+	for _, d := range ds {
+		fmt.Fprintf(stdout, "%s: %d\n", d, rep.Dialects[d])
+	}
+	for _, l := range rep.LimitsHit {
+		fmt.Fprintf(stdout, "limit hit: %s\n", l)
+	}
+	errFiles := 0
+	var unresolved []string
+	for _, p := range snap.Paths() {
+		if ff := snap.Facts(p); ff != nil && ff.File != nil && len(ff.File.Errors) > 0 {
+			errFiles++
+		}
+		for _, e := range snap.SourceEdges(p) {
+			if e.Status == analysis.SourceUnresolved {
+				unresolved = append(unresolved, fmt.Sprintf("%s:%d", relSlash(ws.Root(), p), e.Ref.Range.Start.Line))
+			}
+		}
+	}
+	sort.Strings(unresolved)
+	fmt.Fprintf(stdout, "syntax errors: %d files\n", errFiles)
+	fmt.Fprintf(stdout, "unresolved sources: %d\n", len(unresolved))
+	for _, u := range unresolved {
+		fmt.Fprintf(stdout, "  %s\n", u)
+	}
+	fmt.Fprintln(stdout, "shellcheck: not used in this version")
+	return 0
 }
