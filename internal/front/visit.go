@@ -7,8 +7,8 @@ import "github.com/wamra/bash-lsp/internal/front/syntax"
 // unclosed quotes), for two reasons:
 //
 //   - Walk recurses once per tree level. A long operator chain the parser
-//     accepts (`1+1+1...`, 900,000 deep in a 2 MiB file) overflowed the stack
-//     in it, which is fatal.
+//     accepted before it counted chains (`1+1+1...`, 900,000 deep in a 2 MiB
+//     file) overflowed the stack in it, which is fatal.
 //   - For a statement with comments, Walk calls Stmt.End, which descends
 //     through every statement nested in a time, coproc, function or pipeline
 //     chain: a chain of `f() # c` lines took seconds.

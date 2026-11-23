@@ -55,6 +55,22 @@ func crashCases() map[string]func() string {
 			return "x=$(( $(cat <<EOF\n'\nEOF\n) ))\necho $(( " + strings.Repeat("a?", ternary) + "1 ))\n"
 		},
 		"control_ternary": func() string { return "echo $(( " + strings.Repeat("a?", ternary) + "1 ))\n" },
+		// gen3.py: megabytes of blanks or operators inside moderate nesting
+		// made the old pre-scan quadratic.
+		"scan_slow_blanks": func() string {
+			return "echo $(( " + strings.Repeat("a=", 990) + strings.Repeat(" ", 2000000) + "1 ))\n"
+		},
+		"scan_slow_plus": func() string {
+			return "echo $(( " + strings.Repeat("a=", 990) + strings.Repeat("+", 2000000) + "1 ))\n"
+		},
+		"scan_slow_ctrl": func() string {
+			return "echo $(( " + strings.Repeat("a=", 5) + strings.Repeat(" ", 2000000) + "1 ))\n"
+		},
+		// gen2.py's small controls.
+		"heredoc_in_arith_small": func() string {
+			return "x=$(( $(cat <<EOF\n'\nEOF\n) ))\necho $(( a?1:2 ))\nf() { :; }\n"
+		},
+		"resync_small": func() string { return "echo '\nf() { :; }\n" },
 	}
 	// Every shape deep_test.go once listed as refused before parsing.
 	for name, src := range map[string]func() string{
