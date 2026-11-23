@@ -75,7 +75,7 @@ func TestOversizeDocumentIsSkipped(t *testing.T) {
 	}
 }
 
-// Nesting the parser's stack guard accepts, as deep as the lowerer keeps
+// Nesting within the parser's limit, as deep as the lowerer keeps
 // (just under 4,000 loops), reaches every request that walks the tree:
 // diagnostics, the outline, hover and definition. Run under a 64 MiB stack
 // limit, an eighth of what a stack can reach by default.

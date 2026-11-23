@@ -36,8 +36,8 @@ require github.com/wamra/bash-lsp v0.0.0
 replace github.com/wamra/bash-lsp => ~/dev/bash-lsp
 ```
 
-(`go build` also adds `require mvdan.cc/sh/v3 v3.14.1 // indirect`.) Its
-`main.go`:
+(bash-lsp has no dependencies of its own: its shell parser is vendored in
+`internal/front/syntax`.) Its `main.go`:
 
 ```go
 // Command consumer loads a directory of shell files and prints where
@@ -135,47 +135,48 @@ This module's `go.mod` says `go 1.26.0`. `~/dev/code-index/go.mod`
 says `go 1.24.1`. A module cannot import one that needs a newer Go than its own
 `go` line, so linking bash-lsp into code-index needs a toolchain bump there.
 
-## The stack guard: what a host can rely on, and its limits
+## Deep nesting: what a host can rely on, and its limits
 
-`parse` guards the parser's stack through its reader (design:
-`m2a-nesting-design.md`, "Mechanism" and "Limits a user can meet"). A file
-that would use more than 32 MiB of parser stack comes back with `Skipped` set
-to "nesting too deep, or comment block too long, to parse safely" instead of
-overflowing the stack, which in Go ends the process.
+The shell parser is recursive, and a Go stack overflow ends the process. The
+parser therefore counts its own nesting and stops at 10,000 levels (design:
+`m2a-nesting-design.md`). Past that it reports the syntax error `nesting is
+deeper than 10000 levels` at the place the limit was passed.
 
 What a host can rely on:
 
-- `parse.File` may be called from any number of goroutines. A file that
-  parses alone parses beside any other file, however deep that one is: a
-  parse whose verdict could depend on another parse's stack is repeated
-  alone, under a package lock. So a call can wait for other calls.
-- The parser runs on a goroutine of its own. How deep the caller's stack is
-  does not matter, and a refused file leaves no large stack behind.
-- A refusal as such forces no collection. `parse` calls `runtime.GC` only
-  while a parse is being repeated alone, in two cases: the process's stack
-  memory has moved by 1 MiB or more since it last looked (it may then also
-  start 70 short-lived goroutines per P, to make the runtime drop the stacks
-  of finished goroutines), or, once per file, the reading is over the limit
-  by less than a 64 MiB stack would put it.
+- `parse.File` may be called from any number of goroutines. Parses share no
+  state: there is no package lock, no goroutine is started, nothing is read
+  from the runtime and no collection is forced. A file's result depends on
+  the file alone, not on what is parsed beside it or on the host's other
+  goroutines.
+- Input of any size returns. Nesting past the limit is a syntax error in
+  `File.Errors` like any other: the statements before it are analysed and
+  parsing resumes on a later line. Only when the error leaves no statement
+  at all is `File.Skipped` set, to the same text; the file then has its
+  errors and no statements.
+- Each operator of a chain is a level, so a pipeline, an `&&`/`||` list or
+  an arithmetic chain of about 10,000 operators, or an `if` with about
+  10,000 `elif` branches, is that same syntax error. The exact figure per
+  construct is in the design note ("The limit, per construct").
+- Comment blocks, heredocs, strings and long runs of statements are not
+  nesting and have no limit.
+- A statement nested deeper than 4,000 levels, but within the parser's
+  limit, is left out of the tree with the error `statement nested deeper
+  than 4000 levels: not analysed`; the rest of the file is analysed. The
+  tree handed to `analysis` is therefore at most about 12,000 nodes deep.
 
 What it assumes of the host:
 
-- `debug.SetMaxStack` is left at 64 MiB or more (the default is 1 GB). The
-  guard acts when the parser's stack has doubled to 64 MiB; under a lower
-  limit a deep file is a fatal stack overflow again.
-- The host's own goroutine stacks total less than about 32 MiB. The guard
-  reads the process's total stack memory and cannot tell the parser's share
-  from the host's. With 64 MiB or more held by the host, every parse runs
-  alone (one at a time) and the guard falls back to counting frames: at most
-  65,536, with a budget of 6,000,000 frames counted per file. There a
-  comment block is refused from 12,000 to 55,000 lines on (sooner the longer
-  its lines) and nesting from about 2,200 arithmetic parentheses, where
-  otherwise the limits are about 250,000 comment lines in one block and
-  8,000 parentheses. Between 32 and 64 MiB a parse gets what is left under
-  64 MiB before its frames are counted. Such a host should expect long
-  comment blocks to come back skipped, not crash it. The figures are the
-  design note's, measured there; removing the limit needs a per-goroutine
-  stack depth the Go runtime does not expose, or a patched parser.
+- The parser runs on the calling goroutine. At the limit it uses up to
+  about 42 MiB of stack (measured; the design note has the figures) on top
+  of what the caller already uses.
+- `debug.SetMaxStack` is left at 64 MiB or more (the default is 1 GB). Under
+  a lower limit, input nested close to 10,000 levels is a fatal stack
+  overflow again.
+- Parsing one file takes time in proportion to its size, except after a
+  syntax error the parser cannot recover from: the rest of the file is then
+  parsed again from up to 50 later lines. A 2 MiB file built for that takes
+  up to 9 s (`bench/results/resync-cost-m2a-task1-fix2.txt`).
 
 ## `bash-lsp ast` on deep trees
 

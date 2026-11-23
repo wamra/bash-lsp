@@ -16,6 +16,11 @@ Only `internal/front` imports it (`boundary_test.go` at the repository root).
   `tokens_parse.go`, `token_string.go`, `walk.go`, and `LICENSE` from the
   module root. Commit 67e84c7 is that copy, byte for byte (`cmp` against the
   module cache).
+- Why each: `parser.go`, `parser_arithm.go` and `lexer.go` are the parser;
+  `nodes.go`, `tokens.go`, `token_string.go` and `tokens_parse.go` are the
+  types and tables it uses; `walk.go` is what `visitAll` in `internal/front`
+  mirrors and is tested against (`TestVisitAllMatchesWalk`); `doc.go` is the
+  package documentation; the licence requires `LICENSE`.
 - Left out, because nothing here uses them: `printer.go` (it imports
   `mvdan.cc/sh/v3/fileutil`), `braces.go`, `quote.go`, `simplify.go`,
   `gen_token_parse.go` (a generator, not part of the build), the `typedjson`
@@ -103,7 +108,7 @@ repository owner's decision.
   - `TestNoCrashSubprocess` parses every known crash input, every construct
     at its limit and megabytes of comments in a child process whose stack is
     limited to 64 MiB. `FuzzNestingGuard` does the same for generated input.
-  - `TestDeepNestingIsASyntaxError`, `TestNoFalseRefusal`,
+  - `TestDeepNestingIsSkipped`, `TestRefusalMessage`, `TestNoFalseRefusal`,
     `TestParseReturnsOnFuzzBindInput`.
 - `visitAll` in `internal/front/visit.go` mirrors `walk.go`: compare the two
   when `walk.go` or `nodes.go` changes.
