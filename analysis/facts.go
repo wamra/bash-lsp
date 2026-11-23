@@ -84,7 +84,7 @@ type Decl struct {
 	Node      *tree.Node
 	AliasTo   string // DeclAlias: first word of the alias value when literal, else ""
 	Literal   string // DeclVariable: assigned value when it is a single literal or fully-literal quoted string, else ""
-	Implicit  string // "" for assignments/declare; else the builtin that declares it: "read", "mapfile", "readarray", "getopts", "printf -v", "for", "select"
+	Implicit  string // "" for assignments/declare; "arith" for a write in arithmetic that declares the variable (`(( n++ ))`, `let n=1`); else the builtin that declares it: "read", "mapfile", "readarray", "getopts", "printf -v", "for", "select"
 	Temp      bool   // true for an assignment prefixed to a command (`X=1 cmd`): it lives only for that command and must not be offered as a definition for later reads
 }
 

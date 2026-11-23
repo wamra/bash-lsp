@@ -281,11 +281,13 @@ func (b *binder) noteDecl(d *Decl, delta int) {
 	}
 }
 
-// arithWrite records a write to a name in arithmetic: a bare write when the
-// name is already declared in view, else a declaration too (bash makes the
-// variable, global inside a function, like a plain assignment).
+// arithWrite records a write to a name in arithmetic like a plain assignment
+// there: inside a subshell, command substitution, pipeline stage, process
+// substitution or coproc it declares a variable private to it; elsewhere it
+// is a bare write when the name is already declared in view, else a
+// declaration too (bash makes the variable, global inside a function).
 func (b *binder) arithWrite(name string, r tree.Range, n *tree.Node, sc *Scope) {
-	if b.isDeclared(name, sc) {
+	if privateScope(sc) == nil && b.isDeclared(name, sc) {
 		b.use(UseVarWrite, name, r, sc, n)
 		return
 	}
