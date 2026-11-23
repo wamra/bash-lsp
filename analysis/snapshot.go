@@ -276,15 +276,15 @@ func (s *Snapshot) computeVisibility(adj [][]int, unresolved []bool) {
 		s.visible[f] = vis[comp[f]]
 	}
 	mask := newBitset(n)
-	any := false
+	hasUnresolved := false
 	for f, u := range unresolved {
 		if u {
 			mask.set(f)
-			any = true
+			hasUnresolved = true
 		}
 	}
 	s.incomplete = make([]bool, n)
-	if !any {
+	if !hasUnresolved {
 		return
 	}
 	inc := make([]bool, nc)

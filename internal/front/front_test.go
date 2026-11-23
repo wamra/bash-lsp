@@ -426,7 +426,36 @@ func TestChunkedNodesDoNotAlias(t *testing.T) {
 	for i := 0; i < 400; i++ { // more nodes than the largest chunk
 		b.WriteString("f() {\n  if [[ -n \"$a\" ]]; then echo \"${x:-1}\" | cat <<EOF\nbody\nEOF\n  fi\n  case $a in s) :;; esac\n}\n")
 	}
+	checkNoAliasing(t, Parse("a.sh", []byte(b.String()), Bash), false)
+}
+
+// The same after a resync: the broken line is a gap and the tail is lowered by
+// a second lowerer with its own chunks, several times.
+func TestChunkedNodesDoNotAliasAfterResync(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 150; i++ {
+		b.WriteString("f() {\n  if [[ -n \"$a\" ]]; then echo \"${x:-1}\" | cat; fi\n  case $a in s) :;; esac\n}\n")
+		if i%50 == 25 {
+			b.WriteString("echo \"unterminated\n")
+		}
+		b.WriteString("g() { echo ok; }\n")
+	}
 	f := Parse("a.sh", []byte(b.String()), Bash)
+	gaps := 0
+	f.Root.Walk(func(n *tree.Node) bool {
+		if n.Kind == tree.KErrorGap {
+			gaps++
+		}
+		return true
+	})
+	if gaps == 0 || len(f.Errors) == 0 {
+		t.Fatalf("input did not resync: %d gaps, %d errors", gaps, len(f.Errors))
+	}
+	checkNoAliasing(t, f, true)
+}
+
+func checkNoAliasing(t *testing.T, f *tree.File, resynced bool) {
+	t.Helper()
 	var all []*tree.Node
 	f.Root.Walk(func(n *tree.Node) bool { all = append(all, n); return true })
 	if len(all) < 3*maxChunk {
@@ -452,7 +481,7 @@ func TestChunkedNodesDoNotAlias(t *testing.T) {
 	}
 	for i, n := range all {
 		if !reflect.DeepEqual(n.Children, before[i]) {
-			t.Fatalf("appending to a node's children changed another node's array (%v)", n.Kind)
+			t.Fatalf("appending to a node's children changed another node's array (%v, resynced=%v)", n.Kind, resynced)
 		}
 	}
 }
