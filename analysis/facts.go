@@ -1,0 +1,516 @@
+// Package analysis extracts facts from the owned syntax tree and answers
+// queries over them. It never imports the parser library.
+package analysis
+
+import (
+	"regexp"
+	"strings"
+
+	"github.com/wamra/bash-lsp/internal/front"
+	"github.com/wamra/bash-lsp/tree"
+)
+
+// ScopeKind says what opened a scope.
+type ScopeKind uint8
+
+const (
+	ScopeFile ScopeKind = iota + 1
+	ScopeFunction
+	ScopeSubshell
+	ScopeCmdSubst
+	ScopePipeline
+)
+
+// Scope is a lexical scope. Func is the name of the enclosing function, "" at file level.
+type Scope struct {
+	Kind   ScopeKind
+	Parent *Scope
+	Node   *tree.Node
+	Func   string
+}
+
+// DeclKind says what a Decl declares.
+type DeclKind uint8
+
+const (
+	DeclFunction DeclKind = iota + 1
+	DeclVariable
+	DeclAlias
+)
+
+// VarAttrs are the attributes a declaration gives a variable.
+type VarAttrs struct{ Local, Exported, Readonly, Integer, Array, Assoc, Nameref, Global bool }
+
+// Decl is one declaration.
+type Decl struct {
+	Kind      DeclKind
+	Name      string
+	NameRange tree.Range
+	Scope     *Scope
+	Attrs     VarAttrs
+	Doc       string // contiguous '#' comment lines ending on the line directly above the declaration, joined with "\n"; not the shebang
+	Node      *tree.Node
+	AliasTo   string // DeclAlias: first word of the alias value when literal, else ""
+	Literal   string // DeclVariable: assigned value when it is a single literal or fully-literal quoted string, else ""
+	Implicit  string // "" for assignments/declare; else the builtin that declares it: "read", "mapfile", "readarray", "getopts", "printf -v", "for", "select"
+}
+
+// UseKind says how a name is used.
+type UseKind uint8
+
+const (
+	UseCall UseKind = iota + 1
+	UseVarRead
+	UseVarWrite
+)
+
+// Use is one use of a name. ViaAlias: the use is the target named inside an alias definition.
+type Use struct {
+	Kind     UseKind
+	Name     string
+	Range    tree.Range
+	Scope    *Scope
+	Node     *tree.Node
+	ViaAlias bool
+}
+
+// SourceRef is a `source`/`.` (or bats `load`) command. Directive is the path
+// from a `# shellcheck source=` comment on the line above, "" if none.
+type SourceRef struct {
+	Node      *tree.Node
+	Word      *tree.Node
+	Range     tree.Range
+	Directive string
+}
+
+// FileFacts is everything Bind extracts from one file.
+type FileFacts struct {
+	Path    string
+	File    *tree.File
+	Root    *Scope
+	Decls   []*Decl
+	Uses    []*Use
+	Sources []SourceRef
+}
+
+var (
+	identRe     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	directiveRe = regexp.MustCompile(`^\s*shellcheck\s+(?:.*\s)?source=(\S+)`)
+)
+
+type binder struct {
+	ff       *FileFacts
+	src      []byte
+	bats     bool
+	wholeCmt map[int]*tree.Node // line -> comment that is alone on its line (shebang excluded)
+}
+
+// Bind walks f once, carrying a scope stack, and returns its facts.
+func Bind(f *tree.File) *FileFacts {
+	ff := &FileFacts{File: f}
+	if f == nil {
+		ff.Root = &Scope{Kind: ScopeFile}
+		return ff
+	}
+	ff.Path = f.Path
+	ff.Root = &Scope{Kind: ScopeFile, Node: f.Root}
+	b := &binder{ff: ff, src: f.Src, wholeCmt: map[int]*tree.Node{}}
+	b.bats = front.Detect(f.Path, f.Src) == front.Bats
+	for _, c := range f.Comments {
+		start := c.Range.Start
+		if start.Line == 1 && start.Offset+1 < len(f.Src) && f.Src[start.Offset+1] == '!' {
+			continue
+		}
+		lineStart := start.Offset - (start.Col - 1)
+		if lineStart >= 0 && strings.TrimSpace(string(f.Src[lineStart:start.Offset])) == "" {
+			b.wholeCmt[start.Line] = c
+		}
+	}
+	if f.Root != nil {
+		b.children(f.Root, ff.Root)
+	}
+	return ff
+}
+
+func (b *binder) children(n *tree.Node, sc *Scope) {
+	for _, c := range n.Children {
+		b.visit(c, sc)
+	}
+}
+
+func child(sc *Scope, k ScopeKind, n *tree.Node) *Scope {
+	return &Scope{Kind: k, Parent: sc, Node: n, Func: sc.Func}
+}
+
+func (b *binder) visit(n *tree.Node, sc *Scope) {
+	switch n.Kind {
+	case tree.KFuncDecl:
+		if n.Name != "" {
+			b.ff.Decls = append(b.ff.Decls, &Decl{Kind: DeclFunction, Name: n.Name, NameRange: n.NameRange,
+				Scope: b.ff.Root, Doc: b.docAbove(n.Range.Start.Line), Node: n})
+		}
+		fs := child(sc, ScopeFunction, n)
+		fs.Func = n.Name
+		b.children(n, fs)
+	case tree.KSubshell:
+		b.children(n, child(sc, ScopeSubshell, n))
+	case tree.KCmdSubst:
+		b.children(n, child(sc, ScopeCmdSubst, n))
+	case tree.KPipeline:
+		for _, stage := range n.Children {
+			b.children(stage, child(sc, ScopePipeline, stage))
+		}
+	case tree.KParamExp:
+		if n.Name != "" && !isSpecialParam(n.Name) {
+			b.use(UseVarRead, n.Name, n.NameRange, sc, n)
+		}
+		b.children(n, sc)
+	case tree.KAssign:
+		b.assign(n, sc, VarAttrs{}, "")
+	case tree.KDecl:
+		b.declClause(n, sc)
+	case tree.KFor:
+		if n.Name != "" {
+			impl := "for"
+			if o := n.Range.Start.Offset; o >= 0 && o <= len(b.src) && strings.HasPrefix(string(b.src[o:]), "select") {
+				impl = "select"
+			}
+			b.variable(n.Name, n.NameRange, n, sc, VarAttrs{}, "", impl)
+		}
+		b.children(n, sc)
+	case tree.KCall:
+		b.call(n, sc)
+	default:
+		b.children(n, sc)
+	}
+}
+
+func isSpecialParam(name string) bool {
+	switch name {
+	case "@", "*", "#", "?", "-", "$", "!":
+		return true
+	}
+	for _, r := range name {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func (b *binder) use(k UseKind, name string, r tree.Range, sc *Scope, n *tree.Node) *Use {
+	u := &Use{Kind: k, Name: name, Range: r, Scope: sc, Node: n}
+	b.ff.Uses = append(b.ff.Uses, u)
+	return u
+}
+
+// variable records a DeclVariable and its UseVarWrite.
+func (b *binder) variable(name string, r tree.Range, n *tree.Node, sc *Scope, attrs VarAttrs, literal, implicit string) {
+	b.ff.Decls = append(b.ff.Decls, &Decl{Kind: DeclVariable, Name: name, NameRange: r, Scope: sc, Attrs: attrs,
+		Doc: b.docAbove(n.Range.Start.Line), Node: n, Literal: literal, Implicit: implicit})
+	b.use(UseVarWrite, name, r, sc, n)
+}
+
+// assign handles a named KAssign (plain, env prefix or declaration argument).
+// A nameless one is an option word wrapper and only has its children visited.
+func (b *binder) assign(n *tree.Node, sc *Scope, attrs VarAttrs, implicit string) {
+	if n.Name != "" {
+		if b.isArrayAssign(n) {
+			attrs.Array = true
+		}
+		b.variable(n.Name, n.NameRange, n, sc, attrs, b.assignLiteral(n), implicit)
+	}
+	b.children(n, sc)
+}
+
+// isArrayAssign reports whether the source after the name reads `=(` or `+=(`.
+func (b *binder) isArrayAssign(n *tree.Node) bool {
+	i := n.NameRange.End.Offset
+	if i <= 0 || i >= len(b.src) {
+		return false
+	}
+	if b.src[i] == '+' {
+		i++
+	}
+	return i+1 < len(b.src) && b.src[i] == '=' && b.src[i+1] == '('
+}
+
+func (b *binder) assignLiteral(n *tree.Node) string {
+	if b.isArrayAssign(n) {
+		return ""
+	}
+	if i := n.NameRange.End.Offset; i < len(b.src) && b.src[i] == '[' { // subscripted: children mix index and value
+		return ""
+	}
+	for i := len(n.Children) - 1; i >= 0; i-- {
+		if c := n.Children[i]; c.Kind == tree.KWord {
+			s, _ := literalText(c)
+			return s
+		}
+	}
+	return ""
+}
+
+// literalText returns the text of a word made only of literals and
+// fully-literal quoted strings. ok is false for any expansion.
+func literalText(w *tree.Node) (string, bool) {
+	var sb strings.Builder
+	for _, p := range w.Children {
+		switch p.Kind {
+		case tree.KLit:
+			if p.Recovered {
+				return "", false
+			}
+			sb.WriteString(p.Value)
+		case tree.KSglQuoted:
+			sb.WriteString(p.Value)
+		case tree.KDblQuoted:
+			for _, q := range p.Children {
+				if q.Kind != tree.KLit {
+					return "", false
+				}
+				sb.WriteString(q.Value)
+			}
+		default:
+			return "", false
+		}
+	}
+	return sb.String(), true
+}
+
+func (b *binder) declClause(n *tree.Node, sc *Scope) {
+	var attrs VarAttrs
+	skip := false // -f/-F/-p: function or listing form, no variables declared
+	for _, a := range n.Children {
+		if a.Kind != tree.KAssign || a.Name != "" || len(a.Children) == 0 || a.Children[0].Kind != tree.KWord {
+			continue
+		}
+		txt, ok := literalText(a.Children[0])
+		if !ok || len(txt) < 2 || txt[0] != '-' {
+			continue
+		}
+		for _, ch := range txt[1:] {
+			switch ch {
+			case 'x':
+				attrs.Exported = true
+			case 'r':
+				attrs.Readonly = true
+			case 'i':
+				attrs.Integer = true
+			case 'a':
+				attrs.Array = true
+			case 'A':
+				attrs.Assoc = true
+			case 'n':
+				attrs.Nameref = true
+			case 'g':
+				attrs.Global = true
+			case 'f', 'F', 'p':
+				skip = true
+			}
+		}
+	}
+	switch n.Name {
+	case "export":
+		attrs.Exported = true
+	case "readonly":
+		attrs.Readonly = true
+	case "local":
+		attrs.Local = true
+	case "declare", "typeset":
+		attrs.Local = sc.Func != "" && !attrs.Global
+	}
+	for _, a := range n.Children {
+		if skip && a.Kind == tree.KAssign && a.Name != "" {
+			b.children(a, sc)
+			continue
+		}
+		if a.Kind == tree.KAssign {
+			b.assign(a, sc, attrs, "")
+		} else {
+			b.visit(a, sc)
+		}
+	}
+}
+
+func (b *binder) call(n *tree.Node, sc *Scope) {
+	var words []*tree.Node
+	for _, c := range n.Children {
+		if c.Kind == tree.KWord {
+			words = append(words, c)
+		}
+	}
+	if len(words) > 0 {
+		if name, ok := literalText(words[0]); ok && name != "" {
+			if b.builtin(n, name, words, sc) {
+				b.children(n, sc)
+				return
+			}
+			b.use(UseCall, name, words[0].Range, sc, n)
+		}
+	}
+	b.children(n, sc)
+}
+
+// builtin handles calls with special meaning. It returns true when the call
+// must not be recorded as a UseCall.
+func (b *binder) builtin(n *tree.Node, name string, words []*tree.Node, sc *Scope) bool {
+	args := words[1:]
+	switch name {
+	case "source", ".", "load":
+		if name == "load" && !b.bats {
+			return false
+		}
+		if len(args) == 0 {
+			return true
+		}
+		b.ff.Sources = append(b.ff.Sources, SourceRef{Node: n, Word: args[0], Range: args[0].Range,
+			Directive: b.directiveAbove(n.Range.Start.Line)})
+		return true
+	case "alias":
+		for _, w := range args {
+			b.aliasArg(n, w, sc)
+		}
+		return true
+	case "read":
+		b.readNames(n, args, sc, "read", "pdnNtui")
+	case "mapfile", "readarray":
+		b.firstName(n, args, sc, name, "dnOsCcu", true)
+	case "getopts":
+		if len(args) >= 2 {
+			if v, ok := literalText(args[1]); ok && identRe.MatchString(v) {
+				b.variable(v, args[1].Range, n, sc, VarAttrs{}, "", "getopts")
+			}
+		}
+	case "printf":
+		for i, w := range args {
+			if v, ok := literalText(w); ok && v == "-v" && i+1 < len(args) {
+				if nm, ok := literalText(args[i+1]); ok && identRe.MatchString(nm) {
+					b.variable(nm, args[i+1].Range, n, sc, VarAttrs{}, "", "printf -v")
+				}
+				break
+			}
+		}
+	}
+	return false
+}
+
+// optionWalk walks option words per the argTaking letters and calls name for
+// each remaining word until name returns false.
+func optionWalk(args []*tree.Node, argTaking string, name func(*tree.Node) bool) {
+	for i := 0; i < len(args); i++ {
+		txt, ok := literalText(args[i])
+		if ok && txt == "--" {
+			for _, w := range args[i+1:] {
+				if !name(w) {
+					return
+				}
+			}
+			return
+		}
+		if ok && len(txt) > 1 && txt[0] == '-' {
+			for j := 1; j < len(txt); j++ {
+				if strings.IndexByte(argTaking, txt[j]) >= 0 {
+					if j == len(txt)-1 {
+						i++ // the argument is the next word
+					}
+					break
+				}
+			}
+			continue
+		}
+		if !name(args[i]) {
+			return
+		}
+	}
+}
+
+func hasOption(args []*tree.Node, letter byte) bool {
+	for _, w := range args {
+		if txt, ok := literalText(w); ok && len(txt) > 1 && txt[0] == '-' && txt[1] != '-' && strings.IndexByte(txt, letter) >= 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (b *binder) readNames(n *tree.Node, args []*tree.Node, sc *Scope, impl, argTaking string) {
+	attrs := VarAttrs{Array: hasOption(args, 'a')}
+	optionWalk(args, argTaking, func(w *tree.Node) bool {
+		if v, ok := literalText(w); ok && identRe.MatchString(v) {
+			b.variable(v, w.Range, n, sc, attrs, "", impl)
+		}
+		return true
+	})
+}
+
+func (b *binder) firstName(n *tree.Node, args []*tree.Node, sc *Scope, impl, argTaking string, array bool) {
+	attrs := VarAttrs{Array: array}
+	optionWalk(args, argTaking, func(w *tree.Node) bool {
+		if v, ok := literalText(w); ok && identRe.MatchString(v) {
+			b.variable(v, w.Range, n, sc, attrs, "", impl)
+		}
+		return false
+	})
+}
+
+// aliasArg handles one `NAME=VALUE` argument of alias.
+func (b *binder) aliasArg(call, w *tree.Node, sc *Scope) {
+	s, e := w.Range.Start.Offset, w.Range.End.Offset
+	if s < 0 || e > len(b.src) || s >= e {
+		return
+	}
+	raw := string(b.src[s:e])
+	eq := strings.IndexByte(raw, '=')
+	if eq <= 0 || strings.ContainsAny(raw[:eq], "'\"$`\\ \t") {
+		return
+	}
+	d := &Decl{Kind: DeclAlias, Name: raw[:eq], Scope: sc, Node: call, Doc: b.docAbove(call.Range.Start.Line)}
+	d.NameRange = tree.Range{Start: w.Range.Start, End: b.ff.File.PosAt(s + eq)}
+	if _, lit := literalText(w); lit {
+		off := s + eq + 1
+		val := raw[eq+1:]
+		if val != "" && (val[0] == '\'' || val[0] == '"') {
+			q := val[0]
+			off++
+			val = val[1:]
+			if j := strings.IndexByte(val, q); j >= 0 {
+				val = val[:j]
+			}
+		}
+		trimmed := strings.TrimLeft(val, " \t")
+		off += len(val) - len(trimmed)
+		if j := strings.IndexAny(trimmed, " \t"); j >= 0 {
+			trimmed = trimmed[:j]
+		}
+		if trimmed != "" {
+			d.AliasTo = trimmed
+			u := b.use(UseCall, trimmed, tree.Range{Start: b.ff.File.PosAt(off), End: b.ff.File.PosAt(off + len(trimmed))}, sc, call)
+			u.ViaAlias = true
+		}
+	}
+	b.ff.Decls = append(b.ff.Decls, d)
+}
+
+// docAbove joins the contiguous whole-line comments ending on the line above line.
+func (b *binder) docAbove(line int) string {
+	var lines []string
+	for l := line - 1; l >= 1; l-- {
+		c := b.wholeCmt[l]
+		if c == nil {
+			break
+		}
+		lines = append([]string{c.Value}, lines...)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// directiveAbove returns the path of a `# shellcheck source=` comment on the line above line.
+func (b *binder) directiveAbove(line int) string {
+	if c := b.wholeCmt[line-1]; c != nil {
+		if m := directiveRe.FindStringSubmatch(c.Value); m != nil {
+			return m[1]
+		}
+	}
+	return ""
+}
