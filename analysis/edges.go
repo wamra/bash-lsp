@@ -208,7 +208,16 @@ func (s *Snapshot) edgeOf(file int, r *edgeRec) Edge {
 		return e
 	}
 	se := &s.edges[file][r.at]
-	if d := s.funcDeclAround(file, se.Ref.Node); d != nil {
+	var d *Decl
+	switch {
+	case se.Ref.loopKnown: // Bind recorded the function: no walk up the tree per edge
+		if se.Ref.named != nil {
+			d = s.funcDeclOf(file, se.Ref.named)
+		}
+	default:
+		d = s.funcDeclAround(file, se.Ref.Node)
+	}
+	if d != nil {
 		e.From.Func = s.declSym[d]
 	}
 	e.Site = Location{Path: s.paths[file], Range: se.Ref.Range}
@@ -332,14 +341,25 @@ func (s *Snapshot) encloses(d *Decl, file, off int) bool {
 
 // aliasDeclOf returns the alias declaration whose value names u (one `alias`
 // command may define several).
+//
+// It is the last declaration of that command (in offset order) that starts
+// at or before u: found by binary search, walking back over declarations of
+// other commands nested in it, instead of scanning every alias of the file
+// (O(aliases) per alias edge: 0.43 s for 20,000 aliases).
 func (s *Snapshot) aliasDeclOf(file int, u *Use) *Decl {
-	var found *Decl
-	for _, d := range s.aliasDecls[file] {
-		if d.Node == u.Node && d.NameRange.Start.Offset <= u.Range.Start.Offset {
-			found = d
+	ds := s.aliasDecls[file]
+	off := u.Range.Start.Offset
+	i := sort.Search(len(ds), func(i int) bool { return ds[i].NameRange.Start.Offset > off }) - 1
+	for ; i >= 0; i-- {
+		d := ds[i]
+		if d.Node == u.Node {
+			return d
+		}
+		if u.Node != nil && d.NameRange.Start.Offset < u.Node.Range.Start.Offset {
+			break // before u's command: no declaration of it lies further back
 		}
 	}
-	return found
+	return nil
 }
 
 // callerOfScope returns the declaration of the innermost named function

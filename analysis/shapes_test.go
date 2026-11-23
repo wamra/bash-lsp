@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -59,7 +60,10 @@ func parseClean(t *testing.T, name, src string) *FileFacts {
 // dynamic-scope pass listed the targets of every call of a function once
 // per definition: O(definitions^2) for one call, 1.2 s at 176 KB. Resolving
 // `. $f` scanned every declaration of the file for f's (varIsScriptDir):
-// O(sources x declarations), 63 s at 900 KB.
+// O(sources x declarations), 63 s at 900 KB. Each alias edge scanned every
+// alias declaration of the file (aliasDeclOf): 0.43 s for 20,000 aliases.
+// Each source edge walked up the tree to its function (funcDeclAround):
+// O(sources x depth), Edges 3.9 s for 2 MiB of `source $f` 3,900 deep.
 func TestM2bShapesBuildInBoundedTime(t *testing.T) {
 	size, bound := shapeSize()
 	cases := map[string]string{
@@ -68,6 +72,8 @@ func TestM2bShapesBuildInBoundedTime(t *testing.T) {
 		"many definitions with reads":    fillTo(size, "", "f() { x=1; echo $y; }\n", "f\n"),
 		"many definitions, local caller": fillTo(size, "g() { local y; f; }\n", "f() { echo $y; }\n", ""),
 		"assignments, then sources":      strings.Repeat("x=1\n", size/8) + strings.Repeat(". $f\n", size/10),
+		"aliases of one function":        aliasesOf(size),
+		"deep sources":                   fillTo(size, "g() { "+strings.Repeat("( ", 3900), ". $f;", strings.Repeat(" )", 3900)+" }\n"),
 	}
 	for name, src := range cases {
 		ff := parseClean(t, name, src)
@@ -76,6 +82,17 @@ func TestM2bShapesBuildInBoundedTime(t *testing.T) {
 			s.Edges()
 		})
 	}
+}
+
+// aliasesOf is about size bytes of `alias aN=f` lines, after f's definition.
+func aliasesOf(size int) string {
+	var sb strings.Builder
+	sb.WriteString("f() { :; }\n")
+	for i := 0; sb.Len() < size-20; i++ {
+		fmt.Fprintf(&sb, "alias a%d=f\n", i)
+	}
+	sb.WriteString("a0\n")
+	return sb.String()
 }
 
 // Hover on a function scanned every use and binding of the file once per

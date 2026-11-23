@@ -82,7 +82,10 @@ func (s *Snapshot) DocumentSymbols(path string) []DocSymbol {
 		if d.Kind != DeclVariable || atFileLevel(d) || s.declSym[d] == nil || s.declSym[d].Func == "" {
 			continue
 		}
-		fn := d.Node.Enclosing(tree.KFuncDecl)
+		fn := d.Scope.body // the function Bind recorded: no walk up the tree per local (O(declarations x depth))
+		if !d.Scope.closed {
+			fn = d.Node.Enclosing(tree.KFuncDecl)
+		}
 		i, ok := fnAt[fn]
 		if !ok {
 			continue

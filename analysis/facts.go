@@ -139,7 +139,8 @@ type SourceRef struct {
 	Directive string
 
 	loop      *tree.Node // the innermost `for` over the variable a bare `$name` word names, nil when none
-	loopKnown bool       // loop was set by Bind
+	named     *tree.Node // the KFuncDecl of the innermost named function around the command, nil when none
+	loopKnown bool       // loop and named were set by Bind
 }
 
 // FileFacts is everything Bind extracts from one file. Read-only: shared
@@ -581,7 +582,7 @@ func (b *binder) builtin(n *tree.Node, name string, words []*tree.Node, sc *Scop
 			return true
 		}
 		ref := SourceRef{Node: n, Word: args[0], Range: args[0].Range,
-			Directive: b.directiveAbove(n.Range.Start.Line), loopKnown: true}
+			Directive: b.directiveAbove(n.Range.Start.Line), named: sc.named, loopKnown: true}
 		if parts := wordParts(args[0]); len(parts) == 1 && parts[0].Kind == tree.KParamExp {
 			if ls := b.loops[parts[0].Name]; len(ls) > 0 {
 				ref.loop = ls[len(ls)-1]
