@@ -298,7 +298,8 @@ func (b *binder) fragment(via Via, args []*tree.Node, n *tree.Node, sc *Scope, m
 			a, e := words[0].Range.Start.Offset, words[0].Range.End.Offset
 			u := b.use(UseCall, name, b.fileRange(fm, a, e), sc, n)
 			u.Via = via
-			u.inexact = !fm.verbatim(a, e, len(name))
+			r := u.Range
+			u.inexact = !fm.verbatim(a, e, len(name)) || string(b.src[r.Start.Offset:r.End.Offset]) != name
 			b.dynamicCall(n, name, words[1:], sc, fm, depth+1)
 		case !ok && hasExpansion(words[0]):
 			b.ff.Dynamic = append(b.ff.Dynamic, DynamicRef{Range: b.fileRange(fm, words[0].Range.Start.Offset, words[0].Range.End.Offset), Scope: sc, Node: n})

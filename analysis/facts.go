@@ -278,14 +278,20 @@ func (b *binder) visit(n *tree.Node, sc *Scope) {
 func (b *binder) paramExp(n *tree.Node, sc *Scope) {
 	if n.Name != "" && !isSpecialParam(n.Name) {
 		read, write := true, false
+		nr := n.NameRange
 		if s := n.Range.Start.Offset; s >= 0 && s < len(b.src) && b.src[s] != '$' {
 			read, write = b.arithAccess(s, n.Range.End.Offset, 0, len(b.src))
+			// The parser drops NUL bytes but counts them in its name range
+			// (`((A<NUL>[0]++`); an arithmetic name is exactly its bytes.
+			if a := nr.Start.Offset; a >= 0 && a+len(n.Name) <= len(b.src) && string(b.src[a:a+len(n.Name)]) == n.Name {
+				nr = tree.Range{Start: nr.Start, End: b.ff.File.PosAt(a + len(n.Name))}
+			}
 		}
 		if read {
-			b.use(UseVarRead, n.Name, n.NameRange, sc, n)
+			b.use(UseVarRead, n.Name, nr, sc, n)
 		}
 		if write {
-			b.arithWrite(n.Name, n.NameRange, n, sc)
+			b.arithWrite(n.Name, nr, n, sc)
 		}
 	}
 	b.paramArith(n, sc)
