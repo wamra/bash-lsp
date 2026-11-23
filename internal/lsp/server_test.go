@@ -1,0 +1,787 @@
+package lsp
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"io/fs"
+	"log"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/wamra/bash-lsp/internal/workspace"
+)
+
+// ---- test client ----
+
+type testClient struct {
+	t    *testing.T
+	root string
+	in   *io.PipeWriter
+	out  *io.PipeReader
+	done chan error
+
+	mu      sync.Mutex
+	cond    *sync.Cond
+	nextID  int
+	replies map[string]*rpcReply
+	diags   map[string][][]Diagnostic
+	closed  bool
+}
+
+type rpcReply struct {
+	Result json.RawMessage
+	Error  *rpcError
+}
+
+func copyCorpus(t *testing.T) string {
+	t.Helper()
+	src := filepath.Join("..", "..", "testdata", "corpus")
+	dst := t.TempDir()
+	err := filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(src, p)
+		if d.IsDir() {
+			return os.MkdirAll(filepath.Join(dst, rel), 0o755)
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dst, rel), b, 0o644)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dst
+}
+
+func client(t *testing.T, root string) *testClient { return clientOpt(t, root, false) }
+
+// clientOpt starts Serve on in-memory pipes and runs initialize + initialized.
+func clientOpt(t *testing.T, root string, hierarchical bool) *testClient {
+	t.Helper()
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	c := &testClient{t: t, root: root, in: inW, out: outR, done: make(chan error, 1),
+		replies: map[string]*rpcReply{}, diags: map[string][][]Diagnostic{}}
+	c.cond = sync.NewCond(&c.mu)
+	if root == "" {
+		c.root = t.TempDir() // a place to name documents; not sent as the root
+	}
+	go func() {
+		err := Serve(inR, outW, io.Discard, "test")
+		outW.Close()
+		c.done <- err
+	}()
+	go c.readLoop()
+	t.Cleanup(func() { inW.Close(); outR.Close() })
+
+	params := map[string]any{"processId": nil, "capabilities": map[string]any{"textDocument": map[string]any{
+		"documentSymbol": map[string]any{"hierarchicalDocumentSymbolSupport": hierarchical}}}}
+	if root != "" {
+		params["rootUri"] = workspace.URIFromPath(root)
+	}
+	c.call("initialize", params)
+	c.notify("initialized", map[string]any{})
+	return c
+}
+
+func (c *testClient) readLoop() {
+	cn := newConn(c.out, io.Discard)
+	for {
+		body, err := cn.read()
+		if err != nil {
+			c.mu.Lock()
+			c.closed = true
+			c.cond.Broadcast()
+			c.mu.Unlock()
+			return
+		}
+		var m struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
+			Result json.RawMessage `json:"result"`
+			Error  *rpcError       `json:"error"`
+		}
+		if err := json.Unmarshal(body, &m); err != nil {
+			c.t.Errorf("server wrote a non-JSON frame: %q", body)
+			continue
+		}
+		c.mu.Lock()
+		if m.Method == "textDocument/publishDiagnostics" {
+			var p publishDiagnosticsParams
+			_ = json.Unmarshal(m.Params, &p)
+			c.diags[p.URI] = append(c.diags[p.URI], p.Diagnostics)
+		} else if len(m.ID) > 0 {
+			c.replies[string(m.ID)] = &rpcReply{Result: m.Result, Error: m.Error}
+		}
+		c.cond.Broadcast()
+		c.mu.Unlock()
+	}
+}
+
+func (c *testClient) sendRaw(body []byte) {
+	frame := append([]byte(fmt.Sprintf("Content-Length: %d\r\n\r\n", len(body))), body...)
+	if _, err := c.in.Write(frame); err != nil {
+		c.t.Fatalf("write: %v", err)
+	}
+}
+
+func (c *testClient) notify(method string, params any) {
+	c.t.Helper()
+	b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": method, "params": params})
+	c.sendRaw(b)
+}
+
+func (c *testClient) waitReply(id string) *rpcReply {
+	c.t.Helper()
+	deadline := time.AfterFunc(10*time.Second, func() { c.mu.Lock(); c.closed = true; c.cond.Broadcast(); c.mu.Unlock() })
+	defer deadline.Stop()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for c.replies[id] == nil {
+		if c.closed {
+			c.t.Fatalf("no reply to request %s (server stopped or timed out)", id)
+		}
+		c.cond.Wait()
+	}
+	r := c.replies[id]
+	delete(c.replies, id)
+	return r
+}
+
+func (c *testClient) rawCall(method string, params any) *rpcReply {
+	c.t.Helper()
+	c.nextID++
+	id := strconv.Itoa(c.nextID)
+	b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": c.nextID, "method": method, "params": params})
+	c.sendRaw(b)
+	return c.waitReply(id)
+}
+
+// call sends a request and returns its result; an error reply fails the test.
+func (c *testClient) call(method string, params any) json.RawMessage {
+	c.t.Helper()
+	r := c.rawCall(method, params)
+	if r.Error != nil {
+		c.t.Fatalf("%s: error %d %s", method, r.Error.Code, r.Error.Message)
+	}
+	return r.Result
+}
+
+func (c *testClient) uri(rel string) string { return workspace.URIFromPath(filepath.Join(c.root, rel)) }
+
+func (c *testClient) open(rel string) {
+	c.t.Helper()
+	b, err := os.ReadFile(filepath.Join(c.root, rel))
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	c.openText(rel, string(b))
+}
+
+func (c *testClient) openText(rel, text string) {
+	c.notify("textDocument/didOpen", map[string]any{"textDocument": map[string]any{
+		"uri": c.uri(rel), "languageId": "shellscript", "version": 1, "text": text}})
+}
+
+func (c *testClient) change(rel string, changes ...map[string]any) {
+	c.notify("textDocument/didChange", map[string]any{
+		"textDocument":   map[string]any{"uri": c.uri(rel), "version": 2},
+		"contentChanges": changes})
+}
+
+func fullText(s string) map[string]any { return map[string]any{"text": s} }
+
+func rng(sl, sc, el, ec int) map[string]any {
+	return map[string]any{"start": map[string]any{"line": sl, "character": sc}, "end": map[string]any{"line": el, "character": ec}}
+}
+
+func rangedEdit(sl, sc, el, ec int, text string) map[string]any {
+	return map[string]any{"range": rng(sl, sc, el, ec), "text": text}
+}
+
+// waitDiag returns the next diagnostics push for rel, in arrival order.
+func (c *testClient) waitDiag(rel string) []Diagnostic {
+	c.t.Helper()
+	uri := c.uri(rel)
+	deadline := time.AfterFunc(10*time.Second, func() { c.mu.Lock(); c.closed = true; c.cond.Broadcast(); c.mu.Unlock() })
+	defer deadline.Stop()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for len(c.diags[uri]) == 0 {
+		if c.closed {
+			c.t.Fatalf("no diagnostics pushed for %s", rel)
+		}
+		c.cond.Wait()
+	}
+	d := c.diags[uri][0]
+	c.diags[uri] = c.diags[uri][1:]
+	return d
+}
+
+// pos finds the 0-based line of the first line containing text and returns the
+// position col characters into that text.
+func (c *testClient) pos(rel, text string, col int) Position {
+	c.t.Helper()
+	b, err := os.ReadFile(filepath.Join(c.root, rel))
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	for i, line := range strings.Split(string(b), "\n") {
+		if at := strings.Index(line, text); at >= 0 {
+			return Position{i, at + col}
+		}
+	}
+	c.t.Fatalf("%s: no line contains %q", rel, text)
+	return Position{}
+}
+
+func (c *testClient) locs(method, rel string, p Position, extra map[string]any) []Location {
+	c.t.Helper()
+	params := map[string]any{"textDocument": map[string]any{"uri": c.uri(rel)}, "position": p}
+	for k, v := range extra {
+		params[k] = v
+	}
+	var out []Location
+	if err := json.Unmarshal(c.call(method, params), &out); err != nil {
+		c.t.Fatal(err)
+	}
+	return out
+}
+
+// short renders locations as "relpath:line" (1-based) for comparison.
+func (c *testClient) short(ls []Location) []string {
+	out := []string{}
+	for _, l := range ls {
+		p, err := workspace.PathFromURI(l.URI)
+		if err != nil {
+			c.t.Fatal(err)
+		}
+		rel, err := filepath.Rel(c.root, p)
+		if err != nil {
+			rel = p
+		}
+		out = append(out, fmt.Sprintf("%s:%d", filepath.ToSlash(rel), l.Range.Start.Line+1))
+	}
+	return out
+}
+
+func (c *testClient) definition(rel, text string, col int) []string {
+	c.t.Helper()
+	return c.short(c.locs("textDocument/definition", rel, c.pos(rel, text, col), nil))
+}
+
+func (c *testClient) references(rel, text string, col int) []string {
+	c.t.Helper()
+	return c.short(c.locs("textDocument/references", rel, c.pos(rel, text, col),
+		map[string]any{"context": map[string]any{"includeDeclaration": true}}))
+}
+
+type symEntry struct {
+	Name          string           `json:"name"`
+	Kind          int              `json:"kind"`
+	Detail        string           `json:"detail"`
+	ContainerName string           `json:"containerName"`
+	Children      []symEntry       `json:"children"`
+	Location      *json.RawMessage `json:"location"`
+	Selection     *Range           `json:"selectionRange"`
+	Range         Range            `json:"range"`
+}
+
+func (c *testClient) docSymbols(rel string) []symEntry {
+	c.t.Helper()
+	var out []symEntry
+	raw := c.call("textDocument/documentSymbol", map[string]any{"textDocument": map[string]any{"uri": c.uri(rel)}})
+	if err := json.Unmarshal(raw, &out); err != nil {
+		c.t.Fatalf("%v: %s", err, raw)
+	}
+	return out
+}
+
+func (c *testClient) symbolNames(rel string) []string {
+	var out []string
+	for _, s := range c.docSymbols(rel) {
+		out = append(out, s.Name)
+	}
+	return out
+}
+
+func eq(got []string, want ...string) bool {
+	return strings.Join(got, ",") == strings.Join(want, ",")
+}
+
+func contains(xs []string, x string) bool {
+	for _, v := range xs {
+		if v == x {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *testClient) shutdownExit() error {
+	c.t.Helper()
+	c.call("shutdown", nil)
+	c.notify("exit", nil)
+	select {
+	case err := <-c.done:
+		return err
+	case <-time.After(10 * time.Second):
+		c.t.Fatal("Serve did not return after exit")
+		return nil
+	}
+}
+
+// ---- tests ----
+
+func TestInitializeCapabilities(t *testing.T) {
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	go Serve(inR, outW, io.Discard, "9.9.9")
+	t.Cleanup(func() { inW.Close(); outR.Close() })
+	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}`)
+	go inW.Write(append([]byte(fmt.Sprintf("Content-Length: %d\r\n\r\n", len(body))), body...))
+	got, err := newConn(outR, io.Discard).read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resp struct {
+		Result struct {
+			Capabilities map[string]any `json:"capabilities"`
+			ServerInfo   map[string]any `json:"serverInfo"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(got, &resp); err != nil {
+		t.Fatal(err)
+	}
+	want := `{"definitionProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"implementationProvider":true,` +
+		`"positionEncoding":"utf-16","referencesProvider":true,"textDocumentSync":{"change":2,"openClose":true},"workspaceSymbolProvider":true}`
+	have, _ := json.Marshal(resp.Result.Capabilities) // map keys marshal sorted
+	if string(have) != want {
+		t.Fatalf("capabilities\n got %s\nwant %s", have, want)
+	}
+	if resp.Result.ServerInfo["name"] != "bash-lsp" || resp.Result.ServerInfo["version"] != "9.9.9" {
+		t.Fatalf("serverInfo %v", resp.Result.ServerInfo)
+	}
+}
+
+func TestFirstDocumentSymbolNotEmpty(t *testing.T) { // AC-07, C13: no sleep between initialized, didOpen and the request
+	c := client(t, copyCorpus(t))
+	c.open("main.sh")
+	if n := len(c.docSymbols("main.sh")); n == 0 {
+		t.Fatal("empty")
+	}
+}
+
+func TestDefinitionAndReferences(t *testing.T) { // C01, C08 over the wire, with UTF-16 positions
+	c := client(t, copyCorpus(t))
+	c.open("main.sh")
+	if got := c.definition("main.sh", `  build_release "$name"`, 3); !eq(got, "lib/util.sh:4") {
+		t.Fatal(got)
+	}
+	if got := c.references("main.sh", `local name="$1"`, 6); len(got) != 3 {
+		t.Fatal(got)
+	}
+	// Declaration excluded when the client asks for it.
+	p := c.pos("main.sh", `local name="$1"`, 6)
+	got := c.locs("textDocument/references", "main.sh", p, map[string]any{"context": map[string]any{"includeDeclaration": false}})
+	if len(got) != 2 {
+		t.Fatal(c.short(got))
+	}
+}
+
+func TestLocationURIsKeepClientSpelling(t *testing.T) {
+	root := copyCorpus(t) // on macOS TempDir is under the /var symlink; the workspace resolves it
+	c := client(t, root)
+	c.open("main.sh")
+	ls := c.locs("textDocument/definition", "main.sh", c.pos("main.sh", `  build_release "$name"`, 3), nil)
+	if len(ls) != 1 || ls[0].URI != c.uri("lib/util.sh") {
+		t.Fatalf("got %+v, want uri %s", ls, c.uri("lib/util.sh"))
+	}
+}
+
+func TestImplementationAndHover(t *testing.T) {
+	c := client(t, copyCorpus(t))
+	c.open("main.sh")
+	p := c.pos("main.sh", `  build_release "$name"`, 3)
+	if got := c.short(c.locs("textDocument/implementation", "main.sh", p, nil)); !eq(got, "lib/util.sh:4") {
+		t.Fatal(got)
+	}
+	var h struct {
+		Contents struct{ Kind, Value string }
+		Range    Range
+	}
+	raw := c.call("textDocument/hover", map[string]any{"textDocument": map[string]any{"uri": c.uri("main.sh")}, "position": p})
+	if err := json.Unmarshal(raw, &h); err != nil {
+		t.Fatal(err)
+	}
+	if h.Contents.Kind != "markdown" || !strings.Contains(h.Contents.Value, "build_release") || h.Range.End.Character <= h.Range.Start.Character {
+		t.Fatalf("hover %s", raw)
+	}
+	// Nothing under the cursor: null.
+	raw = c.call("textDocument/hover", map[string]any{"textDocument": map[string]any{"uri": c.uri("main.sh")}, "position": Position{0, 0}})
+	if string(raw) != "null" {
+		t.Fatalf("hover on shebang: %s", raw)
+	}
+}
+
+func TestWorkspaceSymbol(t *testing.T) {
+	c := client(t, copyCorpus(t))
+	var out []SymbolInformation
+	if err := json.Unmarshal(c.call("workspace/symbol", map[string]any{"query": "build_rel"}), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out) == 0 || out[0].Name != "build_release" || out[0].Kind != 12 || out[0].Location.URI != c.uri("lib/util.sh") {
+		t.Fatalf("%+v", out)
+	}
+}
+
+func TestHierarchicalAndFlatSymbols(t *testing.T) {
+	c := clientOpt(t, copyCorpus(t), true)
+	c.open("main.sh")
+	var deploy *symEntry
+	syms := c.docSymbols("main.sh")
+	for i := range syms {
+		if syms[i].Name == "deploy" {
+			deploy = &syms[i]
+		}
+	}
+	if deploy == nil || deploy.Kind != 12 {
+		t.Fatalf("no deploy function in %+v", syms)
+	}
+	var kids []string
+	for _, k := range deploy.Children {
+		kids = append(kids, k.Name)
+		if k.Kind != 13 {
+			t.Fatalf("child %s kind %d", k.Name, k.Kind)
+		}
+	}
+	if !eq(kids, "name", "cmd") {
+		t.Fatalf("deploy children %v", kids)
+	}
+	if deploy.Selection == nil || deploy.Selection.Start.Line != 3 {
+		t.Fatalf("selectionRange %+v", deploy.Selection)
+	}
+	for _, s := range syms {
+		if s.Name == "br" && (s.Kind != 12 || s.Detail != "alias") {
+			t.Fatalf("alias symbol %+v", s)
+		}
+	}
+
+	f := client(t, copyCorpus(t))
+	f.open("main.sh")
+	flat := f.docSymbols("main.sh")
+	byName := map[string][]symEntry{}
+	for _, s := range flat {
+		byName[s.Name] = append(byName[s.Name], s)
+		if s.Location == nil || len(s.Children) != 0 {
+			t.Fatalf("not a flat SymbolInformation: %+v", s)
+		}
+	}
+	for _, n := range []string{"name", "cmd"} {
+		got := byName[n]
+		if len(got) == 0 || got[0].ContainerName != "deploy" || got[0].Kind != 13 {
+			t.Fatalf("%s: %+v", n, got)
+		}
+	}
+	if d := byName["deploy"]; len(d) != 1 || d[0].ContainerName != "" {
+		t.Fatalf("deploy: %+v", d)
+	}
+}
+
+func TestSyntaxDiagnostics(t *testing.T) { // AC-11, C20
+	c := client(t, copyCorpus(t))
+	c.open("broken_exp.sh")
+	d := c.waitDiag("broken_exp.sh")
+	if len(d) != 1 || d[0].Range.Start.Line != 2 || d[0].Code != "WB1001" || d[0].Severity != 1 || d[0].Source != "bash-lsp" {
+		t.Fatalf("%+v", d)
+	}
+	if names := c.symbolNames("broken_exp.sh"); !contains(names, "after_exp") {
+		t.Fatal(names)
+	}
+	c.change("broken_exp.sh", fullText("#!/usr/bin/env bash\nok() { :; }\n"))
+	if d := c.waitDiag("broken_exp.sh"); len(d) != 0 {
+		t.Fatal("diagnostics not cleared")
+	}
+	c.notify("textDocument/didClose", map[string]any{"textDocument": map[string]any{"uri": c.uri("broken_exp.sh")}})
+	if d := c.waitDiag("broken_exp.sh"); len(d) != 0 {
+		t.Fatalf("close must clear diagnostics: %+v", d)
+	}
+}
+
+func TestSkippedFileDiagnostic(t *testing.T) {
+	c := client(t, copyCorpus(t))
+	c.openText("z.zsh", "print hello\n")
+	d := c.waitDiag("z.zsh")
+	if len(d) != 1 || d[0].Severity != 3 || d[0].Code != "WB1002" || d[0].Range != (Range{}) || d[0].Message == "" {
+		t.Fatalf("%+v", d)
+	}
+}
+
+func TestIncrementalEdit(t *testing.T) {
+	c := client(t, copyCorpus(t))
+	c.openText("t.sh", "f() { :; }\nf\n")
+	use := Position{1, 0}
+	def := func() []Location { return c.locs("textDocument/definition", "t.sh", use, nil) }
+	if got := def(); len(got) != 1 || got[0].Range.Start != (Position{0, 0}) {
+		t.Fatalf("before edit: %+v", got)
+	}
+	c.change("t.sh", rangedEdit(0, 0, 0, 1, "g"))
+	if got := def(); len(got) != 0 {
+		t.Fatalf("after renaming the function: %+v", got)
+	}
+	c.change("t.sh", rangedEdit(1, 0, 1, 1, "g"))
+	if got := def(); len(got) != 1 || got[0].Range.Start != (Position{0, 0}) {
+		t.Fatalf("after renaming the use: %+v", got)
+	}
+}
+
+func TestNonASCIIPositions(t *testing.T) {
+	c := client(t, copyCorpus(t))
+	text := "echo \"é😀\"; foo() { :; }; foo\n"
+	c.openText("u.sh", text)
+	// e c h o ␠ " é = 7 units, the emoji 2, `" ; ␠` 3: the first foo starts at 12,
+	// `foo() { :; }; ` is 14 more, so the last foo starts at 26 and ends at 29.
+	ls := c.locs("textDocument/definition", "u.sh", Position{0, 26}, nil)
+	if len(ls) != 1 {
+		t.Fatalf("%+v", ls)
+	}
+	want := Range{Position{0, 12}, Position{0, 15}}
+	if ls[0].Range != want {
+		t.Fatalf("got %+v, want %+v", ls[0].Range, want)
+	}
+	// A cursor in the middle of the last foo works too.
+	if ls := c.locs("textDocument/definition", "u.sh", Position{0, 28}, nil); len(ls) != 1 {
+		t.Fatalf("%+v", ls)
+	}
+}
+
+func TestLargeDocument(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("#!/usr/bin/env bash\necho start\n")
+	for i := 0; i < 2000; i++ {
+		fmt.Fprintf(&b, "# Function number %d.\nfn_%d() {\n  local a=\"$1\" b=\"$2\"\n", i, i)
+		fmt.Fprintf(&b, "  if [[ -n \"$a\" && \"$b\" != \"x%d\" ]]; then\n    printf '%%s %%s\\n' \"$a\" \"$b\" | tr a-z A-Z\n  else\n", i)
+		fmt.Fprintf(&b, "    for f in \"$@\"; do echo \"${f:-none}\" >&2; done\n  fi\n  case \"$a\" in start|stop) echo \"$a\";; *) return %d;; esac\n}\n\n", i%250)
+		if i > 0 {
+			fmt.Fprintf(&b, "fn_%d a b\n", i-1)
+		}
+	}
+	b.WriteString("fn_1999 a b\n")
+	if b.Len() < 500_000 {
+		t.Fatalf("generated only %d bytes", b.Len())
+	}
+	c := client(t, "")
+	start := time.Now()
+	c.openText("big.sh", b.String())
+	n := 0
+	for _, s := range c.docSymbols("big.sh") {
+		if s.Kind == 12 && strings.HasPrefix(s.Name, "fn_") {
+			n++
+		}
+	}
+	if n != 2000 {
+		t.Fatalf("%d function symbols", n)
+	}
+	if el := time.Since(start); el > 2*time.Second {
+		t.Fatalf("open + documentSymbol took %v", el)
+	}
+}
+
+func TestUnknownMethodAndPanicIsolation(t *testing.T) {
+	c := client(t, copyCorpus(t))
+	c.open("main.sh")
+	if r := c.rawCall("foo/bar", map[string]any{}); r.Error == nil || r.Error.Code != -32601 {
+		t.Fatalf("%+v", r)
+	}
+	c.notify("foo/notification", map[string]any{}) // ignored
+	c.notify("$/cancelRequest", map[string]any{"id": 1})
+	// Bad params: error, not a crash.
+	if r := c.rawCall("textDocument/hover", "not an object"); r.Error == nil || r.Error.Code != -32602 {
+		t.Fatalf("%+v", r)
+	}
+	p := map[string]any{"textDocument": map[string]any{"uri": c.uri("main.sh")}, "position": c.pos("main.sh", `  build_release "$name"`, 3)}
+	if raw := c.call("textDocument/hover", p); string(raw) == "null" {
+		t.Fatal("hover empty after errors")
+	}
+}
+
+func TestPanicBecomesInternalError(t *testing.T) {
+	var out bytes.Buffer
+	s2 := &server{c: newConn(strings.NewReader(""), &out), log: nilLogger(), ready: make(chan struct{}), started: true}
+	close(s2.ready) // be is nil: dereferencing it panics
+	_, rerr := s2.safeHandle(message{Method: "textDocument/hover", ID: json.RawMessage("1"),
+		Params: json.RawMessage(`{"textDocument":{"uri":"file:///x.sh"},"position":{"line":0,"character":0}}`)})
+	if rerr == nil || rerr.Code != -32603 {
+		t.Fatalf("got %+v", rerr)
+	}
+}
+
+func TestShutdownExit(t *testing.T) {
+	c := client(t, copyCorpus(t))
+	if raw := c.call("shutdown", nil); string(raw) != "null" {
+		t.Fatalf("shutdown result %s", raw)
+	}
+	if r := c.rawCall("textDocument/hover", map[string]any{}); r.Error == nil || r.Error.Code != -32600 {
+		t.Fatalf("request after shutdown: %+v", r)
+	}
+	c.notify("exit", nil)
+	select {
+	case err := <-c.done:
+		if err != nil {
+			t.Fatalf("Serve returned %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Serve did not return")
+	}
+}
+
+func TestExitWithoutShutdownAndEndOfInput(t *testing.T) {
+	c := client(t, "")
+	c.notify("exit", nil)
+	if err := <-c.done; err == nil {
+		t.Fatal("exit before shutdown must be an error")
+	}
+	c2 := client(t, "")
+	c2.in.Close()
+	if err := <-c2.done; err == nil {
+		t.Fatal("end of input must be an error")
+	}
+}
+
+func TestMalformedInput(t *testing.T) {
+	c := client(t, "")
+	c.sendRaw([]byte(`{not json`))
+	// A frame with no Content-Length, then a valid request must still work.
+	if _, err := c.in.Write([]byte("X-Junk: 1\r\n\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	c.sendRaw([]byte(`[1,2,3]`))
+	c.sendRaw([]byte(`{"jsonrpc":"2.0","id":"s","method":42}`))
+	c.openText("a.sh", "f() { :; }\n")
+	if got := c.symbolNames("a.sh"); !eq(got, "f") {
+		t.Fatal(got)
+	}
+	// Request before it is allowed: handled in TestRequestBeforeInitialize.
+}
+
+func TestRequestBeforeInitialize(t *testing.T) {
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	go Serve(inR, outW, io.Discard, "t")
+	t.Cleanup(func() { inW.Close(); outR.Close() })
+	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"textDocument/hover","params":{}}`)
+	go inW.Write(append([]byte(fmt.Sprintf("Content-Length: %d\r\n\r\n", len(body))), body...))
+	got, err := newConn(outR, io.Discard).read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "-32002") {
+		t.Fatalf("%s", got)
+	}
+}
+
+func TestNoRootServesOpenDocumentsOnly(t *testing.T) {
+	dir := copyCorpus(t) // exists on disk but must not be scanned
+	c := client(t, "")
+	c.root = dir
+	c.openText("main.sh", "deploy() { :; }\ndeploy\n")
+	var out []SymbolInformation
+	if err := json.Unmarshal(c.call("workspace/symbol", map[string]any{"query": ""}), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].Name != "deploy" {
+		t.Fatalf("workspace symbols without a root: %+v", out)
+	}
+	if got := c.short(c.locs("textDocument/definition", "main.sh", Position{1, 0}, nil)); !eq(got, "main.sh:1") {
+		t.Fatal(got)
+	}
+	c.notify("textDocument/didClose", map[string]any{"textDocument": map[string]any{"uri": c.uri("main.sh")}})
+	if err := json.Unmarshal(c.call("workspace/symbol", map[string]any{"query": ""}), &out); err != nil || len(out) != 0 {
+		t.Fatalf("after close: %+v %v", out, err)
+	}
+}
+
+func TestRootFromWorkspaceFoldersAndRootPath(t *testing.T) {
+	root := copyCorpus(t)
+	for name, params := range map[string]map[string]any{
+		"workspaceFolders": {"workspaceFolders": []any{map[string]any{"uri": workspace.URIFromPath(root), "name": "w"}}, "rootUri": nil},
+		"rootPath":         {"rootPath": root},
+	} {
+		t.Run(name, func(t *testing.T) {
+			inR, inW := io.Pipe()
+			outR, outW := io.Pipe()
+			go Serve(inR, outW, io.Discard, "t")
+			t.Cleanup(func() { inW.Close(); outR.Close() })
+			go func() {
+				c := newConn(strings.NewReader(""), inW)
+				params["capabilities"] = map[string]any{}
+				c.send(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": params})
+				c.notify("initialized", map[string]any{})
+				c.send(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "workspace/symbol", "params": map[string]any{"query": "build_release"}})
+			}()
+			cn := newConn(outR, io.Discard)
+			for i := 0; i < 2; i++ {
+				body, err := cn.read()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if i == 1 && !strings.Contains(string(body), "build_release") {
+					t.Fatalf("workspace not indexed from %s: %s", name, body)
+				}
+			}
+		})
+	}
+}
+
+func TestWatchedFilesRefresh(t *testing.T) {
+	root := copyCorpus(t)
+	c := client(t, root)
+	query := func() int {
+		var out []SymbolInformation
+		if err := json.Unmarshal(c.call("workspace/symbol", map[string]any{"query": "freshly_added"}), &out); err != nil {
+			t.Fatal(err)
+		}
+		return len(out)
+	}
+	if query() != 0 {
+		t.Fatal("unexpected symbol")
+	}
+	if err := os.WriteFile(filepath.Join(root, "new.sh"), []byte("freshly_added() { :; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c.notify("workspace/didChangeWatchedFiles", map[string]any{"changes": []any{map[string]any{"uri": c.uri("new.sh"), "type": 1}}})
+	if query() != 1 {
+		t.Fatal("new file not indexed after didChangeWatchedFiles")
+	}
+}
+
+func TestLargeMessage(t *testing.T) {
+	// More than the 561 KB at which an earlier server exited, in a single frame.
+	big := "#!/usr/bin/env bash\n" + strings.Repeat("# "+strings.Repeat("padding ", 20)+"\n", 4000) + "f() { :; }\n"
+	c := client(t, "")
+	c.openText("big.sh", big)
+	if got := c.symbolNames("big.sh"); !eq(got, "f") {
+		t.Fatal(got)
+	}
+}
+
+func TestShutdownExitReturnsNil(t *testing.T) {
+	c := client(t, copyCorpus(t))
+	if err := c.shutdownExit(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func nilLogger() *log.Logger { return log.New(io.Discard, "", 0) }
