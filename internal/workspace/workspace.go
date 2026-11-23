@@ -86,8 +86,29 @@ const (
 )
 
 type skipInfo struct {
-	kind skipKind
-	line string // LimitsHit line for skipBig
+	kind   skipKind
+	line   string // LimitsHit line for skipBig
+	path   string // display spelling of the skipped file
+	reason string
+}
+
+// Skip is a file the discovery listed but did not load, with the reason.
+type Skip struct {
+	Path   string // absolute, in the spelling snapshots use
+	Reason string
+}
+
+func (w *Workspace) zshSkip(path string) skipInfo {
+	return skipInfo{kind: skipZsh, path: path, reason: "zsh is not supported yet"}
+}
+
+func (w *Workspace) countSkip(path string) skipInfo {
+	return skipInfo{kind: skipCount, path: path, reason: fmt.Sprintf("file limit of %d reached", w.lim.MaxFiles)}
+}
+
+func (w *Workspace) bigSkip(path string, size int64) skipInfo {
+	return skipInfo{kind: skipBig, line: w.bigLine(w.relSlash(path), size), path: path,
+		reason: fmt.Sprintf("%d bytes exceeds the %d byte file limit", size, w.lim.MaxFileBytes)}
 }
 
 // rcInfo is a cached .shellcheckrc read: raw is nil when no usable file.
@@ -259,6 +280,19 @@ func (w *Workspace) Report() Report {
 		r.Dialects[e.dialect]++
 	}
 	return r
+}
+
+// Skipped lists the files the last discovery skipped, with the reason for
+// each, sorted by path. Its length is Report().Skipped.
+func (w *Workspace) Skipped() []Skip {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := make([]Skip, 0, len(w.skips))
+	for _, s := range w.skips {
+		out = append(out, Skip{Path: s.path, Reason: s.reason})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
 }
 
 // Canon returns the key SetOverlay would store path under: the spelling the
@@ -511,7 +545,7 @@ func (w *Workspace) walk() (cands []candidate) {
 			}
 			switch classify(full) {
 			case isZsh:
-				w.skips[key(full)] = skipInfo{kind: skipZsh}
+				w.skips[key(full)] = w.zshSkip(full)
 				continue
 			case notShell:
 				continue
@@ -521,11 +555,11 @@ func (w *Workspace) walk() (cands []candidate) {
 				continue
 			}
 			if fi.Size() > w.lim.MaxFileBytes {
-				w.skips[key(full)] = skipInfo{skipBig, w.bigLine(relp, fi.Size())}
+				w.skips[key(full)] = w.bigSkip(full, fi.Size())
 				continue
 			}
 			if len(cands) >= w.lim.MaxFiles {
-				w.skips[key(full)] = skipInfo{kind: skipCount}
+				w.skips[key(full)] = w.countSkip(full)
 				continue
 			}
 			cands = append(cands, candidate{full, fi.Size(), fi.ModTime().UnixNano()})
@@ -594,7 +628,7 @@ func (w *Workspace) reconcileAll() (changed bool) {
 				changed = true
 			}
 			if r.big { // grew past the limit after the stat
-				w.skips[k] = skipInfo{skipBig, w.bigLine(w.relSlash(todo[i].path), todo[i].size)}
+				w.skips[k] = w.bigSkip(todo[i].path, todo[i].size)
 			}
 			continue
 		}
@@ -627,17 +661,17 @@ func (w *Workspace) refreshOne(path string) (changed bool) {
 		return drop()
 	case isZsh:
 		d := drop()
-		w.skips[k] = skipInfo{kind: skipZsh}
+		w.skips[k] = w.zshSkip(path)
 		return d
 	}
 	if fi.Size() > w.lim.MaxFileBytes {
 		d := drop()
-		w.skips[k] = skipInfo{skipBig, w.bigLine(w.relSlash(path), fi.Size())}
+		w.skips[k] = w.bigSkip(path, fi.Size())
 		return d
 	}
 	old := w.disk[k]
 	if old == nil && len(w.disk) >= w.lim.MaxFiles {
-		w.skips[k] = skipInfo{kind: skipCount}
+		w.skips[k] = w.countSkip(path)
 		return false
 	}
 	src, big, err := readBounded(path, w.lim.MaxFileBytes)
@@ -646,7 +680,7 @@ func (w *Workspace) refreshOne(path string) (changed bool) {
 	}
 	if big {
 		d := drop()
-		w.skips[k] = skipInfo{skipBig, w.bigLine(w.relSlash(path), fi.Size())}
+		w.skips[k] = w.bigSkip(path, fi.Size())
 		return d
 	}
 	delete(w.skips, k)

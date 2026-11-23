@@ -18,7 +18,7 @@ import (
 // and cycles (spec 5.2). Each loads the root with workspace.Open, asks one
 // snapshot and prints. Nothing here executes or sources analysed code.
 
-const graphUsage = "usage: bash-lsp status [--root DIR] [--json] | callers|callees|refs SYMBOL [--depth N] [--root DIR] [--json] | " +
+const graphUsage = "usage: bash-lsp status [--root DIR] [--json] | callers|callees SYMBOL [--depth N] [--root DIR] [--json] | refs SYMBOL | " +
 	"impact SYMBOL|FILE [--depth N] | trace A B | unresolved [PATH...] | cycles   (all take --root DIR and --json)"
 
 // graphOpts are the flags the graph commands share.
@@ -40,7 +40,7 @@ var graphSpecs = map[string]graphSpec{
 	"status":     {0, 0, false, 0},
 	"callers":    {1, 1, true, 1},
 	"callees":    {1, 1, true, 1},
-	"refs":       {1, 1, true, 1}, // --depth is accepted and has no effect: references are not walked
+	"refs":       {1, 1, false, 0},
 	"impact":     {1, 1, true, 0},
 	"trace":      {2, 2, false, 0},
 	"unresolved": {0, -1, false, 0},
@@ -395,7 +395,7 @@ func (c *graphCtx) refs(spec string, o graphOpts, stdout, stderr io.Writer) int 
 		text := fmt.Sprintf("%s:%d:%d  %s", s.Path, s.Line, s.Col, n.Func.Name)
 		if e, ok := edgeAt[siteKey{l.Path, l.Range.Start.Offset}]; ok {
 			r.Resolution, r.Reason, r.Relation = e.Res.String(), e.Reason, e.Rel.String()
-			text += fmt.Sprintf("  %s/%s", r.Resolution, r.Reason)
+			text += fmt.Sprintf("  %s  %s/%s", r.Relation, r.Resolution, r.Reason)
 		}
 		refs = append(refs, r)
 		lines = append(lines, text)
@@ -428,14 +428,25 @@ func (c *graphCtx) trace(a, b string, o graphOpts, stdout, stderr io.Writer) int
 		return code
 	}
 	st := c.snap.Trace(na, nb)
-	if len(st) == 0 && !o.json {
-		if na == nb {
-			fmt.Fprintf(stderr, "bash-lsp: %s and %s are the same node\n", a, b)
-		} else {
-			fmt.Fprintf(stderr, "bash-lsp: no path from %s to %s\n", a, b)
+	if !o.json {
+		if len(st) == 0 {
+			fmt.Fprintln(stdout, "no path")
+			return 0
 		}
+		return c.emitSteps(st, o, stdout, stderr)
 	}
-	return c.emitSteps(st, o, stdout, stderr)
+	edges := []jsonEdge{}
+	for _, s := range st {
+		edges = append(edges, c.stepEdge(s))
+	}
+	if err := writeJSON(stdout, struct {
+		Generation uint64     `json:"generation"`
+		Found      bool       `json:"found"`
+		Results    []jsonEdge `json:"results"`
+	}{c.snap.Generation(), len(st) > 0, edges}); err != nil {
+		return fail(stderr, err)
+	}
+	return 0
 }
 
 func (c *graphCtx) unresolved(paths []string, o graphOpts, stdout, stderr io.Writer) int {
@@ -482,7 +493,10 @@ type skippedFile struct {
 
 func (c *graphCtx) status(o graphOpts, stdout, stderr io.Writer) int {
 	rep := c.ws.Report()
-	var skipped []skippedFile
+	skipped := []skippedFile{}
+	for _, k := range c.ws.Skipped() {
+		skipped = append(skipped, skippedFile{c.rel(k.Path), k.Reason})
+	}
 	nesting := 0
 	paths := c.snap.Paths()
 	sort.Strings(paths)
@@ -491,18 +505,12 @@ func (c *graphCtx) status(o graphOpts, stdout, stderr io.Writer) int {
 		if ff == nil || ff.File == nil {
 			continue
 		}
-		if ff.File.Skipped != "" {
-			skipped = append(skipped, skippedFile{c.rel(p), ff.File.Skipped})
-		}
 		for _, e := range ff.File.Errors {
 			if strings.Contains(e.Msg, nestingMsg) {
 				nesting++
 				break
 			}
 		}
-	}
-	if skipped == nil {
-		skipped = []skippedFile{}
 	}
 	limits := rep.LimitsHit
 	if limits == nil {

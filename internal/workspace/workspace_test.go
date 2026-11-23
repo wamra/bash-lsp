@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -556,5 +557,38 @@ func TestCloseOverlayRereadsDisk(t *testing.T) {
 	w.CloseOverlay(a)
 	if count("new_fn") != 0 {
 		t.Fatal("a file deleted while open is still indexed after close")
+	}
+}
+
+func TestSkippedListsEachFileWithItsReason(t *testing.T) {
+	root := t.TempDir()
+	for name, text := range map[string]string{
+		"a.zsh": "#!/bin/zsh\n:\n",
+		"b.sh":  ":\n",
+		"c.sh":  ":\n",
+		"d.sh":  "# " + strings.Repeat("x", 200) + "\n",
+	} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w, err := Open(root, Limits{MaxFiles: 1, MaxFileBytes: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, s := range w.Skipped() {
+		got = append(got, filepath.Base(s.Path)+": "+s.Reason)
+	}
+	want := []string{
+		"a.zsh: zsh is not supported yet",
+		"c.sh: file limit of 1 reached",
+		"d.sh: 203 bytes exceeds the 100 byte file limit",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("Skipped = %q\nwant %q", got, want)
+	}
+	if n := w.Report().Skipped; n != len(got) {
+		t.Fatalf("Report().Skipped = %d, Skipped() has %d", n, len(got))
 	}
 }

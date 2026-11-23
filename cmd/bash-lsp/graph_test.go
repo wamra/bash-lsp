@@ -1,13 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/wamra/bash-lsp/internal/workspace"
 )
 
 const corpus = "../../testdata/corpus"
@@ -273,7 +277,7 @@ func TestRefs(t *testing.T) {
 		t.Errorf("alias definition (line 3) missing: %v", got)
 	}
 	text := runOK(t, "refs", "lib/util.sh:4:1", "--root", corpus)
-	wantLines(t, text, "main.sh:6:3  build_release  resolved/direct\n")
+	wantLines(t, text, "main.sh:6:3  build_release  calls  resolved/direct\n")
 }
 
 func TestImpactTraceUnresolvedCycles(t *testing.T) {
@@ -422,4 +426,210 @@ func TestGraphUsageErrors(t *testing.T) {
 	if code, _, _ := runCode(t, "callers", "a", "--root", filepath.Join(t.TempDir(), "missing")); code != 1 {
 		t.Errorf("missing root: exit %d, want 1", code)
 	}
+}
+
+func writeUnicodeRoot(t *testing.T) string {
+	return writeRoot(t, map[string]string{
+		// f is called at byte column 24, UTF-16 column 19 of line 3; g is at
+		// byte column 7, UTF-16 column 6 of line 4; line 6 holds a dynamic call.
+		"uni.sh":  "#!/bin/bash\nf() { :; }\necho \"héllo ☃😀\"; f\né=1; g() { :; }\ng\necho \"😀\"; $1\n",
+		"crlf.sh": "f() { :; }\r\necho \"é😀\"; f\r\n",
+	})
+}
+
+var posRe = regexp.MustCompile(`^(.+):(\d+):(\d+)$`)
+
+// printedPositions runs each command and returns every "path:line:col" it
+// printed, from the JSON form.
+func printedPositions(t *testing.T, root string) map[string][]string {
+	t.Helper()
+	out := map[string][]string{}
+	add := func(cmd string, sites ...gSite) {
+		for _, s := range sites {
+			out[cmd] = append(out[cmd], s.Path+":"+itoa(s.Line)+":"+itoa(s.Col))
+		}
+	}
+	edgeSites := func(args ...string) []gSite {
+		var r gEdges
+		mustJSON(t, runOK(t, append(args, "--root", root, "--json")...), &r)
+		var ss []gSite
+		for _, e := range r.Results {
+			ss = append(ss, e.Site)
+		}
+		return ss
+	}
+	add("callers", edgeSites("callers", "uni.sh:2:1")...)
+	add("callers", edgeSites("callers", "crlf.sh:1:1")...)
+	add("callees", edgeSites("callees", "uni.sh")...)
+	add("callees", edgeSites("callees", "crlf.sh")...)
+	add("trace", edgeSites("trace", "uni.sh", "uni.sh:2:1")...)
+	add("unresolved", edgeSites("unresolved")...)
+	var refs struct {
+		Results []gSite `json:"results"`
+	}
+	mustJSON(t, runOK(t, "refs", "uni.sh:2:1", "--root", root, "--json"), &refs)
+	add("refs", refs.Results...)
+	var syms struct {
+		Results []gSite `json:"results"`
+		Symbols []struct {
+			gSite
+		} `json:"symbols"`
+	}
+	mustJSON(t, runOK(t, "symbols", root, "--json"), &syms)
+	for _, s := range syms.Symbols {
+		add("symbols", s.gSite)
+	}
+	return out
+}
+
+func TestPrintedPositionsRoundTripAsSpecs(t *testing.T) {
+	root := writeUnicodeRoot(t)
+	ps := printedPositions(t, root)
+	for _, cmd := range []string{"callers", "callees", "trace", "unresolved", "refs", "symbols"} {
+		if len(ps[cmd]) == 0 {
+			t.Fatalf("%s printed no position", cmd)
+		}
+	}
+	// The call of f after the surrogate pair is printed at UTF-16 column 19.
+	if !slices.Contains(ps["callers"], "uni.sh:3:19") || !slices.Contains(ps["callers"], "crlf.sh:2:13") {
+		t.Fatalf("callers positions %v", ps["callers"])
+	}
+	if !slices.Contains(ps["symbols"], "uni.sh:4:6") {
+		t.Fatalf("symbols positions %v", ps["symbols"])
+	}
+	// Every printed position is accepted as a spec.
+	for cmd, list := range ps {
+		for _, pos := range list {
+			if code, _, errs := runCode(t, "callees", pos, "--root", root); code != 0 {
+				t.Errorf("%s printed %s, which callees rejects: %s", cmd, pos, errs)
+			}
+		}
+	}
+	// And resolves to the same place: the call site of f is f; g's symbol is g.
+	same := func(a, b string) {
+		t.Helper()
+		if x, y := runOK(t, "callers", a, "--root", root), runOK(t, "callers", b, "--root", root); x != y || x == "" {
+			t.Errorf("callers %s and callers %s differ:\n%s\n%s", a, b, x, y)
+		}
+	}
+	same("uni.sh:3:19", "uni.sh:2:1")
+	same("crlf.sh:2:13", "crlf.sh:1:1")
+	var refs struct {
+		Results []gSite `json:"results"`
+	}
+	mustJSON(t, runOK(t, "refs", "uni.sh:4:6", "--root", root, "--json"), &refs)
+	if len(refs.Results) != 1 || refs.Results[0].Line != 5 {
+		t.Errorf("refs of the symbol printed at uni.sh:4:6: %v", refs.Results)
+	}
+	// Text output prints the same positions.
+	for _, line := range strings.Split(strings.TrimSpace(runOK(t, "callers", "uni.sh:2:1", "--root", root)), "\n") {
+		if !strings.HasPrefix(line, "uni.sh:3:19  ") {
+			t.Errorf("text line %q", line)
+		}
+	}
+	wantLines(t, runOK(t, "symbols", root), "uni.sh:4:6  function  g")
+	// ast prints UTF-16 columns too.
+	wantLines(t, runOK(t, "ast", filepath.Join(root, "uni.sh")), "FuncDecl 4:6-")
+	var a struct {
+		Root struct {
+			Children []struct {
+				Kind  string `json:"kind"`
+				Start [2]int `json:"start"`
+			} `json:"children"`
+		} `json:"root"`
+	}
+	mustJSON(t, runOK(t, "ast", filepath.Join(root, "uni.sh"), "--json"), &a)
+	found := false
+	for _, k := range a.Root.Children {
+		if k.Start == [2]int{4, 6} { // `g() { :; }` after "é=1; "
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("ast JSON: %+v", a.Root.Children)
+	}
+}
+
+func TestRefsRejectsDepth(t *testing.T) {
+	code, _, errs := runCode(t, "refs", "lib/util.sh:4:1", "--depth", "1", "--root", corpus)
+	if code != 2 || !strings.Contains(errs, "usage") || strings.Contains(strings.SplitN(errs, "usage", 2)[1], "refs SYMBOL [--depth") {
+		t.Errorf("exit %d %q", code, errs)
+	}
+}
+
+func TestRefsTextShowsRelation(t *testing.T) {
+	out := runOK(t, "refs", "lib/util.sh:4:1", "--root", corpus)
+	wantLines(t, out,
+		"main.sh:3:10  build_release  aliases  resolved/",
+		"main.sh:6:3  build_release  calls  resolved/direct\n",
+		"main.sh:10:9  build_release  calls  candidate/string-eval\n")
+}
+
+func TestTraceNoPath(t *testing.T) {
+	code, out, errs := runCode(t, "trace", "orphan.sh", "main.sh", "--root", corpus)
+	if code != 0 || out != "no path\n" || errs != "" {
+		t.Errorf("text: exit %d stdout %q stderr %q", code, out, errs)
+	}
+	var tr struct {
+		Found   *bool   `json:"found"`
+		Results []gEdge `json:"results"`
+	}
+	mustJSON(t, runOK(t, "trace", "orphan.sh", "main.sh", "--root", corpus, "--json"), &tr)
+	if tr.Found == nil || *tr.Found || tr.Results == nil || len(tr.Results) != 0 {
+		t.Errorf("no path JSON: %+v", tr)
+	}
+	mustJSON(t, runOK(t, "trace", "main.sh", "lib/util.sh:3:1", "--root", corpus, "--json"), &tr)
+	if tr.Found == nil || !*tr.Found || len(tr.Results) == 0 {
+		t.Errorf("path JSON: %+v", tr)
+	}
+}
+
+type statusJSON struct {
+	Skipped      int `json:"skipped"`
+	SkippedFiles []struct {
+		Path   string `json:"path"`
+		Reason string `json:"reason"`
+	} `json:"skipped_files"`
+	Limits []string `json:"limits"`
+}
+
+func TestStatusListsSkippedFiles(t *testing.T) {
+	root := writeRoot(t, map[string]string{"z/a.zsh": "#!/bin/zsh\n:\n", "b.sh": ":\n"})
+	var st statusJSON
+	mustJSON(t, runOK(t, "status", "--root", root, "--json"), &st)
+	if st.Skipped != 1 || len(st.SkippedFiles) != 1 || st.SkippedFiles[0].Path != "z/a.zsh" || st.SkippedFiles[0].Reason != "zsh is not supported yet" {
+		t.Errorf("%+v", st)
+	}
+	wantLines(t, runOK(t, "status", "--root", root), "skipped: 1\n", "  z/a.zsh: zsh is not supported yet\n")
+}
+
+func TestStatusSizeAndFileCountLimits(t *testing.T) {
+	root := writeRoot(t, map[string]string{
+		"a.sh": ":\n", "b.sh": ":\n", "big.sh": "# " + strings.Repeat("x", 200) + "\n",
+	})
+	ws, err := workspace.Open(root, workspace.Limits{MaxFiles: 1, MaxFileBytes: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &graphCtx{ws: ws, snap: ws.Snapshot(), root: ws.Root()}
+	var out, errb bytes.Buffer
+	if code := c.status(graphOpts{json: true}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d %s", code, errb.String())
+	}
+	var st statusJSON
+	mustJSON(t, out.String(), &st)
+	var got []string
+	for _, s := range st.SkippedFiles {
+		got = append(got, s.Path+": "+s.Reason)
+	}
+	want := []string{"b.sh: file limit of 1 reached", "big.sh: 203 bytes exceeds the 100 byte file limit"}
+	if !slices.Equal(got, want) || st.Skipped != len(want) {
+		t.Errorf("skipped %d %q, want %q", st.Skipped, got, want)
+	}
+	if len(st.Limits) != 2 || !strings.Contains(strings.Join(st.Limits, "\n"), "big.sh: 203 bytes exceeds") || !strings.Contains(strings.Join(st.Limits, "\n"), "file limit of 1 reached") {
+		t.Errorf("limits %q", st.Limits)
+	}
+	out.Reset()
+	c.status(graphOpts{}, &out, &errb)
+	wantLines(t, out.String(), "skipped: 2\n", "  b.sh: file limit of 1 reached\n", "  big.sh: 203 bytes exceeds the 100 byte file limit\n", "limit hit: big.sh: 203 bytes exceeds")
 }

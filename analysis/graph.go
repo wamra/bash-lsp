@@ -124,7 +124,7 @@ func (s *Snapshot) compareNodes(a, b Node) int {
 }
 
 // Lookup resolves spec to graph nodes. "path:line:col" (1-based, the column in
-// bytes) gives the function named at that position, else the function around
+// UTF-16 units, as the language server and the CLI print positions) gives the function named at that position, else the function around
 // it, else the file; "path" (absolute or root-relative) gives the file node;
 // any other spec is a function name and gives one node per file that defines
 // it, sorted by path and offset. A spec that matches a file is never read as a
@@ -186,17 +186,17 @@ func (s *Snapshot) lookupPosition(spec string) (nodes []Node, ok bool, err error
 	if line > 1 && off == len(src) { // the empty "line" after a final newline
 		return nil, true, fmt.Errorf("analysis: line %d of %q is past the end of the file", line, spec)
 	}
-	end := off
-	for end < len(src) && src[end] != '\n' {
-		end++
+	lineStart := off
+	f := s.facts[file].File
+	p := f.FromUTF16(line-1, col-1) // clamps a column past the line end
+	if _, ch := f.ToUTF16(p); ch != col-1 {
+		return nil, true, fmt.Errorf("analysis: column %d of %q is not a position of the line", col, spec)
 	}
-	if col-1 > end-off { // one past the last byte is the end of the line
-		return nil, true, fmt.Errorf("analysis: column %d of %q is past the end of the line", col, spec)
+	off = p.Offset
+	atEnd := off >= len(src) || src[off] == '\n' || (src[off] == '\r' && off+1 < len(src) && src[off+1] == '\n')
+	if atEnd && off > lineStart { // the column one past the line end means its last byte
+		off--
 	}
-	if end > off { // the column one past the line end means its last byte
-		end--
-	}
-	off = min(off+col-1, end)
 	if off >= len(src) {
 		off = max(len(src)-1, 0)
 	}

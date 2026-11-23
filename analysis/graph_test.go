@@ -398,3 +398,25 @@ func TestGraphLookupFileBeatsFunction(t *testing.T) {
 	q := buildMem(t, map[string]string{"util.sh": "echo hi\n", "a.sh": "util.sh() { :; }\n"})
 	wantSeq(t, q.nodeStrs(q.look("util.sh")), "util.sh")
 }
+
+// Columns of a "path:line:col" spec are UTF-16 units, as every position the
+// tools print.
+func TestGraphLookupUTF16Columns(t *testing.T) {
+	// Line 3: `echo "héllo ☃😀"; f`; f is at byte column 24, UTF-16 column 19.
+	q := buildMem(t, map[string]string{
+		"uni.sh":  "#!/bin/bash\nf() { :; }\necho \"héllo ☃😀\"; f\n",
+		"crlf.sh": "f() { :; }\r\necho \"é😀\"; f\r\n",
+	})
+	wantSeq(t, q.nodeStrs(q.look("uni.sh:3:19")), "uni.sh:f")
+	wantSeq(t, q.nodeStrs(q.look("crlf.sh:2:13")), "crlf.sh:f")
+	// The byte column of the same place is past the end of the line in UTF-16.
+	for _, bad := range []string{"uni.sh:3:25", "uni.sh:3:21", "crlf.sh:2:15", "crlf.sh:1:12"} {
+		if ns, err := q.s.Lookup(bad); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("%q", bad)) {
+			t.Errorf("Lookup(%q) = %v, %v; want an error naming the spec", bad, q.nodeStrs(ns), err)
+		}
+	}
+	// A column inside a surrogate pair is not a position.
+	if _, err := q.s.Lookup("uni.sh:3:15"); err == nil {
+		t.Errorf("Lookup inside a surrogate pair succeeded")
+	}
+}

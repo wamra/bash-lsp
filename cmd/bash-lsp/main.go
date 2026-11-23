@@ -101,6 +101,13 @@ func relSlash(root, p string) string {
 	return filepath.ToSlash(p)
 }
 
+// pos16 is p as a 1-based line and UTF-16 column, the position every command
+// prints and every "path:line:col" spec reads.
+func pos16(f *tree.File, p tree.Pos) [2]int {
+	l, c := f.ToUTF16(p)
+	return [2]int{l + 1, c + 1}
+}
+
 // --- ast ---
 
 type astNode struct {
@@ -176,31 +183,31 @@ func commentParent(f *tree.File, loc *tree.Locator, c *tree.Node) *tree.Node {
 	return p
 }
 
-func (v *astView) json() astNode {
+func (v *astView) json(f *tree.File) astNode {
 	n := v.n
 	out := astNode{
 		Kind:      n.Kind.String(),
-		Start:     [2]int{n.Range.Start.Line, n.Range.Start.Col},
-		End:       [2]int{n.Range.End.Line, n.Range.End.Col},
+		Start:     pos16(f, n.Range.Start),
+		End:       pos16(f, n.Range.End),
 		Name:      n.Name,
 		Value:     n.Value,
 		Recovered: n.Recovered,
 		Children:  []astNode{},
 	}
 	for _, k := range v.kids {
-		out.Children = append(out.Children, k.json())
+		out.Children = append(out.Children, k.json(f))
 	}
 	return out
 }
 
-func (v *astView) print(w io.Writer, depth int) {
+func (v *astView) print(w io.Writer, f *tree.File, depth int) {
 	n := v.n
 	label := n.Name
 	if label == "" {
 		label = n.Value
 	}
-	line := fmt.Sprintf("%s%s %d:%d-%d:%d", strings.Repeat("  ", depth), n.Kind,
-		n.Range.Start.Line, n.Range.Start.Col, n.Range.End.Line, n.Range.End.Col)
+	s, e := pos16(f, n.Range.Start), pos16(f, n.Range.End)
+	line := fmt.Sprintf("%s%s %d:%d-%d:%d", strings.Repeat("  ", depth), n.Kind, s[0], s[1], e[0], e[1])
 	if label != "" {
 		line += " " + strconv.Quote(label)
 	}
@@ -209,7 +216,7 @@ func (v *astView) print(w io.Writer, depth int) {
 	}
 	fmt.Fprintln(w, line)
 	for _, k := range v.kids {
-		k.print(w, depth+1)
+		k.print(w, f, depth+1)
 	}
 }
 
@@ -281,18 +288,19 @@ func cmdAst(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, fmt.Errorf("tree too deep to print (depth %d)", depth))
 	}
 	if asJSON {
-		doc := astDoc{Path: filepath.ToSlash(pos[0]), Dialect: f.Dialect.String(), Errors: []astError{}, Root: fileView(f).json()}
+		doc := astDoc{Path: filepath.ToSlash(pos[0]), Dialect: f.Dialect.String(), Errors: []astError{}, Root: fileView(f).json(f)}
 		for _, e := range f.Errors {
-			doc.Errors = append(doc.Errors, astError{e.Range.Start.Line, e.Range.Start.Col, e.Msg})
+			doc.Errors = append(doc.Errors, astError{pos16(f, e.Range.Start)[0], pos16(f, e.Range.Start)[1], e.Msg})
 		}
 		if err := writeJSON(stdout, doc); err != nil {
 			return fail(stderr, err)
 		}
 		return 0
 	}
-	fileView(f).print(stdout, 0)
+	fileView(f).print(stdout, f, 0)
 	for _, e := range f.Errors {
-		fmt.Fprintf(stderr, "%s:%d:%d: %s\n", filepath.ToSlash(pos[0]), e.Range.Start.Line, e.Range.Start.Col, e.Msg)
+		p := pos16(f, e.Range.Start)
+		fmt.Fprintf(stderr, "%s:%d:%d: %s\n", filepath.ToSlash(pos[0]), p[0], p[1], e.Msg)
 	}
 	return 0
 }
@@ -320,12 +328,14 @@ func kindName(k analysis.DeclKind) string {
 
 // flattenSymbols lists a file's outline in source order, each function
 // followed by its locals (Container set). Depth 1 marks a local.
-func flattenSymbols(rel string, ds []analysis.DocSymbol) (out []symOut, depth []int) {
+func flattenSymbols(rel string, f *tree.File, ds []analysis.DocSymbol) (out []symOut, depth []int) {
 	for _, d := range ds {
-		out = append(out, symOut{rel, d.Selection.Start.Line, d.Selection.Start.Col, kindName(d.Kind), d.Name, ""})
+		sp := pos16(f, d.Selection.Start)
+		out = append(out, symOut{rel, sp[0], sp[1], kindName(d.Kind), d.Name, ""})
 		depth = append(depth, 0)
 		for _, c := range d.Children {
-			out = append(out, symOut{rel, c.Selection.Start.Line, c.Selection.Start.Col, kindName(c.Kind), c.Name, d.Name})
+			cp := pos16(f, c.Selection.Start)
+			out = append(out, symOut{rel, cp[0], cp[1], kindName(c.Kind), c.Name, d.Name})
 			depth = append(depth, 1)
 		}
 	}
@@ -376,7 +386,11 @@ func cmdSymbols(args []string, stdout, stderr io.Writer) int {
 		}
 		sort.Strings(paths)
 		for _, sp := range paths {
-			syms, ds := flattenSymbols(relSlash(ws.Root(), sp), snap.DocumentSymbols(sp))
+			ff := snap.Facts(sp)
+			if ff == nil || ff.File == nil {
+				continue
+			}
+			syms, ds := flattenSymbols(relSlash(ws.Root(), sp), ff.File, snap.DocumentSymbols(sp))
 			all = append(all, syms...)
 			depths = append(depths, ds...)
 		}
