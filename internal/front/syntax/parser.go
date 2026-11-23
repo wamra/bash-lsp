@@ -770,6 +770,8 @@ func (p *Parser) doHeredocs() {
 		return
 	}
 	p.rune() // consume '\n', since we know p.tok == _Newl
+	p.enterNode()
+	defer p.leaveNode()
 	old := p.quote
 	p.heredocs = p.heredocs[:p.buriedHdocs]
 	for i, r := range hdocs {
@@ -941,8 +943,12 @@ func (p *Parser) errPass(err error) {
 		p.bsp = uint(len(p.bs)) + 1
 		p.r = runeEOF
 		p.w = 1
-		p.tok = _EOF
 	}
+	// Also when an error is already set: a caller that assigns p.tok from a
+	// lexer function (p.tok = p.paramToken(p.r)) overwrites the _EOF that an
+	// error inside that function had set, and a loop that then reports the
+	// token as unexpected, without consuming it, would never end.
+	p.tok = _EOF
 }
 
 // IsIncomplete reports whether a Parser error could have been avoided with

@@ -1,0 +1,64 @@
+diff --git a/internal/front/syntax/lexer.go b/internal/front/syntax/lexer.go
+index 82a5c0c..651dfa4 100644
+--- a/internal/front/syntax/lexer.go
++++ b/internal/front/syntax/lexer.go
+@@ -239,6 +239,7 @@ func (p *Parser) nextKeepSpaces() {
+ }
+ 
+ func (p *Parser) next() {
++again:
+ 	if p.r == runeEOF {
+ 		p.tok = _EOF
+ 		return
+@@ -334,7 +335,9 @@ skipSpace:
+ 			} else {
+ 				p.litBs = nil
+ 			}
+-			p.next()
++			// Not p.next(): a block of comment lines would use a stack
++			// frame per line.
++			goto again
+ 		case '[':
+ 			// `[` only starts an `[idx]=val` element when it begins a new word;
+ 			// otherwise it continues a glob like `foo[0-9]`.
+diff --git a/internal/front/syntax/parser.go b/internal/front/syntax/parser.go
+index 0318f0b..c864807 100644
+--- a/internal/front/syntax/parser.go
++++ b/internal/front/syntax/parser.go
+@@ -770,6 +770,8 @@ func (p *Parser) doHeredocs() {
+ 		return
+ 	}
+ 	p.rune() // consume '\n', since we know p.tok == _Newl
++	p.enterNode()
++	defer p.leaveNode()
+ 	old := p.quote
+ 	p.heredocs = p.heredocs[:p.buriedHdocs]
+ 	for i, r := range hdocs {
+@@ -941,8 +943,12 @@ func (p *Parser) errPass(err error) {
+ 		p.bsp = uint(len(p.bs)) + 1
+ 		p.r = runeEOF
+ 		p.w = 1
+-		p.tok = _EOF
+ 	}
++	// Also when an error is already set: a caller that assigns p.tok from a
++	// lexer function (p.tok = p.paramToken(p.r)) overwrites the _EOF that an
++	// error inside that function had set, and a loop that then reports the
++	// token as unexpected, without consuming it, would never end.
++	p.tok = _EOF
+ }
+ 
+ // IsIncomplete reports whether a Parser error could have been avoided with
+diff --git a/internal/front/syntax/parser_arithm.go b/internal/front/syntax/parser_arithm.go
+index 175732d..8f56eae 100644
+--- a/internal/front/syntax/parser_arithm.go
++++ b/internal/front/syntax/parser_arithm.go
+@@ -186,7 +186,9 @@ func (p *Parser) arithmExprValue(compact bool) ArithmExpr {
+ 		if p.tok != _LitWord {
+ 			p.followErr(ue.OpPos, ue.Op, noQuote("a literal"))
+ 		}
++		p.enterNode()
+ 		ue.X = p.arithmExprValue(compact)
++		p.leaveNode()
+ 		return ue
+ 	case leftParen:
+ 		if p.quote == paramExpArithm && p.lang.in(LangZsh) {

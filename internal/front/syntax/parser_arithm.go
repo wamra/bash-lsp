@@ -186,7 +186,9 @@ func (p *Parser) arithmExprValue(compact bool) ArithmExpr {
 		if p.tok != _LitWord {
 			p.followErr(ue.OpPos, ue.Op, noQuote("a literal"))
 		}
+		p.enterNode()
 		ue.X = p.arithmExprValue(compact)
+		p.leaveNode()
 		return ue
 	case leftParen:
 		if p.quote == paramExpArithm && p.lang.in(LangZsh) {

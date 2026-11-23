@@ -239,6 +239,7 @@ func (p *Parser) nextKeepSpaces() {
 }
 
 func (p *Parser) next() {
+again:
 	if p.r == runeEOF {
 		p.tok = _EOF
 		return
@@ -334,7 +335,9 @@ skipSpace:
 			} else {
 				p.litBs = nil
 			}
-			p.next()
+			// Not p.next(): a block of comment lines would use a stack
+			// frame per line.
+			goto again
 		case '[':
 			// `[` only starts an `[idx]=val` element when it begins a new word;
 			// otherwise it continues a glob like `foo[0-9]`.
