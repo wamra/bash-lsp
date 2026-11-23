@@ -599,3 +599,54 @@ func TestEventsDuringOpen(t *testing.T) {
 		}
 	}
 }
+
+// A document reached through a symlink out of the root is outside every
+// folder though its spelling is inside one: its call hierarchy is answered
+// from the documents outside the folders.
+func TestCallHierarchyOfDocumentThroughLinkOutOfRoot(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	put(t, filepath.Join(root, "a.sh"), "a_fn() { :; }\n")
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	c := client(t, root)
+	text := "callee() { :; }\ncaller() { callee; }\n"
+	put(t, filepath.Join(outside, "x.sh"), text)
+	c.openText("link/x.sh", text)
+	items := c.prepare("link/x.sh", "callee() {", 0)
+	if len(items) != 1 {
+		t.Fatalf("%d items", len(items))
+	}
+	var got []string
+	for _, x := range c.incoming(items[0]) {
+		got = append(got, x.From.Name)
+	}
+	if !eq(got, "caller") {
+		t.Fatalf("incoming of a document outside every folder: %v", got)
+	}
+}
+
+// Two documents outside every folder are served together, as without a
+// root: a call in one finds a function of the other (the documents outside
+// the folders share one snapshot; they are not one workspace each).
+func TestTwoDocumentsOutsideEveryRoot(t *testing.T) {
+	root := libRoot(t)
+	out := t.TempDir()
+	c := client(t, root)
+	for name, text := range map[string]string{"p.sh": "p_only() { :; }\n", "q.sh": "q_fn() { :; }\np_only\n"} {
+		c.notify("textDocument/didOpen", map[string]any{"textDocument": map[string]any{
+			"uri": workspace.URIFromPath(filepath.Join(out, name)), "languageId": "sh", "version": 1, "text": text}})
+	}
+	var ls []Location
+	raw := c.call("textDocument/definition", map[string]any{"textDocument": map[string]any{"uri": workspace.URIFromPath(filepath.Join(out, "q.sh"))}, "position": Position{1, 1}})
+	if err := json.Unmarshal(raw, &ls); err != nil {
+		t.Fatal(err)
+	}
+	if len(ls) != 1 || ls[0].URI != workspace.URIFromPath(filepath.Join(out, "p.sh")) {
+		t.Fatalf("definition across documents outside every folder: %+v", ls)
+	}
+}

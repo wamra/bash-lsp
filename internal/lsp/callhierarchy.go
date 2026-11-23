@@ -61,9 +61,9 @@ func (s *server) item(cs converters, snap *analysis.Snapshot, n analysis.Node, l
 
 // nodeOf finds the node an item stands for, and the snapshot of the
 // workspace that holds it: by its data, else by its uri and (for a
-// function) name. The data path picks the workspace by its spelling alone
-// (no file is touched): only a path the server produced names a file a
-// snapshot holds. ok is false when the node is gone.
+// function) name. The data path is looked up in the snapshots (no file is
+// touched): only a path the server produced names a file a snapshot holds.
+// ok is false when the node is gone.
 func (s *server) nodeOf(it callHierarchyItem) (*analysis.Snapshot, analysis.Node, bool) {
 	var d itemData
 	if len(it.Data) > 0 && json.Unmarshal(it.Data, &d) != nil {
@@ -80,7 +80,7 @@ func (s *server) nodeOf(it callHierarchyItem) (*analysis.Snapshot, analysis.Node
 			d.Name = it.Name
 		}
 	} else {
-		snap = s.backendOf(d.Path).Snapshot()
+		snap = s.snapshotHolding(d.Path)
 	}
 	if snap.Facts(d.Path) == nil {
 		return snap, analysis.Node{}, false

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 
+	"github.com/wamra/bash-lsp/analysis"
 	"github.com/wamra/bash-lsp/internal/workspace"
 )
 
@@ -117,12 +118,16 @@ func (s *server) folderOf(p string) *folder {
 	return nil
 }
 
-// backendOf is the backend that holds the canonical path p.
-func (s *server) backendOf(p string) backend {
-	if f := s.folderOf(p); f != nil {
-		return f.ws
+// snapshotHolding is the current snapshot that holds the file p, by
+// lookup in each (a document outside every folder can be spelled inside
+// one, through a symlink out of it); the loose one when none does.
+func (s *server) snapshotHolding(p string) *analysis.Snapshot {
+	for _, be := range s.backends() {
+		if snap := be.Snapshot(); snap.Facts(p) != nil {
+			return snap
+		}
 	}
-	return s.loose
+	return s.loose.Snapshot()
 }
 
 // backends are the folders' workspaces in the client's order, then the
