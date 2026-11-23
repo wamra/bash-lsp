@@ -179,3 +179,36 @@ func TestHoverOnSubshellVariable(t *testing.T) {
 		t.Fatalf("%q", md)
 	}
 }
+
+func TestFunctionInSubshellReadsSubshellVariable(t *testing.T) {
+	q := buildMem(t, map[string]string{"m.sh": "( x=1; f() { echo \"$x\"; }; f )\n"})
+	wantEq(t, q.def("m.sh", "$x", 0, 1), "m.sh:1")
+	// the function's own locals are still invisible to a function defined inside it
+	q = buildMem(t, map[string]string{"m.sh": "f() { local x=1; g() { echo \"$x\"; }; }\n"})
+	if r := q.reasonAt("m.sh", "$x", 0, 1); r != ReasonEnvironment {
+		t.Fatalf("a nested function must not see the enclosing function's local: %q", r)
+	}
+	// a subshell inside the function that sits in a subshell still resolves innermost first
+	q = buildMem(t, map[string]string{"m.sh": "( x=1; f() { ( x=2; echo \"$x\" ); echo \"$x\"; } )\n"})
+	wantEq(t, q.def("m.sh", "$x", 0, 1), "m.sh:1")
+	wantEq(t, q.def("m.sh", "$x", 1, 1), "m.sh:1")
+}
+
+func TestCommandSubstitutionAssignmentPins(t *testing.T) {
+	q := buildMem(t, map[string]string{"m.sh": "x=1\nx=$(\n  x=2\n  echo \"$x\"\n)\necho \"$x\"\n"})
+	// the inner read binds the inner x=2 only
+	wantEq(t, q.def("m.sh", "$x", 0, 1), "m.sh:3")
+	// the outer read binds x=1 and the outer x=$(...) assignment, not the inner one
+	wantEq(t, q.def("m.sh", "$x", 1, 1), "m.sh:1", "m.sh:2")
+}
+
+func TestPipelineBraceGroupReadPin(t *testing.T) {
+	q := buildMem(t, map[string]string{"m.sh": "cmd | { read a; echo \"$a\"; }\necho \"$a\"\n"})
+	wantEq(t, q.def("m.sh", "$a", 0, 1), "m.sh:1")
+	wantEq(t, q.def("m.sh", "$a", 1, 1))
+}
+
+func TestHeredocBodySubstitutionIsNotADeclaration(t *testing.T) {
+	q := buildMem(t, map[string]string{"m.sh": "cat <<EOF\n$(y=1)\nEOF\necho \"$y\"\n"})
+	wantEq(t, q.def("m.sh", "$y", 0, 1))
+}

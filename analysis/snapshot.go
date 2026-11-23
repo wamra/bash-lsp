@@ -605,9 +605,12 @@ func (s *Snapshot) bindVar(out []Binding, file int, u *Use) []Binding {
 			return append(out, b)
 		}
 	}
-	// Innermost private scope with a declaration of the name wins (rules S1, S2); the walk stops at the function boundary.
+	// Innermost private scope with a declaration of the name wins (rules S1, S2).
+	// The walk passes through function scopes, looking only at private scopes,
+	// so a function defined inside a subshell reads that subshell's variables;
+	// the enclosing function's locals are not visible to a nested function.
 	if len(s.privSyms) > 0 {
-		for sc := u.Scope; sc != nil && sc.Kind != ScopeFunction && sc.Kind != ScopeFile; sc = sc.Parent {
+		for sc := u.Scope; sc != nil && sc.Kind != ScopeFile; sc = sc.Parent {
 			if sc.Kind.Private() {
 				if sym := s.privSyms[privKey{file, sc, u.Name}]; sym != nil {
 					b.Sym = sym
