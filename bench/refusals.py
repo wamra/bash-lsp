@@ -3,7 +3,7 @@ Collects shell files (by extension or shebang) under each ROOT, read-only, at
 most --cap in total shared evenly between the roots (a root given with --all
 is scanned whole and does not count toward the cap), skipping anything over
 2 MiB; runs `BINARY ast FILE` on each and reports every file refused with
-"nesting too deep to parse safely". Prints one JSON object.
+"nesting too deep, or comment block too long, to parse safely". Prints one JSON object.
 Usage: uv run --no-project python refusals.py BINARY [--cap N] [--all ROOT]... ROOT..."""
 import concurrent.futures, datetime, json, os, re, subprocess, sys
 
@@ -18,7 +18,7 @@ binary, roots = args[0], args[1:]
 MAX = 2 << 20
 EXT = (".sh", ".bash", ".bats", ".ksh")
 SHEBANG = re.compile(rb"^#![^\n]*\b(sh|bash|dash|ksh|mksh|bats)\b")
-REFUSAL = "nesting too deep to parse safely"
+REFUSAL = "nesting too deep, or comment block too long, to parse safely"
 
 def shell_files(root, limit):
     found = []

@@ -35,16 +35,36 @@ type attempt struct {
 
 // parseFile parses all of f.Src and returns its statements, errors and
 // comments. deepAt is -1, or the offset where the parse of the whole file was
-// stopped for nesting too deeply; nothing else is returned then.
+// stopped for using too much stack; nothing else is returned then.
+//
+// The file is first parsed side by side with whatever else is being parsed.
+// If the guard could not tell this parse's stack from another's (scan.go),
+// that attempt is dropped and the file is parsed again alone.
 func parseFile(f *tree.File, d Dialect) (stmts []*tree.Node, errs []tree.SyntaxError, comments []*tree.Node, deepAt int) {
-	r := &resyncer{f: f, d: d, budget: maxResyncAttempts}
-	defer r.g.release()
-	a := r.raw(0)
-	if a.tooDeep {
-		return nil, nil, nil, a.failOff
+	run := func(alone bool) (contended bool) {
+		if alone {
+			lane.Lock()
+			defer lane.Unlock()
+		} else {
+			lane.RLock()
+			defer lane.RUnlock()
+		}
+		r := &resyncer{f: f, d: d, budget: maxResyncAttempts}
+		r.g.alone = alone
+		defer r.g.release()
+		a := r.raw(0)
+		if a.tooDeep {
+			stmts, errs, comments, deepAt = nil, nil, nil, a.failOff
+		} else {
+			stmts, errs, comments = r.resolve(a)
+			deepAt = -1
+		}
+		return r.g.contended
 	}
-	stmts, errs, comments = r.resolve(a)
-	return stmts, errs, comments, -1
+	if run(false) {
+		run(true)
+	}
+	return stmts, errs, comments, deepAt
 }
 
 // raw runs the parser once over f.Src[off:]. It does not resync.
@@ -82,22 +102,35 @@ func (r *resyncer) raw(off int) attempt {
 // input (`A=$((0 A` indexes past a slice in v3.14.1); crashed reports that,
 // with err describing it, instead of letting the panic end the process.
 //
-// The parser reads src through g's reader, which stops it when its stack
-// grows too deep: deepAt is then how many bytes it had been given, and the
-// partial tree is dropped. Otherwise deepAt is -1.
+// The parser runs on a goroutine of its own and reads src through g's
+// reader, which stops it when its stack grows too deep: deepAt is then how
+// many bytes it had been given, and the partial tree is dropped. Otherwise
+// deepAt is -1. The goroutine is what gives the stack back: a stopped run
+// has grown it to 64 MiB, and a goroutine keeps its stack until the
+// collector shrinks it, half at a time.
 func parseSafely(g *stackGuard, src []byte, path string, d Dialect) (af *syntax.File, err error, crashed bool, deepAt int) {
+	if g.alone {
+		g.settle()
+	}
 	rd := &guardedReader{g: g, src: src}
-	defer func() {
-		if r := recover(); r != nil {
-			af, err, crashed, deepAt = nil, fmt.Errorf("parser failure: %v", r), true, -1
-		}
-		if rd.tripped {
-			af, err, crashed, deepAt = nil, errTooDeep, false, rd.off
-		}
+	deepAt = -1
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer func() {
+			if r := recover(); r != nil {
+				af, err, crashed = nil, fmt.Errorf("parser failure: %v", r), true
+			}
+		}()
+		outgrow()
+		p := syntax.NewParser(syntax.KeepComments(true), syntax.RecoverErrors(50), syntax.Variant(variant(d)))
+		af, err = p.Parse(rd, path)
 	}()
-	p := syntax.NewParser(syntax.KeepComments(true), syntax.RecoverErrors(50), syntax.Variant(variant(d)))
-	af, err = p.Parse(rd, path)
-	return af, err, false, -1
+	<-done
+	if rd.tripped {
+		return nil, errTooDeep, false, rd.off
+	}
+	return af, err, crashed, -1
 }
 
 // unclosedQuote returns the offset (relative to the parsed text) of the first
@@ -171,8 +204,9 @@ func (r *resyncer) resolve(a attempt) ([]*tree.Node, []tree.SyntaxError, []*tree
 	// A candidate the guard stopped is dropped like one that did not parse:
 	// the text from there may only look deep because the parse started in the
 	// middle of a heredoc or a string. Once the guard's own budget is spent,
-	// no further line is tried.
-	for pos := nextLine(src, max(a.failOff, gapStart)); pos < len(src) && r.budget > 0 && !r.g.spent(); pos = nextLine(src, pos) {
+	// or the guard has no verdict (the whole file is then parsed again), no
+	// further line is tried.
+	for pos := nextLine(src, max(a.failOff, gapStart)); pos < len(src) && r.budget > 0 && !r.g.spent() && !r.g.contended; pos = nextLine(src, pos) {
 		if !resyncPoint(src, pos) {
 			continue
 		}

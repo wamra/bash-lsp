@@ -22,8 +22,9 @@ const (
 	maxStackEnv  = "WB_MAX_STACK"  // when "1", the child lowers the Go stack limit to safetyStack
 )
 
-// safetyStack is the stack limit the children run under: a sixteenth of the
-// runtime's default 1 GB, so a pass leaves a wide margin.
+// safetyStack is the stack limit the children run under: an eighth of the
+// 512 MiB a stack can reach under the runtime's default limit, so a pass
+// leaves a wide margin.
 const safetyStack = 64 << 20
 
 // crashCases are inputs under the 2 MiB file limit that overflowed the stack
@@ -217,8 +218,14 @@ func TestNoCrashSubprocess(t *testing.T) {
 			if err != nil {
 				t.Fatalf("child failed: %v\n%s", err, firstLines(out, 12))
 			}
-			if !strings.Contains(out, "result: refused: nesting too deep to parse safely") && !strings.Contains(out, "result: parsed: ") {
+			refused, parsed := strings.Contains(out, "result: refused: "+refusal), strings.Contains(out, "result: parsed: ")
+			if !refused && !parsed {
 				t.Fatalf("child neither refused nor parsed:\n%s", firstLines(out, 12))
+			}
+			// The cases named for it sit just under the limit: a guard that
+			// refuses them has become stricter than the design note says.
+			if (strings.HasPrefix(name, "accepted-") || name == "sustained-under-limit") && !parsed {
+				t.Fatalf("refused, want parsed:\n%s", firstLines(out, 12))
 			}
 		})
 	}

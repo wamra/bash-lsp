@@ -10,7 +10,10 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"mvdan.cc/sh/v3/syntax"
 
@@ -84,7 +87,7 @@ func TestNoFalseRefusal(t *testing.T) {
 // A refusal says why and nothing else: no level count, one error.
 func TestRefusalMessage(t *testing.T) {
 	f := Parse("x.sh", []byte(strings.Repeat("$(", 100000)+"\n"), Bash)
-	const want = "nesting too deep to parse safely"
+	const want = "nesting too deep, or comment block too long, to parse safely"
 	if f.Skipped != want {
 		t.Fatalf("Skipped = %q, want %q", f.Skipped, want)
 	}
@@ -169,8 +172,8 @@ func wrap(seed []byte, construct, shape uint8, n uint16) []byte {
 // FuzzNestingGuard is the differential check behind P1: whatever Parse
 // accepts must parse, lower and walk inside a small fixed stack, and whatever
 // it refuses must be refused before the stack is gone. Each input runs in a
-// child (TestCrashHelper) under a 64 MiB stack limit, a sixteenth of the
-// default; the child must exit 0. With the race detector a child takes over
+// child (TestCrashHelper) under a 64 MiB stack limit, an eighth of what
+// a stack can reach by default; the child must exit 0. With the race detector a child takes over
 // a second to start, so the inputs run in this process instead, under the
 // same limit: an overflow then ends the test binary, which still fails.
 func FuzzNestingGuard(f *testing.F) {
@@ -279,6 +282,11 @@ func holdStack(n int) (release func()) {
 		<-gone
 		runtime.GC() // a stack freed while the collector runs is released when it ends
 		runtime.GC()
+		// The guard takes a process that held this much a second ago for
+		// one that still does (settleEvery). The tests do not wait.
+		lane.Lock()
+		floor, settled = 0, time.Time{}
+		lane.Unlock()
 	}
 }
 
@@ -359,25 +367,119 @@ func TestFrameLimitBesideLargeStack(t *testing.T) {
 	}
 }
 
-// A refused file must not leave the process in the second regime: the stack
-// the parser grew is given back before Parse returns.
+// A refused parse must not leave its stack behind: the run's goroutine is
+// gone a moment after Parse returns, and its 64 MiB with it, without a
+// collection being forced.
 func TestRefusalGivesTheStackBack(t *testing.T) {
 	runtime.GC() // release the stacks earlier tests grew
 	runtime.GC()
 	g := &stackGuard{}
-	if before := g.stackMemory(); before >= maxStackMemory/2 {
+	before := g.stackMemory()
+	if before >= maxStackMemory/2 {
 		t.Skipf("%d bytes of stack held before the test", before)
 	}
-	done := make(chan uint64)
-	go func() {
-		f := Parse("x.sh", []byte(strings.Repeat("(", 200000)+"\n"), Bash)
-		if f.Skipped != refusal {
-			t.Errorf("not refused: %q", f.Skipped)
-		}
-		done <- g.stackMemory()
-	}()
-	if after := <-done; after >= maxStackMemory {
-		t.Fatalf("%d bytes of stack held after a refusal", after)
+	f := Parse("x.sh", []byte(strings.Repeat("(", 200000)+"\n"), Bash)
+	if f.Skipped != refusal {
+		t.Fatalf("not refused: %q", f.Skipped)
+	}
+	after := g.stackMemory()
+	for i := 0; i < 2000 && after >= before+settleSlack; i++ {
+		time.Sleep(time.Millisecond) // a collector cycle in progress holds it until the cycle ends
+		after = g.stackMemory()
+	}
+	if after >= before+settleSlack {
+		t.Fatalf("%d bytes of stack held after a refusal, %d before", after, before)
+	}
+}
+
+// Files that each need most of what a parse may use must all parse when
+// they are parsed at once: together they pass maxStackMemory, alone none
+// does.
+func TestDeepAcceptedFilesTogether(t *testing.T) {
+	src := []byte(nested("echo ", "$(", "x", ")", "\n", 20000)())
+	if f := Parse("x.sh", src, Bash); f.Skipped != "" {
+		t.Fatalf("alone: skipped %q", f.Skipped)
+	}
+	rounds := 6
+	if raceBuild || testing.Short() {
+		rounds = 2
+	}
+	var wg sync.WaitGroup
+	var refused atomic.Int64
+	for range 6 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range rounds {
+				if f := Parse("x.sh", src, Bash); f.Skipped != "" {
+					refused.Add(1)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if n := refused.Load(); n != 0 {
+		t.Fatalf("%d of %d parses were refused", n, 6*rounds)
+	}
+}
+
+// In a process that holds large stacks for other work every parse runs
+// alone. Ordinary files must still parse, at once, and without a forced
+// collection each: the settled reading (floor) covers the host's stacks.
+func TestManyParsesBesideLargeStack(t *testing.T) {
+	defer holdStack(maxStackMemory)()
+	src := []byte(strings.Repeat("f() { if a; then echo \"$(b \"$(c)\")\"; fi; }\n", 200))
+	Parse("x.sh", src, Bash) // settles once
+	var before, after debug.GCStats
+	debug.ReadGCStats(&before)
+	var wg sync.WaitGroup
+	var bad atomic.Int64
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 50 {
+				if f := Parse("x.sh", src, Bash); f.Skipped != "" || len(f.Root.Children) != 200 {
+					bad.Add(1)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	debug.ReadGCStats(&after)
+	if n := bad.Load(); n != 0 {
+		t.Fatalf("%d of 400 parses went wrong", n)
+	}
+	// 400 parses allocate enough for a few cycles of their own; one forced
+	// per parse would be 400.
+	if n := after.NumGC - before.NumGC; n > 100 {
+		t.Fatalf("%d collections during 400 parses", n)
+	}
+}
+
+// One unbroken block of comment lines uses parser stack like nesting does
+// (the lexer calls itself once per comment line), so a long enough block is
+// refused; the message says so. This pins where: well past 100,000 lines,
+// before 300,000.
+func TestCommentBlockThreshold(t *testing.T) {
+	runtime.GC() // release the stacks earlier tests grew
+	runtime.GC()
+	if f := Parse("x.sh", []byte(strings.Repeat("#\n", 100000)), Bash); f.Skipped != "" || len(f.Comments) != 100000 {
+		t.Fatalf("100,000 lines: skipped %q, %d comments", f.Skipped, len(f.Comments))
+	}
+	f := Parse("x.sh", []byte(strings.Repeat("#\n", 300000)), Bash)
+	if f.Skipped != refusal || !strings.Contains(f.Skipped, "comment block") {
+		t.Fatalf("300,000 lines: skipped %q", f.Skipped)
+	}
+}
+
+// The reader gives the parser at most maxRead bytes between two looks at
+// the stack, whatever it is asked for.
+func TestReaderCapsWhatItHandsOut(t *testing.T) {
+	r := &guardedReader{g: &stackGuard{}, src: bytes.Repeat([]byte("a"), 10000)}
+	n, err := r.Read(make([]byte, 8192))
+	if err != nil || n != maxRead {
+		t.Fatalf("Read = %d, %v; want %d", n, err, maxRead)
 	}
 }
 
@@ -418,5 +520,84 @@ func BenchmarkGuard(b *testing.B) {
 				Parse("x.sh", src, Bash)
 			}
 		})
+	}
+}
+
+// TestDeepFileBesideOthers is the workspace scan with one pathological file
+// in it: while one goroutine keeps parsing a file nested far too deep, files
+// that parse alone must parse beside it, every time.
+func TestDeepFileBesideOthers(t *testing.T) {
+	deep := []byte(strings.Repeat("(", 200000) + "\n")
+	flat := []byte(strings.Repeat("# a typical comment line of moderate length here\n", 30000))
+	if f := Parse("flat.sh", flat, Bash); f.Skipped != "" {
+		t.Fatalf("alone: skipped %q", f.Skipped)
+	}
+	rounds := 20
+	if raceBuild || testing.Short() {
+		rounds = 4
+	}
+	stop, stopped := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(stopped)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if f := Parse("deep.sh", deep, Bash); f.Skipped == "" {
+				t.Error("the deep file was parsed")
+				return
+			}
+		}
+	}()
+	var wg sync.WaitGroup
+	var refused atomic.Int64
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range rounds {
+				if f := Parse("flat.sh", flat, Bash); f.Skipped != "" || len(f.Comments) != 30000 {
+					refused.Add(1)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(stop)
+	<-stopped
+	if n := refused.Load(); n != 0 {
+		t.Fatalf("%d of %d parses beside the deep file were refused", n, 8*rounds)
+	}
+}
+
+// After a collection that met a deep stack the runtime starts goroutines on
+// stacks of megabytes and keeps those of finished goroutines (see settle):
+// here a few hundred megabytes that no goroutine uses. That must not leave
+// the process refusing what it parsed before.
+func TestStacksOfFinishedGoroutines(t *testing.T) {
+	flat := []byte(strings.Repeat("# a typical comment line of moderate length here\n", 30000))
+	release := holdStack(maxStackMemory)
+	runtime.GC() // the next goroutines start large
+	var wg sync.WaitGroup
+	for range 400 { // a host's goroutines: they do little and finish
+		wg.Add(1)
+		go func() { wg.Done() }()
+	}
+	wg.Wait()
+	release()
+	g := &stackGuard{}
+	held := g.stackMemory()
+	if held < maxStackMemory {
+		t.Skipf("the runtime kept only %d bytes of finished goroutines' stacks", held)
+	}
+	for i := range 5 {
+		if f := Parse("flat.sh", flat, Bash); f.Skipped != "" || len(f.Comments) != 30000 {
+			t.Fatalf("parse %d, %d bytes of stack held by finished goroutines: skipped %q", i, held, f.Skipped)
+		}
+	}
+	if left := g.stackMemory(); left >= maxStackMemory/2 {
+		t.Fatalf("%d bytes still held, of %d", left, held)
 	}
 }
