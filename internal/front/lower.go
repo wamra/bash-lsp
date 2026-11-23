@@ -1,6 +1,7 @@
 package front
 
 import (
+	"bytes"
 	"fmt"
 	"regexp"
 	"sort"
@@ -616,6 +617,18 @@ func (l *lowerer) part1(p syntax.WordPart) *tree.Node {
 		}
 		n := l.mk(tree.KLit, p.ValuePos, p.ValueEnd)
 		n.Value = p.Value
+		if r := l.rng(p.ValuePos, p.ValueEnd); r.Start.Offset >= n.Range.Start.Offset && r.End.Offset <= n.Range.End.Offset {
+			n.Range = r // without the NUL bytes the lexer dropped at either end
+			// An assignment value's position is computed from the lexer's name length,
+			// so a NUL inside the name leaves it that many bytes early: start at the
+			// value's own text when the source (minus NUL) only ends with it.
+			if raw := bytes.ReplaceAll(l.f.Src[r.Start.Offset:r.End.Offset], []byte{0}, nil); len(raw) > len(p.Value) && bytes.HasSuffix(raw, []byte(p.Value)) {
+				start := l.valueEnd(&syntax.Lit{ValuePos: p.ValuePos}, len(raw)-len(p.Value), true)
+				if start <= r.End.Offset {
+					n.Range.Start = l.f.PosAt(start)
+				}
+			}
+		}
 		return n
 	case *syntax.SglQuoted:
 		n := l.mk(tree.KSglQuoted, p.Left, p.End())
@@ -771,6 +784,7 @@ func (l *lowerer) declArg(w *syntax.Word) *tree.Node {
 			nameStart := l.valueEnd(lit, 0, true)
 			nameEnd := l.valueEnd(lit, len(name), false)
 			nameRange := tree.Range{Start: l.f.PosAt(nameStart), End: l.f.PosAt(nameEnd)}
+			valueName := name // the lexer's name: eq below indexes lit.Value
 			if text := l.f.Src[nameStart:nameEnd]; string(text) != name {
 				name = string(text)
 			}
@@ -779,7 +793,7 @@ func (l *lowerer) declArg(w *syntax.Word) *tree.Node {
 			if bare || valued {
 				var kids []*tree.Node
 				if valued {
-					eq := len(name) + strings.IndexByte(rest, '=') + 1 // offset just past '='
+					eq := len(valueName) + strings.IndexByte(rest, '=') + 1 // offset just past '='
 					var parts []*tree.Node
 					if eq < len(lit.Value) {
 						ls := l.f.PosAt(l.valueEnd(lit, eq, true))
