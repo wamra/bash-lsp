@@ -233,3 +233,113 @@ func TestArithmeticFollowsScopeRules(t *testing.T) {
 	q = buildMem(t, map[string]string{"m.sh": "( (( n = 5 )); echo \"$n\" )\n"})
 	wantEq(t, q.def("m.sh", "$n", 0, 1), "m.sh:1")
 }
+
+func TestIntegerAttributeAssignmentIsArithmetic(t *testing.T) {
+	q := buildMem(t, map[string]string{"m.sh": "declare -i n\nn=n+1\nm=2\nn+=m\n"})
+	// n: declaration, the RHS read on line 2, the assignment targets; m: m=2 and the read on line 4
+	wantEq(t, q.refs("m.sh", "n\nn=", 0, 0), "m.sh:1", "m.sh:2", "m.sh:2", "m.sh:4")
+	wantEq(t, q.refs("m.sh", "m=2", 0, 0), "m.sh:3", "m.sh:4")
+	for _, src := range []string{
+		"f() { local -i n=0; n=n+1; }\n", "typeset -i n; n=n+1\n", "declare -i n=n+1\n", "export -i n; n+=n\n",
+	} {
+		ff := bindSrcT(src)
+		if r, _ := countKinds(usesOf(t, ff, "n")); r == 0 {
+			t.Errorf("%q: no read of n", src)
+		}
+	}
+	// a plain variable's value is a string
+	ff := bindSrcT("s=n+1\nt=\"x+y\"\n")
+	for _, name := range []string{"n", "x", "y"} {
+		if us := usesOf(t, ff, name); len(us) != 0 {
+			t.Errorf("%s read in a non-integer assignment", name)
+		}
+	}
+	// the attribute is scoped like the declaration: a subshell's -i does not reach the outer assignment
+	ff = bindSrcT("( declare -i n )\nn=a+1\n")
+	if us := usesOf(t, ff, "a"); len(us) != 0 {
+		t.Errorf("integer attribute escaped its subshell")
+	}
+	// the value's expansions are not counted twice
+	ff = bindSrcT("declare -i n\nn=$k+j\n")
+	if len(usesOf(t, ff, "k")) != 1 || len(usesOf(t, ff, "j")) != 1 {
+		t.Errorf("k or j count wrong")
+	}
+}
+
+func TestArithmeticWriteAcrossWhitespace(t *testing.T) {
+	cases := []struct {
+		src          string
+		reads, write int
+	}{
+		{"echo $((x ++))", 1, 1},
+		{"(( x ++ ))", 1, 1},
+		{"(( x -- ))", 1, 1},
+		{"(( -- x ))", 1, 1},
+		{"(( ++\tx ))", 1, 1},
+		{"(( x \\\n += 2 ))", 1, 1},
+		{"(( x \\\n = 2 ))", 0, 1},
+		{"(( x\r\n= 2 ))", 0, 1},
+		{"(( x \\\r\n ++ ))", 1, 1},
+		{"(( x + y ))", 1, 0},
+		{"(( x - -y ))", 1, 0},
+		{"(( x + +y ))", 1, 0},
+	}
+	for _, c := range cases {
+		r, w := countKinds(usesOf(t, bindSrcT(c.src+"\n"), "x"))
+		if r != c.reads || w != c.write {
+			t.Errorf("%q: %d reads %d writes, want %d and %d", c.src, r, w, c.reads, c.write)
+		}
+	}
+}
+
+func TestCStyleForClauseBoundsWithQuotedParens(t *testing.T) {
+	src := "for ((i=0;i<\"(\";i++)); do echo \"$j\"; (( kk++ )); done\n"
+	ff := bindSrcT(src)
+	if r, w := countKinds(usesOf(t, ff, "i")); r != 2 || w != 2 {
+		t.Errorf("i: %d reads %d writes", r, w)
+	}
+	// the body is not scanned as part of the clauses: kk once (read+write), j once (parameter path)
+	if r, w := countKinds(usesOf(t, ff, "kk")); r != 1 || w != 1 {
+		t.Errorf("kk: %d reads %d writes", r, w)
+	}
+	ff = bindSrcT("for ((i=0;i<')';i++)); do (( z++ )); done\nfor ((a=0;a<$(echo \")\");a++)); do :; done\n")
+	if r, w := countKinds(usesOf(t, ff, "z")); r != 1 || w != 1 {
+		t.Errorf("z: %d reads %d writes", r, w)
+	}
+	if r, w := countKinds(usesOf(t, ff, "a")); r != 2 || w != 2 {
+		t.Errorf("a: %d reads %d writes", r, w)
+	}
+}
+
+func TestQuotedTextInArithmetic(t *testing.T) {
+	// bash: inside (( )), $(( )) and for (( )) the text is treated as double-quoted, so a
+	// double-quoted name is evaluated after quote removal and a single quote is an ordinary character.
+	// As a let argument, single quotes are shell quoting around the expression.
+	cases := []struct {
+		src  string
+		name string
+		want int
+	}{
+		{"(( \"d\" + 1 ))", "d", 1},
+		{"echo $(( \"d\" + 1 ))", "d", 1},
+		{"(( 'u' + 1 ))", "u", 0},
+		{"echo $(( 'u' + 1 ))", "u", 0},
+		{"for (( i=0; i<'u'; i++ )); do :; done", "u", 0},
+		{"let 'q=q+1'", "q", 2},
+		{"let \"q=q+1\"", "q", 2},
+	}
+	for _, c := range cases {
+		if got := len(usesOf(t, bindSrcT(c.src+"\n"), c.name)); got != c.want {
+			t.Errorf("%q: %d uses of %s, want %d", c.src, got, c.name, c.want)
+		}
+	}
+}
+
+func TestArrayLiteralSubscripts(t *testing.T) {
+	ff := bindSrcT("a=([i+1]=x [j]=\"p q\" c [$k+l]=$(echo m) )\nb+=([n]=1)\ndeclare -A m=([key]=v)\n")
+	for name, want := range map[string]int{"i": 1, "j": 1, "k": 1, "l": 1, "n": 1, "key": 0, "x": 0, "c": 0} {
+		if got := len(usesOf(t, ff, name)); got != want {
+			t.Errorf("%s: %d uses, want %d", name, got, want)
+		}
+	}
+}

@@ -22,7 +22,13 @@ func isExpansion(k tree.Kind) bool {
 
 // collectMasks returns the ranges of the outermost expansion nodes under
 // nodes, in source order. Iterative; it does not descend into an expansion.
-func collectMasks(nodes []*tree.Node) []span {
+func collectMasks(nodes []*tree.Node) []span { return collectMasksQ(nodes, false) }
+
+// collectMasksQ is collectMasks that can also mask single-quoted text. Inside
+// `((`, `$((` and `for ((`, bash treats the expression as if double-quoted and a
+// single quote is an ordinary (invalid) character, so what sits between single
+// quotes is not a name there; as a `let` argument it is shell quoting and is.
+func collectMasksQ(nodes []*tree.Node, sgl bool) []span {
 	var out []span
 	stack := make([]*tree.Node, 0, 8)
 	for i := len(nodes) - 1; i >= 0; i-- {
@@ -34,7 +40,7 @@ func collectMasks(nodes []*tree.Node) []span {
 		if n == nil {
 			continue
 		}
-		if isExpansion(n.Kind) {
+		if isExpansion(n.Kind) || (sgl && n.Kind == tree.KSglQuoted) {
 			out = append(out, span{n.Range.Start.Offset, n.Range.End.Offset})
 			continue
 		}
@@ -70,12 +76,48 @@ func (b *binder) matchBracket(open, limit int) int {
 	return -1
 }
 
+// blankEnd returns the index after the blanks at i: spaces, tabs, newlines,
+// carriage returns and backslash-newline continuations.
+func (b *binder) blankEnd(i, limit int) int {
+	for i < limit {
+		switch c := b.src[i]; {
+		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
+			i++
+		case c == '\\' && i+1 < limit && (b.src[i+1] == '\n' || (b.src[i+1] == '\r' && i+2 < limit && b.src[i+2] == '\n')):
+			i += 2
+			if b.src[i-1] == '\r' {
+				i++
+			}
+		default:
+			return i
+		}
+	}
+	return i
+}
+
+// blankStart returns the index where the blanks that end at i begin.
+func (b *binder) blankStart(i, lo int) int {
+	for i > lo {
+		switch c := b.src[i-1]; {
+		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
+			i--
+			if c == '\n' && i > lo && b.src[i-1] == '\r' {
+				i--
+			}
+			if i > lo && b.src[i-1] == '\\' && c == '\n' {
+				i--
+			}
+		default:
+			return i
+		}
+	}
+	return i
+}
+
 // assignOpAt reports whether an assignment operator starts at i (after blanks):
 // plain is `=` alone, compound is one of the op= forms.
 func (b *binder) assignOpAt(i, limit int) (plain, compound bool) {
-	for i < limit && (b.src[i] == ' ' || b.src[i] == '\t' || b.src[i] == '\n') {
-		i++
-	}
+	i = b.blankEnd(i, limit)
 	if i >= limit {
 		return false, false
 	}
@@ -96,17 +138,19 @@ func (b *binder) assignOpAt(i, limit int) (plain, compound bool) {
 	return false, false
 }
 
-// incDecAround reports a `++` or `--` written directly before start or directly after end.
+// incDecAround reports a `++` or `--` before start or after end, blanks allowed in between.
 func (b *binder) incDecAround(start, end, lo, limit int) bool {
-	if end+1 < limit && (b.src[end] == '+' || b.src[end] == '-') && b.src[end+1] == b.src[end] {
+	if e := b.blankEnd(end, limit); e+1 < limit && (b.src[e] == '+' || b.src[e] == '-') && b.src[e+1] == b.src[e] {
 		return true
 	}
-	if start-2 >= lo && (b.src[start-1] == '+' || b.src[start-1] == '-') && b.src[start-2] == b.src[start-1] {
-		if start-3 < lo {
+	p := b.blankStart(start, lo)
+	if p-2 >= lo && (b.src[p-1] == '+' || b.src[p-1] == '-') && b.src[p-2] == b.src[p-1] {
+		q := b.blankStart(p-2, lo)
+		if q <= lo {
 			return true
 		}
-		p := b.src[start-3]
-		return !(isIdentChar(p) || p == ']' || p == ')')
+		c := b.src[q-1]
+		return !(isIdentChar(c) || c == ']' || c == ')')
 	}
 	return false
 }
@@ -281,7 +325,7 @@ func (b *binder) arithBody(n *tree.Node, sc *Scope, open string) {
 	if !n.Recovered && e-2 >= ts && b.src[e-1] == ')' && b.src[e-2] == ')' {
 		e -= 2
 	}
-	b.arithText(ts, e, collectMasks(n.Children), sc, n)
+	b.arithText(ts, e, collectMasksQ(n.Children, true), sc, n)
 }
 
 // letBody records the names in `let` arguments. The lowered node ends at the
@@ -306,9 +350,25 @@ func (b *binder) cStyleBody(n *tree.Node, sc *Scope) {
 	if i < 0 || i+1 >= end || b.src[i] != '(' || b.src[i+1] != '(' {
 		return
 	}
-	ts, depth, closeAt := i+2, 0, -1
+	// The clauses are the leading words of the node (the body follows them).
+	var clauses []*tree.Node
+	for _, c := range n.Children {
+		if c.Kind != tree.KWord {
+			break
+		}
+		clauses = append(clauses, c)
+	}
+	masks := collectMasksQ(clauses, false)
+	ts, depth, closeAt, mi := i+2, 0, -1, 0
 	for k := ts; k < end && closeAt < 0; k++ {
-		switch b.src[k] {
+		for mi < len(masks) && masks[mi].e <= k {
+			mi++
+		}
+		if mi < len(masks) && masks[mi].s <= k { // inside an expansion: its own parens balance
+			k = masks[mi].e - 1
+			continue
+		}
+		switch c := b.src[k]; c {
 		case '(':
 			depth++
 		case ')':
@@ -317,18 +377,18 @@ func (b *binder) cStyleBody(n *tree.Node, sc *Scope) {
 			} else {
 				depth--
 			}
+		case '"', '\'': // a quoted parenthesis does not count
+			for k++; k < end && b.src[k] != c; k++ {
+				if c == '"' && b.src[k] == '\\' {
+					k++
+				}
+			}
 		}
 	}
 	if closeAt < 0 {
 		closeAt = end
 	}
-	var clauses []*tree.Node
-	for _, c := range n.Children {
-		if c.Range.Start.Offset < closeAt {
-			clauses = append(clauses, c)
-		}
-	}
-	b.arithText(ts, closeAt, collectMasks(clauses), sc, n)
+	b.arithText(ts, closeAt, collectMasksQ(clauses, true), sc, n)
 }
 
 // paramArith handles what a parameter expansion holds besides its name: the
@@ -422,5 +482,118 @@ func (b *binder) scanAssoc(root *tree.Node) {
 			}
 		}
 		stack = append(stack, n.Children...)
+	}
+}
+
+// noteInteger records a declaration that gives name the integer attribute.
+func (b *binder) noteInteger(d *Decl) {
+	if b.ints == nil {
+		b.ints = map[intKey]bool{}
+	}
+	switch fn := funcBody(d.Scope); {
+	case privateScope(d.Scope) != nil:
+		b.ints[intKey{sc: privateScope(d.Scope), name: d.Name}] = true
+	case fn != nil && d.Attrs.Local:
+		b.ints[intKey{fn: fn, name: d.Name}] = true
+	default:
+		b.ints[intKey{name: d.Name}] = true
+	}
+}
+
+type intKey struct {
+	sc   *Scope
+	fn   *tree.Node
+	name string
+}
+
+// isInteger reports whether name carries the integer attribute in view at sc
+// (same lookup order as isDeclared). An assignment to such a variable is
+// evaluated as arithmetic.
+func (b *binder) isInteger(name string, sc *Scope) bool {
+	if len(b.ints) == 0 {
+		return false
+	}
+	for s := sc; s != nil && s.Kind != ScopeFile; s = s.Parent {
+		if s.Kind.Private() && b.ints[intKey{sc: s, name: name}] {
+			return true
+		}
+	}
+	if fn := funcBody(sc); fn != nil && b.ints[intKey{fn: fn, name: name}] {
+		return true
+	}
+	return b.ints[intKey{name: name}]
+}
+
+// assignValue records the names in the value of an assignment to an integer
+// variable (`declare -i n; n=n+1`, `n+=m`): bash evaluates it as arithmetic.
+func (b *binder) assignValue(n *tree.Node, sc *Scope) {
+	i, end := n.NameRange.End.Offset, min(n.Range.End.Offset, len(b.src))
+	if i <= 0 || i >= end {
+		return
+	}
+	if b.src[i] == '[' {
+		cl := b.matchBracket(i, end)
+		if cl < 0 {
+			return
+		}
+		i = cl + 1
+	}
+	if i < end && b.src[i] == '+' {
+		i++
+	}
+	if i+1 >= end || b.src[i] != '=' || b.src[i+1] == '(' {
+		return
+	}
+	b.arithText(i+1, end, collectMasks(n.Children), sc, n)
+}
+
+// arrayLiteralSubscripts records the names in the `[expr]=` keys of `a=([i+1]=x ...)`.
+func (b *binder) arrayLiteralSubscripts(n *tree.Node, assoc bool, sc *Scope) {
+	end := min(n.Range.End.Offset, len(b.src))
+	i := n.NameRange.End.Offset
+	if i <= 0 || i >= end || assoc || b.isAssoc(n.Name) {
+		return
+	}
+	if i < end && b.src[i] == '+' {
+		i++
+	}
+	if i+1 >= end || b.src[i] != '=' || b.src[i+1] != '(' {
+		return
+	}
+	masks := collectMasks(n.Children)
+	pos, ci := i+2, 0
+	for pos < end {
+		pos = b.blankEnd(pos, end)
+		if pos >= end || b.src[pos] == ')' {
+			return
+		}
+		if b.src[pos] == '[' {
+			cl := b.matchBracket(pos, end)
+			if cl < 0 {
+				return
+			}
+			b.arithText(pos+1, cl, masks, sc, n)
+			pos = cl + 1
+			if pos < end && b.src[pos] == '+' {
+				pos++
+			}
+			if pos < end && b.src[pos] == '=' {
+				pos++
+			}
+		}
+		for ci < len(n.Children) && n.Children[ci].Range.Start.Offset < pos {
+			ci++
+		}
+		next := pos
+		if ci < len(n.Children) && n.Children[ci].Range.Start.Offset == pos {
+			next = n.Children[ci].Range.End.Offset
+		}
+		if next <= pos { // an empty value, or a word the tree does not give: step over one byte
+			next = pos + 1
+			if pos < end && b.src[pos] == ')' {
+				return
+			}
+		}
+		pos = next
 	}
 }

@@ -134,7 +134,8 @@ type binder struct {
 	bats     bool
 	wholeCmt map[int]*tree.Node // line -> comment that is alone on its line (shebang excluded)
 
-	tracking     bool // declGlobal, declLocal and declPriv are maintained (from the first arithmetic write)
+	ints         map[intKey]bool // integer-attribute declarations, by where they bind
+	tracking     bool            // declGlobal, declLocal and declPriv are maintained (from the first arithmetic write)
 	assocScanned bool
 	names        map[string]string // interned arithmetic names
 	assoc        map[string]bool   // names declared -A anywhere in the file: their subscripts are strings
@@ -289,6 +290,9 @@ func (b *binder) variable(name string, r tree.Range, n *tree.Node, sc *Scope, at
 		Doc: b.docAbove(n.Range.Start.Line), Node: n, Literal: literal, Implicit: implicit}
 	b.ff.Decls = append(b.ff.Decls, d)
 	b.noteDecl(d, 1)
+	if attrs.Integer {
+		b.noteInteger(d)
+	}
 	b.use(UseVarWrite, name, r, sc, n)
 }
 
@@ -301,6 +305,10 @@ func (b *binder) assign(n *tree.Node, sc *Scope, attrs VarAttrs, implicit string
 		}
 		b.variable(n.Name, n.NameRange, n, sc, attrs, b.assignLiteral(n), implicit)
 		b.assignSubscript(n, attrs.Assoc, sc)
+		b.arrayLiteralSubscripts(n, attrs.Assoc, sc)
+		if attrs.Integer || b.isInteger(n.Name, sc) {
+			b.assignValue(n, sc)
+		}
 	}
 	b.children(n, sc)
 }
