@@ -1,0 +1,751 @@
+package analysis
+
+import (
+	"slices"
+	"strings"
+
+	"github.com/wamra/bash-lsp/parse"
+	"github.com/wamra/bash-lsp/tree"
+)
+
+// Reason strings of string, variable and dynamic-scope bindings and edges.
+const (
+	ReasonVariableConstant = "variable-constant"
+	ReasonStringEval       = "string-eval"
+	ReasonStringTrap       = "string-trap"
+	ReasonStringShellC     = "string-shell-c"
+	ReasonVariableUnknown  = "variable-unknown"
+	ReasonExpansion        = "expansion"
+	ReasonDynamicScope     = "dynamic-scope" // variable reads only; never an edge
+)
+
+// Via says how a UseCall names its target when it is not a plain command
+// word (Use.ViaAlias, the target inside an alias definition, is separate).
+type Via uint8
+
+const (
+	ViaNone Via = iota
+	// ViaEval, ViaTrap, ViaShellC: a command inside the string argument of
+	// eval, of trap, or of bash/sh/dash/ksh -c. The range is the command
+	// name inside the string, mapped back to the file, so its text is the name.
+	ViaEval
+	ViaTrap
+	ViaShellC
+	// ViaVariable: a command word that is exactly one parameter expansion
+	// (`"$cmd"`, `$cmd`, `${cmd}`, `"${cmd}"`). Use.Name is the parameter,
+	// not a function, and the range text does not spell the target's name:
+	// a rename must not rewrite it.
+	ViaVariable
+	// ViaValue: made by Build, never by Bind. The literal value of an
+	// assignment (`cmd=build_release`) through which a ViaVariable use
+	// resolved; the range text is the function's name. No edge has it as site.
+	ViaValue
+)
+
+// NamesTarget reports whether the text of a use's range spells the name of
+// what it binds to.
+func (v Via) NamesTarget() bool { return v != ViaVariable }
+
+// reason is the binding and edge reason of a call made this way, "" for ViaNone.
+func (v Via) reason() string {
+	switch v {
+	case ViaEval:
+		return ReasonStringEval
+	case ViaTrap:
+		return ReasonStringTrap
+	case ViaShellC:
+		return ReasonStringShellC
+	case ViaVariable, ViaValue:
+		return ReasonVariableConstant
+	}
+	return ""
+}
+
+// DynamicRef is a command whose name is an expansion with no known target:
+// `$(pick) x`, `${a}_${b}`, the string of `eval "$code"`, or a string nested
+// deeper than maxStringDepth. Range is the expression (in the file); Node is
+// the command in the file that holds it.
+type DynamicRef struct {
+	Range tree.Range
+	Scope *Scope
+	Node  *tree.Node
+}
+
+// InvokeRef is the execution of a file by literal path: a command word with
+// a `/` (`./x.sh`), or the script operand of bash/sh/dash/ksh (`bash x.sh`).
+type InvokeRef struct {
+	Node  *tree.Node
+	Word  *tree.Node
+	Range tree.Range
+	Scope *Scope
+}
+
+// maxStringDepth bounds strings inside strings: a string at this depth is
+// parsed, one inside it is a dynamic/expansion site.
+const maxStringDepth = 3
+
+// shells are the commands whose -c string is code and whose first operand
+// otherwise is a script.
+var shells = map[string]bool{"bash": true, "sh": true, "dash": true, "ksh": true}
+
+// fragMap maps a string body back to the file: byte i of src starts at file
+// offset offs[i], and a range of src ending before byte i ends at ends[i]
+// (ends has len(src)+1 entries). A byte that stands for several file bytes
+// (an escape `\"`, or the placeholder for an expansion) spans all of them.
+// offs nil means src is the file itself.
+type fragMap struct {
+	src  []byte
+	offs []int
+	ends []int
+}
+
+func (m *fragMap) off(i int) int {
+	i = max(0, min(i, len(m.src)))
+	if m.offs == nil {
+		return i
+	}
+	if i == len(m.src) {
+		return m.ends[i]
+	}
+	return m.offs[i]
+}
+
+func (m *fragMap) end(i int) int {
+	i = max(0, min(i, len(m.src)))
+	if m.offs == nil {
+		return i
+	}
+	return m.ends[i]
+}
+
+// fileRange maps the range [a, e) of m's tree to a range in the file.
+func (b *binder) fileRange(m *fragMap, a, e int) tree.Range {
+	s, t := m.off(a), m.end(e)
+	if e <= a {
+		t = s
+	}
+	return tree.Range{Start: b.ff.File.PosAt(s), End: b.ff.File.PosAt(max(s, t))}
+}
+
+// dynamicName reports whether a command of this name needs dynamicCall:
+// eval, trap, a shell, or a path.
+func dynamicName(name string) bool {
+	return name == "eval" || name == "trap" || shells[name] || strings.IndexByte(name, '/') >= 0
+}
+
+// dynamicCall looks at a command whose name is the literal name: eval, trap
+// and shells get their string parsed; a path or a shell's script operand is
+// an invocation (file level only). depth is the string depth of m (0: file).
+func (b *binder) dynamicCall(n *tree.Node, name string, args []*tree.Node, sc *Scope, m *fragMap, depth int) {
+	switch {
+	case name == "eval":
+		if len(args) > 0 {
+			if t, ok := literalText(args[0]); ok && t == "--" { // bash 3.2 runs `eval -- echo hi`
+				args = args[1:]
+			}
+		}
+		if len(args) > 0 {
+			b.fragment(ViaEval, args, n, sc, m, depth)
+		}
+	case name == "trap":
+		if a := trapAction(args); a != nil {
+			b.fragment(ViaTrap, []*tree.Node{a}, n, sc, m, depth)
+		}
+	case shells[name]:
+		w, cmd := shellOperand(args)
+		switch {
+		case w == nil:
+		case cmd:
+			b.fragment(ViaShellC, []*tree.Node{w}, n, sc, m, depth)
+		case depth == 0:
+			if t, ok := literalText(w); ok && t != "" {
+				b.ff.Invokes = append(b.ff.Invokes, InvokeRef{Node: n, Word: w, Range: w.Range, Scope: sc})
+			}
+		}
+	case depth == 0 && strings.Contains(name, "/"):
+		for _, c := range n.Children { // the command word itself
+			if c.Kind == tree.KWord {
+				b.ff.Invokes = append(b.ff.Invokes, InvokeRef{Node: n, Word: c, Range: c.Range, Scope: sc})
+				break
+			}
+		}
+	}
+}
+
+// trapAction returns the action argument of trap, nil for the forms that
+// install nothing. `help trap` (bash 3.2): trap [-lp] [arg signal_spec ...].
+// -l and -p list; one argument alone is a signal to reset; an action `-` resets
+// and an empty one ignores; a numeric first argument is a signal (checked:
+// `trap 0 INT` resets EXIT on /bin/bash 3.2). `--` ends the options.
+func trapAction(args []*tree.Node) *tree.Node {
+	i := 0
+	if i < len(args) {
+		if t, ok := literalText(args[i]); ok && len(t) > 1 && t[0] == '-' {
+			if t != "--" {
+				return nil
+			}
+			i++
+		}
+	}
+	rest := args[i:]
+	if len(rest) < 2 {
+		return nil
+	}
+	if t, ok := literalText(rest[0]); ok && (t == "" || t == "-" || allDigits(t)) {
+		return nil
+	}
+	return rest[0]
+}
+
+func allDigits(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return s != ""
+}
+
+// shellOperand returns the first operand of a shell command line and whether
+// -c was given (then it is the command string, else a script path). From
+// `man bash` OPTIONS: -c reads commands from the first non-option argument
+// (verified on /bin/bash 3.2: -ec, -ce, `-c -e`, `-o pipefail -c`); -o/+o
+// and -O/+O take an argument, so do --rcfile and --init-file; `--` or `-`
+// ends the options. -R file is ksh's (`man ksh` SYNOPSIS). -s (read stdin)
+// means no script.
+func shellOperand(args []*tree.Node) (w *tree.Node, cmd bool) {
+	for i := 0; i < len(args); i++ {
+		t, ok := literalText(args[i])
+		if !ok {
+			return args[i], cmd
+		}
+		switch {
+		case t == "--" || t == "-":
+			if i+1 < len(args) {
+				return args[i+1], cmd
+			}
+			return nil, cmd
+		case strings.HasPrefix(t, "--"):
+			if t == "--rcfile" || t == "--init-file" {
+				i++
+			}
+		case len(t) > 1 && (t[0] == '-' || t[0] == '+'):
+			if t[0] == '-' && strings.IndexByte(t, 'c') > 0 {
+				cmd = true
+			}
+			if t[0] == '-' && !cmd && strings.IndexByte(t, 's') > 0 {
+				return nil, false
+			}
+			if strings.IndexByte("oOR", t[len(t)-1]) >= 0 {
+				i++
+			}
+		default:
+			return args[i], cmd
+		}
+	}
+	return nil, cmd
+}
+
+// fragment parses the words args of m (joined with spaces, as eval does)
+// as shell and records each command inside: a call use marked via, a
+// dynamic site for a command name that is an expansion, and the strings
+// inside it, one level deeper.
+func (b *binder) fragment(via Via, args []*tree.Node, n *tree.Node, sc *Scope, m *fragMap, depth int) {
+	if depth >= maxStringDepth {
+		b.ff.Dynamic = append(b.ff.Dynamic, DynamicRef{Range: b.fileRange(m, args[0].Range.Start.Offset, args[len(args)-1].Range.End.Offset), Scope: sc, Node: n})
+		return
+	}
+	fm := buildFragment(args, m)
+	f := parse.Fragment(fm.src, b.ff.File.Dialect)
+	if f.Root == nil {
+		return
+	}
+	f.Root.Walk(func(c *tree.Node) bool {
+		if c.Kind != tree.KCall {
+			return true
+		}
+		var words []*tree.Node
+		for _, w := range c.Children {
+			if w.Kind == tree.KWord {
+				words = append(words, w)
+			}
+		}
+		if len(words) == 0 {
+			return true
+		}
+		name, ok := literalText(words[0])
+		switch {
+		case ok && name != "":
+			if name == "source" || name == "." || name == "alias" {
+				return true // not resolved inside strings
+			}
+			u := b.use(UseCall, name, b.fileRange(fm, words[0].Range.Start.Offset, words[0].Range.End.Offset), sc, n)
+			u.Via = via
+			b.dynamicCall(n, name, words[1:], sc, fm, depth+1)
+		case !ok && hasExpansion(words[0]):
+			b.ff.Dynamic = append(b.ff.Dynamic, DynamicRef{Range: b.fileRange(fm, words[0].Range.Start.Offset, words[0].Range.End.Offset), Scope: sc, Node: n})
+		}
+		return true
+	})
+}
+
+// placeholder stands for an expansion of the enclosing level inside a string
+// body: its value is known only when that level runs, so it is one opaque
+// parameter expansion (self-delimiting, so a following name does not join it).
+const placeholder = "${__wb}"
+
+// buildFragment makes the text the shell runs for words of m: quotes
+// removed, the escapes of each quoting context applied, and every expansion
+// of m's level replaced by the placeholder; with the map back to the file.
+func buildFragment(words []*tree.Node, m *fragMap) *fragMap {
+	fm := &fragMap{ends: []int{m.off(words[0].Range.Start.Offset)}}
+	add := func(c byte, start, end int) {
+		fm.src = append(fm.src, c)
+		fm.offs = append(fm.offs, start)
+		fm.ends = append(fm.ends, end)
+	}
+	src := m.src
+	clamp := func(i int) int { return max(0, min(i, len(src))) }
+	prev := fm.ends[0]      // file offset where the text so far ends
+	one := func(i, w int) { // byte i of m's src, standing for w bytes of it
+		add(src[i+w-1], m.off(i), m.end(i+w))
+		prev = m.end(i + w)
+	}
+	opaque := func(s, e int) {
+		for k := 0; k < len(placeholder)-1; k++ {
+			add(placeholder[k], m.off(s), m.off(s))
+		}
+		add(placeholder[len(placeholder)-1], m.off(s), m.end(e))
+		prev = m.end(e)
+	}
+	for wi, w := range words {
+		if wi > 0 {
+			add(' ', prev, prev)
+		}
+		for _, p := range w.Children {
+			s, e := clamp(p.Range.Start.Offset), clamp(p.Range.End.Offset)
+			switch {
+			case p.Kind == tree.KLit && !p.Recovered:
+				for i := s; i < e; i++ { // unquoted: a backslash quotes the next byte
+					if src[i] == '\\' && i+1 < e {
+						if src[i+1] != '\n' {
+							one(i, 2)
+						}
+						i++
+						continue
+					}
+					one(i, 1)
+				}
+			case p.Kind == tree.KSglQuoted && s < e && src[s] != '$' && e-s >= 2:
+				for i := s + 1; i < e-1; i++ {
+					one(i, 1)
+				}
+			case p.Kind == tree.KDblQuoted:
+				for _, q := range p.Children {
+					qs, qe := clamp(q.Range.Start.Offset), clamp(q.Range.End.Offset)
+					if q.Kind != tree.KLit || q.Recovered {
+						opaque(qs, qe)
+						continue
+					}
+					for i := qs; i < qe; i++ { // double quotes: \ quotes only $ ` " \ and newline
+						if src[i] == '\\' && i+1 < qe && strings.IndexByte("$`\"\\\n", src[i+1]) >= 0 {
+							if src[i+1] != '\n' {
+								one(i, 2)
+							}
+							i++
+							continue
+						}
+						one(i, 1)
+					}
+				}
+			default:
+				opaque(s, e)
+			}
+		}
+	}
+	return fm
+}
+
+// hasExpansion reports whether word w has a part that expands (anything
+// but literals and quoted literals), so a non-literal word that is merely
+// recovered from a syntax error does not count.
+func hasExpansion(w *tree.Node) bool {
+	for _, p := range w.Children {
+		switch p.Kind {
+		case tree.KLit, tree.KSglQuoted:
+		case tree.KDblQuoted:
+			for _, q := range p.Children {
+				if q.Kind != tree.KLit {
+					return true
+				}
+			}
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+// expansionCommand records a file-level command word that is not literal:
+// exactly one parameter expansion is a ViaVariable use, resolved by Build;
+// anything else is a dynamic/expansion site.
+func (b *binder) expansionCommand(n, w *tree.Node, sc *Scope) {
+	if !hasExpansion(w) {
+		return
+	}
+	if name := soleParam(w, b.src); name != "" {
+		u := b.use(UseCall, name, w.Range, sc, n)
+		u.Via = ViaVariable
+		return
+	}
+	b.ff.Dynamic = append(b.ff.Dynamic, DynamicRef{Range: w.Range, Scope: sc, Node: n})
+}
+
+// soleParam returns the parameter of a word that is exactly `$p`, `${p}`,
+// `"$p"` or `"${p}"`, "" otherwise.
+func soleParam(w *tree.Node, src []byte) string {
+	if len(w.Children) != 1 {
+		return ""
+	}
+	p := w.Children[0]
+	if p.Kind == tree.KDblQuoted {
+		if len(p.Children) != 1 || p.Range.End.Offset-p.Range.Start.Offset != p.Children[0].Range.End.Offset-p.Children[0].Range.Start.Offset+2 {
+			return ""
+		}
+		p = p.Children[0]
+	}
+	if p.Kind != tree.KParamExp || p.Name == "" || len(p.Children) != 0 {
+		return ""
+	}
+	s, e := p.Range.Start.Offset, p.Range.End.Offset
+	if s < 0 || e > len(src) || s > e {
+		return ""
+	}
+	if t := string(src[s:e]); t != "$"+p.Name && t != "${"+p.Name+"}" {
+		return ""
+	}
+	return p.Name
+}
+
+// --- Build side ---
+
+// dynSite is a dynamic edge's site: a DynamicRef of the facts
+// (dynamic/expansion) or a ViaVariable use with no constant value
+// (dynamic/variable-unknown).
+type dynSite struct {
+	rng    tree.Range
+	sc     *Scope
+	reason uint8
+}
+
+// invokeSite is one resolved target of an InvokeRef.
+type invokeSite struct {
+	ref    *InvokeRef
+	target string
+}
+
+// tgtDynamic marks an edgeRec of rel RelCalls whose at indexes the file's
+// dynSites instead of its bindings.
+const tgtDynamic = -2
+
+var (
+	codeVariableUnknown = reasonCode(ReasonVariableUnknown)
+	codeExpansion       = reasonCode(ReasonExpansion)
+)
+
+// prepareDynamic starts the dynamic sites of every file from its facts.
+func (s *Snapshot) prepareDynamic() {
+	s.dyn = make([][]dynSite, len(s.paths))
+	s.valueSeen = map[*Decl]bool{}
+	for i, ff := range s.facts {
+		for _, d := range ff.Dynamic {
+			s.dyn[i] = append(s.dyn[i], dynSite{rng: d.Range, sc: d.Scope, reason: codeExpansion})
+		}
+	}
+}
+
+// bindVariableCall binds a ViaVariable use: when every declaration of the
+// variable in view (by the variable binding rules) assigns a literal and
+// each literal names a function in view, one Candidate/variable-constant
+// binding per distinct function; otherwise none, and a
+// dynamic/variable-unknown site.
+//
+// A declaration in view that assigns nothing (`local cmd`, `export cmd`)
+// is not counted; one that is not a plain literal assignment (`read`, a for
+// loop, `+=`, an array, a nameref or integer, an expansion) makes the value
+// unknown, as does a literal that is no function in view (`cmd=echo`).
+func (s *Snapshot) bindVariableCall(out []Binding, file int, u *Use) []Binding {
+	unknown := func() []Binding {
+		s.dyn[file] = append(s.dyn[file], dynSite{rng: u.Range, sc: u.Scope, reason: codeVariableUnknown})
+		return out
+	}
+	if !identRe.MatchString(u.Name) {
+		return unknown()
+	}
+	vars := s.bindVar(nil, file, &Use{Kind: UseVarRead, Name: u.Name, Range: u.Range, Scope: u.Scope})
+	var targets []*Symbol
+	type lit struct {
+		d    *Decl
+		syms []*Symbol
+	}
+	var lits []lit
+	for _, vb := range vars {
+		if vb.Res != Resolved || vb.Sym == nil {
+			return unknown()
+		}
+		for _, d := range vb.Sym.Decls {
+			if !s.visible[file].has(s.declFile[d]) || d.Temp {
+				continue
+			}
+			if d.Implicit == "" && d.Node != nil && d.Node.Kind == tree.KAssign && !s.assigns(d) {
+				continue // `local cmd`: declares, assigns nothing
+			}
+			if !s.plainLiteral(d) {
+				return unknown()
+			}
+			fs := s.pickAll(s.funcSyms[d.Literal], file)
+			if len(fs) == 0 {
+				return unknown()
+			}
+			lits = append(lits, lit{d, fs})
+			for _, f := range fs {
+				if !slices.Contains(targets, f) {
+					targets = append(targets, f)
+				}
+			}
+		}
+	}
+	if len(targets) == 0 {
+		return unknown()
+	}
+	b := Binding{Use: u, File: s.paths[file], Res: Candidate, Reason: ReasonVariableConstant}
+	for _, t := range targets {
+		b.Sym = t
+		out = append(out, b)
+	}
+	for _, l := range lits {
+		if s.valueSeen[l.d] {
+			continue
+		}
+		s.valueSeen[l.d] = true
+		df := s.declFile[l.d]
+		vr, ok := valueRange(l.d, s.facts[df].File)
+		if !ok {
+			continue
+		}
+		vu := &Use{Kind: UseCall, Via: ViaValue, Name: l.d.Literal, Range: vr, Scope: l.d.Scope, Node: l.d.Node}
+		for _, f := range l.syms {
+			s.extra = append(s.extra, Binding{Use: vu, File: s.paths[df], Sym: f, Res: Candidate, Reason: ReasonVariableConstant})
+		}
+	}
+	return out
+}
+
+// assigns reports whether the assignment node of d has `=` after the name.
+func (s *Snapshot) assigns(d *Decl) bool {
+	src := s.facts[s.declFile[d]].File.Src
+	i := d.NameRange.End.Offset
+	return i < len(src) && (src[i] == '=' || src[i] == '+' || src[i] == '[')
+}
+
+// plainLiteral reports whether d assigns exactly its literal value.
+func (s *Snapshot) plainLiteral(d *Decl) bool {
+	if d.Kind != DeclVariable || d.Implicit != "" || d.Literal == "" || d.Node == nil || d.Node.Kind != tree.KAssign {
+		return false
+	}
+	if a := d.Attrs; a.Nameref || a.Integer || a.Array || a.Assoc {
+		return false
+	}
+	src := s.facts[s.declFile[d]].File.Src
+	i := d.NameRange.End.Offset
+	return i < len(src) && src[i] == '='
+}
+
+// valueRange is the range of the literal value text of assignment d: the
+// word, or the inside of a quoted word.
+func valueRange(d *Decl, f *tree.File) (tree.Range, bool) {
+	var w *tree.Node
+	for _, c := range d.Node.Children {
+		if c.Kind == tree.KWord {
+			w = c
+		}
+	}
+	if w == nil || len(w.Children) != 1 {
+		return tree.Range{}, false
+	}
+	p := w.Children[0]
+	switch p.Kind {
+	case tree.KLit:
+		return p.Range, true
+	case tree.KSglQuoted:
+		s, e := p.Range.Start.Offset, p.Range.End.Offset
+		if e-s < 2 || s < 0 || e > len(f.Src) || f.Src[s] == '$' {
+			return tree.Range{}, false
+		}
+		return tree.Range{Start: f.PosAt(s + 1), End: f.PosAt(e - 1)}, true
+	case tree.KDblQuoted:
+		if len(p.Children) == 1 && p.Children[0].Kind == tree.KLit {
+			return p.Children[0].Range, true
+		}
+	}
+	return tree.Range{}, false
+}
+
+// finishDynamic runs after bindAll: it adds the literal-value bindings of
+// variable-constant calls, binds dynamic-scope reads and resolves invocations.
+func (s *Snapshot) finishDynamic(r func(file int) *resolver) {
+	added := map[int][]Binding{}
+	replaced := map[*Use]bool{}
+	for _, b := range s.extra {
+		f := s.idx[b.File]
+		added[f] = append(added[f], b)
+	}
+	s.dynamicScope(added, replaced)
+	if len(added) > 0 {
+		touched := map[*Symbol]bool{}
+		for f, bs := range added {
+			list := s.bindings[f]
+			if len(replaced) > 0 {
+				list = slices.DeleteFunc(slices.Clone(list), func(b Binding) bool {
+					if replaced[b.Use] {
+						touched[b.Sym] = true
+						return true
+					}
+					return false
+				})
+			}
+			list = append(list, bs...)
+			slices.SortStableFunc(list, func(a, b Binding) int { return a.Use.Range.Start.Offset - b.Use.Range.Start.Offset })
+			s.bindings[f] = list
+			for _, b := range bs {
+				touched[b.Sym] = true
+			}
+		}
+		for sym := range touched {
+			list := slices.DeleteFunc(slices.Clone(s.bySym[sym]), func(b Binding) bool { return replaced[b.Use] })
+			for _, bs := range added {
+				for _, b := range bs {
+					if b.Sym == sym {
+						list = append(list, b)
+					}
+				}
+			}
+			slices.SortStableFunc(list, func(a, b Binding) int {
+				if a.File != b.File {
+					return strings.Compare(a.File, b.File)
+				}
+				return a.Use.Range.Start.Offset - b.Use.Range.Start.Offset
+			})
+			if len(list) == 0 {
+				delete(s.bySym, sym)
+			} else {
+				s.bySym[sym] = list
+			}
+		}
+	}
+	s.extra, s.valueSeen = nil, nil
+	s.invokes = make([][]invokeSite, len(s.paths))
+	for i, ff := range s.facts {
+		if len(ff.Invokes) == 0 {
+			continue
+		}
+		res := r(i)
+		for k := range ff.Invokes {
+			ref := &ff.Invokes[k]
+			e := res.resolve(SourceRef{Node: ref.Node, Word: ref.Word, Range: ref.Range})
+			if e.Status != SourceResolved {
+				continue
+			}
+			for _, t := range e.Targets {
+				s.invokes[i] = append(s.invokes[i], invokeSite{ref: ref, target: t})
+			}
+		}
+	}
+}
+
+// dynamicScope rebinds a read inside function g that no declaration in view
+// makes (unresolved/environment) to the `local` of that name in each caller
+// of g, when some caller declares one: Candidate/dynamic-scope, instead of the
+// environment binding. Callers are the functions around resolved RelCalls
+// edges to the definition of g that holds the read (plain calls and calls
+// through an alias; not strings, variables or alias definitions), depth 1.
+func (s *Snapshot) dynamicScope(added map[int][]Binding, replaced map[*Use]bool) {
+	type callerLocal struct {
+		file int
+		fn   *tree.Node
+	}
+	callersOf := map[*Decl][]callerLocal{}
+	var scratch []edgeRec
+	for f, bs := range s.bindings {
+		for k := range bs {
+			b := &bs[k]
+			u := b.Use
+			if u.Kind != UseVarRead || b.Res != Unresolved || u.Scope == nil || u.Scope.Func == "" {
+				continue
+			}
+			g := s.callerOfScope(f, u.Scope)
+			if g == nil {
+				continue
+			}
+			cs, ok := callersOf[g]
+			if !ok {
+				for _, cb := range s.bySym[s.declSym[g]] {
+					cu := cb.Use
+					if cu.Kind != UseCall || cu.Via != ViaNone || cu.ViaAlias || cb.Res != Resolved {
+						continue
+					}
+					cf := s.idx[cb.File]
+					scratch = s.appendTargets(scratch[:0], cf, edgeRec{}, &cb)
+					if !slices.ContainsFunc(scratch, func(r edgeRec) bool { return r.res == Resolved && r.to == g }) {
+						continue
+					}
+					if d := s.callerOfScope(cf, cu.Scope); d != nil {
+						cs = append(cs, callerLocal{cf, d.Node})
+					}
+				}
+				callersOf[g] = cs
+			}
+			var syms []*Symbol
+			for _, c := range cs {
+				if !s.locals[c.file][c.fn][u.Name] {
+					continue
+				}
+				if sym := s.localSyms[localKey{c.file, c.fn, u.Name}]; sym != nil && !slices.Contains(syms, sym) {
+					syms = append(syms, sym)
+				}
+			}
+			if len(syms) == 0 {
+				continue
+			}
+			replaced[u] = true
+			for _, sym := range syms {
+				added[f] = append(added[f], Binding{Use: u, File: b.File, Sym: sym, Res: Candidate, Reason: ReasonDynamicScope})
+			}
+		}
+	}
+}
+
+// appendDynamicEdges adds the dynamic edges and the invocations of file.
+func (s *Snapshot) appendDynamicEdges(out []edgeRec, file int) []edgeRec {
+	for k, d := range s.dyn[file] {
+		out = append(out, edgeRec{at: int32(k), tgt: tgtDynamic, rel: RelCalls, res: Dynamic, reason: d.reason})
+	}
+	for k := range s.invokes[file] {
+		out = append(out, edgeRec{at: int32(k), rel: RelInvokes, res: Resolved, reason: codeDirect})
+	}
+	return out
+}
+
+// appendViaTargets appends the edges of a string or variable call binding:
+// one candidate edge per definition of the symbol in view of file, with the
+// binding's reason.
+func (s *Snapshot) appendViaTargets(out []edgeRec, file int, r edgeRec, b *Binding) []edgeRec {
+	r.res, r.reason = Candidate, reasonCode(b.Reason)
+	for _, d := range b.Sym.Decls {
+		if s.visible[file].has(s.declFile[d]) {
+			r.to = d
+			out = append(out, r)
+		}
+	}
+	return out
+}

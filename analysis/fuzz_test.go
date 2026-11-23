@@ -59,3 +59,50 @@ func FuzzBind(f *testing.F) {
 		}
 	})
 }
+
+// FuzzEdges builds a snapshot of arbitrary input, so every eval, trap and
+// shell -c string goes through string-body parsing and the offset map, and
+// asks for every edge: no panic; every call use and every edge site lies
+// inside the file, with line and column matching its offset.
+func FuzzEdges(f *testing.F) {
+	for _, s := range []string{
+		"f() { :; }\ntrap 'log \"a b\"' EXIT\neval \"f \\\"$x\\\"\"\n",
+		"eval \"eval 'eval \\\"eval f\\\"'\"\n",
+		"bash -ec 'f; g' n a\nsh -o pipefail -c \"$x\"\ntrap -- 'f\n g' INT\n",
+		"cmd=f\n\"$cmd\" x\n${a}_${b}\n$(pick) y\n./run.sh\nbash x.sh\n",
+		"o() { local v=1; i; }\ni() { echo $v; }\n",
+		"eval 'f'\"; g\" b\\ c $'x' \"$(h)\" \"\\$(k)\"\n",
+		"eval \"",
+		"trap '",
+	} {
+		f.Add([]byte(s))
+	}
+	f.Fuzz(func(t *testing.T, src []byte) {
+		if len(src) > 1<<14 {
+			return
+		}
+		p := "/ws/f.sh"
+		file := front.Parse(p, src, front.Bash)
+		ff := Bind(file)
+		check := func(what string, r tree.Range) {
+			a, b := r.Start.Offset, r.End.Offset
+			if a < 0 || b > len(src) || a > b {
+				t.Fatalf("%s: range [%d,%d) outside file of %d bytes", what, a, b, len(src))
+			}
+			if r.Start != file.PosAt(a) || r.End != file.PosAt(b) {
+				t.Fatalf("%s: range %+v disagrees with its offsets", what, r)
+			}
+		}
+		for _, u := range ff.Uses {
+			if u.Kind == UseCall {
+				check("call use "+u.Name, u.Range)
+			}
+		}
+		s := Build(map[string]*FileFacts{p: ff}, Options{Root: "/ws"}, 1)
+		for _, e := range s.Edges() {
+			if e.Site.Path == p {
+				check("edge "+e.Reason, e.Site.Range)
+			}
+		}
+	})
+}

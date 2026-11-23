@@ -22,3 +22,9 @@ func File(path string, src []byte) *tree.File { return FileAs(path, src, Detect(
 
 // FileAs parses src as dialect d. It never returns nil; File.Dialect is d.
 func FileAs(path string, src []byte, d tree.Dialect) *tree.File { return front.Parse(path, src, d) }
+
+// Fragment parses src, the body of a string that the shell runs as code
+// (an `eval` argument, a `trap` action, the string of `bash -c`), as dialect
+// d. The result has no path; its positions are relative to src. It never
+// returns nil.
+func Fragment(src []byte, d tree.Dialect) *tree.File { return front.Parse("", src, d) }

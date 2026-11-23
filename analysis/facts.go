@@ -109,7 +109,9 @@ const (
 )
 
 // Use is one use of a name. Read-only: snapshots built from the same FileFacts
-// share its Uses. ViaAlias: the use is the target named inside an alias definition.
+// share its Uses. ViaAlias: the use is the target named inside an alias
+// definition. Via: a call inside a string or through a variable (see Via);
+// for ViaVariable, Name is the variable and the range text is not a name.
 type Use struct {
 	Kind     UseKind
 	Name     string
@@ -117,6 +119,7 @@ type Use struct {
 	Scope    *Scope
 	Node     *tree.Node
 	ViaAlias bool
+	Via      Via
 }
 
 // SourceRef is a `source`/`.` (or bats `load`) command. Directive is the path
@@ -138,6 +141,8 @@ type FileFacts struct {
 	Decls   []*Decl
 	Uses    []*Use
 	Sources []SourceRef
+	Dynamic []DynamicRef // command names that are expansions with no known target
+	Invokes []InvokeRef  // executions of a file by literal path
 }
 
 var (
@@ -474,6 +479,11 @@ func (b *binder) call(n *tree.Node, sc *Scope) {
 				return
 			}
 			b.use(UseCall, name, words[0].Range, sc, n)
+			if dynamicName(name) {
+				b.dynamicCall(n, name, words[1:], sc, &fragMap{src: b.src}, 0)
+			}
+		} else if !ok {
+			b.expansionCommand(n, words[0], sc)
 		}
 	}
 	b.callChildren(n, sc, len(words) > 0)

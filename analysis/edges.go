@@ -94,7 +94,8 @@ type edgeRec struct {
 }
 
 // reasonNames are the reasons an edge can carry, by edgeRec.reason.
-var reasonNames = []string{"", ReasonDirect, ReasonAlias, ReasonOutsideClosure, ReasonNotFound, ReasonConditional}
+var reasonNames = []string{"", ReasonDirect, ReasonAlias, ReasonOutsideClosure, ReasonNotFound, ReasonConditional,
+	ReasonVariableConstant, ReasonStringEval, ReasonStringTrap, ReasonStringShellC, ReasonVariableUnknown, ReasonExpansion}
 
 func reasonCode(r string) uint8 {
 	for i, n := range reasonNames {
@@ -141,6 +142,7 @@ func (s *Snapshot) fileEdges(out []edgeRec, file int) []edgeRec {
 	start := len(out)
 	out = s.appendSourceEdges(out, file) // source lines usually come first
 	out = s.appendCallEdges(out, file)
+	out = s.appendDynamicEdges(out, file)
 	recs := out[start:]
 	cmp := func(a, b edgeRec) int {
 		if d := s.recOffset(file, &a) - s.recOffset(file, &b); d != 0 {
@@ -155,8 +157,13 @@ func (s *Snapshot) fileEdges(out []edgeRec, file int) []edgeRec {
 }
 
 func (s *Snapshot) recOffset(file int, r *edgeRec) int {
-	if r.rel == RelSources {
+	switch {
+	case r.rel == RelSources:
 		return s.edges[file][r.at].Ref.Range.Start.Offset
+	case r.rel == RelInvokes:
+		return s.invokes[file][r.at].ref.Range.Start.Offset
+	case r.tgt == tgtDynamic:
+		return s.dyn[file][r.at].rng.Start.Offset
 	}
 	return s.bindings[file][r.at].Use.Range.Start.Offset
 }
@@ -166,6 +173,26 @@ func (s *Snapshot) edgeOf(file int, r *edgeRec) Edge {
 	e := Edge{From: Caller{Path: s.paths[file]}, Rel: r.rel, Res: r.res, Reason: reasonNames[r.reason]}
 	if r.to != nil {
 		e.To, e.ToDecl = s.declSym[r.to], r.to
+	}
+	switch {
+	case r.rel == RelInvokes:
+		iv := &s.invokes[file][r.at]
+		if from := s.callerOfScope(file, iv.ref.Scope); from != nil {
+			e.From.Func = s.declSym[from]
+		}
+		e.Site, e.ToFile = Location{Path: s.paths[file], Range: iv.ref.Range}, iv.target
+		return e
+	case r.tgt == tgtDynamic && r.rel == RelCalls:
+		d := &s.dyn[file][r.at]
+		if from := s.callerOfScope(file, d.sc); from != nil {
+			e.From.Func = s.declSym[from]
+		}
+		e.Site = Location{Path: s.paths[file], Range: d.rng}
+		src := s.facts[file].File.Src
+		if a, b := d.rng.Start.Offset, d.rng.End.Offset; a >= 0 && a <= b && b <= len(src) {
+			e.Text = string(src[a:b])
+		}
+		return e
 	}
 	if r.rel != RelSources {
 		u := s.bindings[file][r.at].Use
@@ -205,10 +232,14 @@ func (s *Snapshot) appendCallEdges(out []edgeRec, file int) []edgeRec {
 	for k := range bs {
 		b := &bs[k]
 		u := b.Use
-		if u.Kind != UseCall || b.Sym == nil || b.Sym.Kind != DeclFunction {
+		if u.Kind != UseCall || b.Sym == nil || b.Sym.Kind != DeclFunction || u.Via == ViaValue {
 			continue
 		}
 		r := edgeRec{at: int32(k), rel: RelCalls}
+		if u.Via != ViaNone && b.Reason != ReasonOutsideClosure {
+			out = s.appendViaTargets(out, file, r, b)
+			continue
+		}
 		if u.ViaAlias {
 			if s.aliasDeclOf(file, u) == nil {
 				continue

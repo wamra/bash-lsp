@@ -244,8 +244,8 @@ func TestUses(t *testing.T) {
 	if useAt(ff, 2, "f") == nil || useAt(ff, 2, "f").Kind != UseCall {
 		t.Error("call of f missing")
 	}
-	for _, u := range ff.Uses {
-		if u.Kind == UseCall && u.Range.Start.Line >= 3 && u.Range.Start.Line <= 4 {
+	for _, u := range ff.Uses { // "$cmd" and $cmd are variable call sites, resolved by Build
+		if u.Kind == UseCall && u.Range.Start.Line >= 3 && u.Range.Start.Line <= 4 && (u.Via != ViaVariable || u.Name != "cmd") {
 			t.Errorf("dynamic command produced call use %+v", u)
 		}
 	}

@@ -42,7 +42,7 @@ func (s *Snapshot) Hover(path string, offset int) (markdown string, rng tree.Ran
 		return "", tree.Range{}, false
 	}
 	var sym *Symbol
-	via := ""
+	via, viaVar := "", ""
 	switch {
 	case h.decl != nil:
 		sym = s.declSym[h.decl]
@@ -58,13 +58,20 @@ func (s *Snapshot) Hover(path string, offset int) (markdown string, rng tree.Ran
 				via = b.Use.Name
 			}
 		}
+		if u := h.binds[0].Use; u.Via == ViaVariable {
+			viaVar = u.Name
+		}
 	}
 	if sym == nil {
 		return "", tree.Range{}, false
 	}
 	switch sym.Kind {
 	case DeclFunction:
-		return s.hoverFunction(sym, via), rng, true
+		md := s.hoverFunction(sym, via)
+		if viaVar != "" {
+			md += "Reached through variable `" + viaVar + "`\n"
+		}
+		return md, rng, true
 	case DeclAlias:
 		return s.hoverAlias(sym), rng, true
 	}
@@ -141,7 +148,7 @@ func (s *Snapshot) callSites(sym *Symbol) []string {
 	}
 	var sites []site
 	for _, b := range s.BindingsOf(sym) {
-		if b.Use.Kind != UseCall || b.Use.ViaAlias {
+		if b.Use.Kind != UseCall || b.Use.ViaAlias || b.Use.Via == ViaValue {
 			continue
 		}
 		t := fmt.Sprintf("`%s:%d`", s.rel(b.File), b.Use.Range.Start.Line)
@@ -173,7 +180,7 @@ func (s *Snapshot) bodyEffects(sym *Symbol) (reads, writes []string, exits bool)
 			return r.Start.Offset >= d.Node.Range.Start.Offset && r.Start.Offset < d.Node.Range.End.Offset
 		}
 		for _, u := range s.facts[f].Uses {
-			if u.Kind == UseCall && u.Name == "exit" && in(u.Range) {
+			if u.Kind == UseCall && u.Via != ViaVariable && u.Name == "exit" && in(u.Range) {
 				exits = true
 			}
 		}

@@ -43,3 +43,13 @@ func TestFileSetsDialectWhenSkipped(t *testing.T) {
 		t.Fatalf("Skipped %q Dialect %v", f.Skipped, f.Dialect)
 	}
 }
+
+func TestFragment(t *testing.T) {
+	f := parse.Fragment([]byte(`log "a b"`), tree.Bash)
+	if f.Path != "" || f.Dialect != tree.Bash || f.Root == nil || len(f.Root.Children) != 1 {
+		t.Fatalf("Fragment = %+v", f)
+	}
+	if r := f.Root.Children[0].Range; r.Start.Offset != 0 || r.End.Offset != 9 {
+		t.Fatalf("statement range %+v", r)
+	}
+}

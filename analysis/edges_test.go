@@ -60,6 +60,8 @@ func TestEdgesToBuildReleaseCorpus(t *testing.T) {
 		"main.sh:3 aliases resolved/direct main.sh:br -> build_release@lib/util.sh:4:1",
 		"main.sh:6 calls resolved/direct main.sh:deploy -> build_release@lib/util.sh:4:1",
 		"main.sh:7 calls resolved/alias main.sh:deploy -> build_release@lib/util.sh:4:1",
+		"main.sh:9 calls candidate/variable-constant main.sh:deploy -> build_release@lib/util.sh:4:1",
+		"main.sh:10 calls candidate/string-eval main.sh:deploy -> build_release@lib/util.sh:4:1",
 		"dyn.sh:4 calls resolved/direct dyn.sh -> build_release@lib/util.sh:4:1",
 	)
 	// orphan.sh's own function: only its own call.
@@ -97,6 +99,9 @@ func TestEdgesTopLevelCallerAndSources(t *testing.T) {
 	wantSame(t, q.edgeStrs(q.s.EdgesFrom(Caller{Path: q.abs("main.sh"), Func: deploy})),
 		"main.sh:6 calls resolved/direct main.sh:deploy -> build_release@lib/util.sh:4:1",
 		"main.sh:7 calls resolved/alias main.sh:deploy -> build_release@lib/util.sh:4:1",
+		"main.sh:9 calls candidate/variable-constant main.sh:deploy -> build_release@lib/util.sh:4:1",
+		"main.sh:10 calls candidate/string-eval main.sh:deploy -> build_release@lib/util.sh:4:1",
+		"main.sh:11 calls candidate/string-trap main.sh:deploy -> log@lib/util.sh:3:1",
 	)
 	for _, e := range q.s.EdgesTo(deploy) {
 		if e.From.Func != nil {
@@ -344,8 +349,8 @@ func TestEdgesConcurrentQueries(t *testing.T) {
 		}()
 	}
 	for i := 0; i < 8; i++ {
-		if n := <-done; n != 6 {
-			t.Errorf("got %d edges, want 6", n)
+		if n := <-done; n != 8 {
+			t.Errorf("got %d edges, want 8", n)
 		}
 	}
 }

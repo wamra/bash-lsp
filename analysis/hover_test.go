@@ -49,7 +49,7 @@ func TestHoverFunctionExactText(t *testing.T) {
 	}
 	want := "```bash\nbuild_release <name>\n```\n\n" +
 		"Defined in `lib/util.sh:4`\n" +
-		"Called from 3 sites: `dyn.sh:4`, `main.sh:6` (deploy), `main.sh:7` (deploy)\n"
+		"Called from 5 sites: `dyn.sh:4`, `main.sh:6` (deploy), `main.sh:7` (deploy), `main.sh:9` (deploy), `main.sh:10` (deploy)\n"
 	if md != want {
 		t.Fatalf("got:\n%q\nwant:\n%q", md, want)
 	}
@@ -75,7 +75,14 @@ func TestHoverRange(t *testing.T) {
 
 func TestHoverVariable(t *testing.T) {
 	q := buildCorpus(t)
+	// On the "$cmd" call word the call wins (it resolves to build_release);
+	// the variable's hover is on its declaration.
 	md, ok := q.hover("main.sh", `"$cmd" x`, 0, 2)
+	if !ok {
+		t.Fatal()
+	}
+	wantLines(t, md, "build_release <name>", "Reached through variable `cmd`")
+	md, ok = q.hover("main.sh", `local cmd=build_release`, 0, 6)
 	if !ok {
 		t.Fatal()
 	}

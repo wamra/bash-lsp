@@ -147,6 +147,11 @@ type Snapshot struct {
 	bindings [][]Binding // per file, in use-offset order
 	bySym    map[*Symbol][]Binding
 
+	dyn       [][]dynSite    // per file, dynamic edge sites (dynamic.go)
+	invokes   [][]invokeSite // per file, resolved invocations
+	extra     []Binding      // during Build: literal-value bindings to merge
+	valueSeen map[*Decl]bool // during Build: assignments given a literal-value binding
+
 	recs    []edgeRec // every edge, compact, grouped by file and sorted (see edges.go)
 	recAt   []int     // file i's edges are recs[recAt[i]:recAt[i+1]]
 	graphIx graphIndex
@@ -183,11 +188,13 @@ func Build(files map[string]*FileFacts, opt Options, generation uint64) *Snapsho
 	s.sourced = make([]bool, n)
 	adj := make([][]int, n)
 	unresolved := make([]bool, n)
+	searches := make([][]string, n)
 	for i, p := range s.paths {
 		var search []string
 		if opt.SearchPaths != nil {
 			search = opt.SearchPaths(p)
 		}
+		searches[i] = search
 		s.edges[i] = ResolveSources(s.facts[i], opt.Root, search, exists, glob)
 		for _, e := range s.edges[i] {
 			switch e.Status {
@@ -210,7 +217,11 @@ func Build(files map[string]*FileFacts, opt Options, generation uint64) *Snapsho
 		s.computeVisibility(adj, unresolved)
 	}
 	s.collectSymbols()
+	s.prepareDynamic()
 	s.bindAll()
+	s.finishDynamic(func(i int) *resolver {
+		return &resolver{ff: s.facts[i], root: opt.Root, search: searches[i], exists: exists, glob: glob, dir: filepath.Dir(s.paths[i])}
+	})
 	hint := 0
 	if opt.Prev != nil {
 		hint = len(opt.Prev.recs) + len(opt.Prev.recs)/8
@@ -656,6 +667,9 @@ func (s *Snapshot) resolveCall(file int, name string, depth int) (syms []*Symbol
 }
 
 func (s *Snapshot) bindCall(out []Binding, file int, u *Use) []Binding {
+	if u.Via == ViaVariable {
+		return s.bindVariableCall(out, file, u)
+	}
 	b := Binding{Use: u, File: s.paths[file], Res: Resolved, Reason: ReasonDirect}
 	// The target named inside an alias definition is one level down already:
 	// a call to that alias resolves it at depth 1, so it must too, or the
@@ -667,6 +681,9 @@ func (s *Snapshot) bindCall(out []Binding, file int, u *Use) []Binding {
 	if syms, followed := s.resolveCall(file, u.Name, depth); len(syms) > 0 {
 		if followed {
 			b.Reason = ReasonAlias
+		}
+		if r := u.Via.reason(); r != "" { // a call inside a string: found by name, not proven
+			b.Res, b.Reason = Candidate, r
 		}
 		for _, sym := range syms {
 			b.Sym = sym
