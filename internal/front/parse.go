@@ -37,8 +37,9 @@ func Parse(path string, src []byte, d Dialect) *tree.File {
 	}
 	f.Errors = errs
 	f.Comments = comments
+	loc := f.NewLocator()
 	for _, c := range f.Comments {
-		c.Parent = f.NodeAt(c.Range.Start.Offset)
+		c.Parent = loc.At(c.Range.Start.Offset)
 	}
 	return f
 }
