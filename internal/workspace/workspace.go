@@ -98,6 +98,10 @@ func (w *Workspace) inSkipDir(path string) bool {
 	return false
 }
 
+// readDir lists a directory to find the spelling of a name on a folding
+// volume; a variable so tests can count the listings.
+var readDir = os.ReadDir
+
 // detectFold reports whether the volume of a resolved root is
 // case-insensitive; a variable so tests can force it.
 var detectFold = caseInsensitive
@@ -227,7 +231,8 @@ type Workspace struct {
 	skips    map[string]skipInfo
 	dirName  map[string]string // key(real dir) -> the walk's logical path for it
 	rcCache  map[string]rcInfo
-	excl     map[string]bool // keys of directories whose subtrees another workspace owns
+	excl     map[string]bool    // keys of directories whose subtrees another workspace owns
+	listings map[string]listing // directory listings for spelling on a folding volume, by key
 	snap     atomic.Pointer[analysis.Snapshot]
 }
 
@@ -259,7 +264,7 @@ func OpenExcluding(root string, lim Limits, exclude []string) (*Workspace, error
 		return nil, fmt.Errorf("%s is not a directory", root)
 	}
 	w := &Workspace{root: real, lim: lim, fold: windows || detectFold(real), disk: map[string]*entry{}, overlays: map[string]*overlay{},
-		skips: map[string]skipInfo{}, dirName: map[string]string{}, rcCache: map[string]rcInfo{}}
+		skips: map[string]skipInfo{}, dirName: map[string]string{}, rcCache: map[string]rcInfo{}, listings: map[string]listing{}}
 	w.excl = w.exclusions(exclude)
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -387,23 +392,74 @@ func (w *Workspace) SetOverlay(path string, version int, text []byte) {
 	w.rebuild()
 }
 
-// diskSpelling is c with its last element spelled as the directory on disk
-// spells it (on a folding volume, after a case-only rename, the workspace
-// still holds the old spelling); c when no entry differs from it in case
-// only. Called only when an event's spelling disagrees with the held one.
-// Caller holds w.mu; w.fold is set.
-func (w *Workspace) diskSpelling(c string) string {
-	base := filepath.Base(c)
-	ents, err := os.ReadDir(filepath.Dir(c))
+// listing is a directory's names on a folding volume, by folded name, as of
+// the directory's modification time.
+type listing struct {
+	mtime int64
+	names map[string]string // keyFor(name, true) -> name; an exact name maps to itself
+}
+
+// maxListings bounds the listing cache; past it the cache starts over.
+const maxListings = 64
+
+// names lists dir through the cache: a directory is read again only when
+// its modification time changed (a rename or create in it changes it), so
+// repeated events in an unchanged directory cost one stat. nil when dir
+// cannot be listed. Caller holds w.mu.
+func (w *Workspace) names(dir string) map[string]string {
+	fi, err := os.Stat(dir)
 	if err != nil {
+		return nil
+	}
+	k := w.key(dir)
+	if l, ok := w.listings[k]; ok && l.mtime == fi.ModTime().UnixNano() {
+		return l.names
+	}
+	ents, err := readDir(dir)
+	if err != nil {
+		return nil
+	}
+	names := make(map[string]string, 2*len(ents))
+	for _, e := range ents {
+		if f := keyFor(e.Name(), true); names[f] == "" {
+			names[f] = e.Name()
+		}
+		names[e.Name()] = e.Name()
+	}
+	if len(w.listings) >= maxListings {
+		w.listings = map[string]listing{}
+	}
+	w.listings[k] = listing{mtime: fi.ModTime().UnixNano(), names: names}
+	return names
+}
+
+// diskPath respells c (canonical, inside the root) element by element as
+// the directories on disk spell them: on a folding volume an event can name
+// a file or directory by a spelling that differs in case from the one on
+// disk, and after a case-only rename the workspace still holds the old one.
+// Elements from the first one not found on disk onwards are kept as given. Caller holds
+// w.mu; w.fold is set.
+func (w *Workspace) diskPath(c string) string {
+	rel, err := filepath.Rel(w.root, c)
+	if err != nil || rel == "." {
 		return c
 	}
-	for _, e := range ents {
-		if e.Name() != base && strings.EqualFold(e.Name(), base) {
-			return filepath.Join(filepath.Dir(c), e.Name())
+	parts := strings.Split(rel, string(filepath.Separator))
+	out := w.root
+	for i, part := range parts {
+		names := w.names(out)
+		real := ""
+		if names != nil {
+			if real = names[part]; real == "" {
+				real = names[keyFor(part, true)]
+			}
 		}
+		if real == "" {
+			return filepath.Join(append([]string{out}, parts[i:]...)...)
+		}
+		out = filepath.Join(out, real)
 	}
-	return c
+	return out
 }
 
 // OversizeFile is the tree of a document over the size limit: no text, no
@@ -453,8 +509,7 @@ func (w *Workspace) Refresh(paths ...string) {
 	}
 	full := len(paths) == 0 || len(paths) > maxRefreshPaths
 	var todo []string
-	at := map[string]int{}         // index in todo by key: one refresh per file
-	spelled := map[string]string{} // the first spelling an event gave for each key
+	seen := map[string]bool{} // one refresh per file (a rename can name it twice)
 	for _, p := range paths {
 		if full {
 			break
@@ -469,26 +524,27 @@ func (w *Workspace) Refresh(paths ...string) {
 		}
 		gi := filepath.Base(c) == ".gitignore"
 		if dir := !gi && w.isDirEvent(c, k); gi || dir {
-			// Inside an ignored directory nothing is listed and no .gitignore
-			// is read: the walk would not change.
-			if rel, err := filepath.Rel(w.root, c); err == nil && rel != "." && w.ignoredPath(rel, dir) {
+			// Inside a skipped or ignored directory nothing is listed and no
+			// .gitignore is read: the walk would not change. A .gitignore is
+			// judged by the directory it sits in (it applies even when it
+			// ignores itself), a directory by itself.
+			at := c
+			if gi {
+				at = filepath.Dir(c)
+			}
+			if rel, err := filepath.Rel(w.root, at); err == nil && rel != "." && w.ignoredPath(rel, true) {
 				continue
 			}
 			full = true
 			break
 		}
-		if i, ok := at[k]; ok {
-			// A case-only rename names one file twice (delete and create):
-			// on disk only one spelling exists.
-			if w.fold && filepath.Base(spelled[k]) != filepath.Base(p) {
-				todo[i] = w.diskSpelling(todo[i])
-			}
+		if seen[k] {
 			continue
 		}
-		if w.fold && filepath.Base(p) != filepath.Base(c) { // the event's spelling is not the one held
-			c = w.diskSpelling(c)
+		seen[k] = true
+		if w.fold { // the spelling on disk, of every element (case-only renames)
+			c = w.diskPath(c)
 		}
-		at[k], spelled[k] = len(todo), p
 		todo = append(todo, c)
 	}
 	if full {

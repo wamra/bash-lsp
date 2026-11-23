@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -433,5 +434,107 @@ func TestCaseOnlyRename(t *testing.T) {
 	w.Refresh(filepath.Join(r, "lib"), filepath.Join(r, "LIB"))
 	if got := rels(w); !reflect.DeepEqual(got, []string{"LIB/c.sh", "a.sh"}) {
 		t.Fatalf("directory renamed: %v", got)
+	}
+}
+
+// ---- fix round 2 ----
+
+// A .gitignore that ignores itself still applies: git reads every
+// .gitignore and so does the walk. Only the directory it sits in decides
+// whether its event can be dropped.
+func TestRefreshSelfIgnoringGitignore(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "a.sh"), "a() { :; }\n")
+	write(t, filepath.Join(root, "out", "o.sh"), "o() { :; }\n")
+	write(t, filepath.Join(root, "sub", "s.sh"), "s() { :; }\n")
+	w := open(t, root)
+	r := w.Root()
+	write(t, filepath.Join(root, "out", ".gitignore"), "*\n")
+	w.Refresh(filepath.Join(r, "out", ".gitignore"))
+	if got := rels(w); !reflect.DeepEqual(got, []string{"a.sh", "sub/s.sh"}) {
+		t.Fatalf("out/.gitignore with *: %v", got)
+	}
+	write(t, filepath.Join(root, ".gitignore"), "sub\n.gitignore\n")
+	w.Refresh(filepath.Join(r, ".gitignore"))
+	if got := rels(w); !reflect.DeepEqual(got, []string{"a.sh"}) {
+		t.Fatalf("root .gitignore naming sub and itself: %v", got)
+	}
+	for _, p := range []string{filepath.Join(root, "out", ".gitignore"), filepath.Join(root, ".gitignore")} {
+		if err := os.Remove(p); err != nil {
+			t.Fatal(err)
+		}
+		w.Refresh(p)
+	}
+	if got := rels(w); !reflect.DeepEqual(got, []string{"a.sh", "out/o.sh", "sub/s.sh"}) {
+		t.Fatalf("after deleting both: %v", got)
+	}
+}
+
+// countReadDir counts directory listings for the duration of a test.
+func countReadDir(t *testing.T) *int {
+	t.Helper()
+	n := new(int)
+	old := readDir
+	readDir = func(d string) ([]os.DirEntry, error) { *n++; return old(d) }
+	t.Cleanup(func() { readDir = old })
+	return n
+}
+
+// Case-variant events read each directory once per batch, and once at all
+// while the directory is unchanged; the stored spelling converges.
+func TestCaseVariantEventsReadListingsOnce(t *testing.T) {
+	old := detectFold
+	detectFold = func(string) bool { return true }
+	defer func() { detectFold = old }()
+	root := t.TempDir()
+	for i := 0; i < 50; i++ {
+		write(t, filepath.Join(root, "d", fmt.Sprintf("f%d.sh", i)), "f() { :; }\n")
+	}
+	w := open(t, root)
+	n := countReadDir(t)
+	var batch []string
+	for i := 0; i < 50; i++ {
+		batch = append(batch, filepath.Join(w.Root(), "d", fmt.Sprintf("F%d.SH", i)))
+	}
+	w.Refresh(batch...)
+	first := *n
+	if first == 0 || first > 2 {
+		t.Fatalf("%d listings for one batch, want at most 2 (root and d)", first)
+	}
+	for i := 0; i < 20; i++ {
+		w.Refresh(filepath.Join(w.Root(), "d", "F7.SH"))
+	}
+	if *n != first {
+		t.Fatalf("%d more listings for repeated events in an unchanged directory", *n-first)
+	}
+	if got := rels(w); len(got) != 50 || got[0] != "d/f0.sh" {
+		t.Fatalf("spelling did not stay the disk's: %v", got[:3])
+	}
+}
+
+// An event that names a renamed file or directory by its old spelling, or
+// a file below a directory renamed by case, takes the spelling on disk.
+func TestCaseRenameSingleEvents(t *testing.T) {
+	root := t.TempDir()
+	if !volumeFolds(t, root) {
+		t.Skip("case-sensitive volume")
+	}
+	write(t, filepath.Join(root, "a.sh"), "a_fn() { :; }\n")
+	write(t, filepath.Join(root, "lib", "c.sh"), "c_fn() { :; }\n")
+	w := open(t, root)
+	r := w.Root()
+	if err := os.Rename(filepath.Join(r, "a.sh"), filepath.Join(r, "A.sh")); err != nil {
+		t.Fatal(err)
+	}
+	w.Refresh(filepath.Join(r, "a.sh")) // the old spelling only
+	if got := rels(w); !reflect.DeepEqual(got, []string{"A.sh", "lib/c.sh"}) {
+		t.Fatalf("old-spelling event: %v", got)
+	}
+	if err := os.Rename(filepath.Join(r, "lib"), filepath.Join(r, "LIB")); err != nil {
+		t.Fatal(err)
+	}
+	w.Refresh(filepath.Join(r, "LIB", "c.sh")) // the file only, not the directory
+	if got := rels(w); !reflect.DeepEqual(got, []string{"A.sh", "LIB/c.sh"}) {
+		t.Fatalf("file event below a directory renamed by case: %v", got)
 	}
 }

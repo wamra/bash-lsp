@@ -10,6 +10,8 @@ import (
 	"log"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 
@@ -474,17 +476,26 @@ func (s *server) didClose(raw json.RawMessage) *rpcError {
 		return nil
 	}
 	delete(s.docs, d.path)
-	for u, path := range s.byURI { // every URI that led to it (case variants)
+	// Every URI that led to it: the closing one, the one it was opened (and
+	// its diagnostics published) under, and any other spelling it was opened
+	// under (case variants).
+	uris := []string{p.TextDocument.URI}
+	if d.uri != p.TextDocument.URI {
+		uris = append(uris, d.uri)
+	}
+	for u, path := range s.byURI {
 		if path == d.path {
 			delete(s.byURI, u)
+			if !slices.Contains(uris, u) {
+				uris = append(uris, u)
+			}
 		}
 	}
+	sort.Strings(uris[1:])
 	d.be.CloseOverlay(d.path)
-	// Diagnostics belong to open documents: clear them, under the URI they
-	// were published under too.
-	s.c.notify("textDocument/publishDiagnostics", publishDiagnosticsParams{URI: p.TextDocument.URI, Diagnostics: []Diagnostic{}})
-	if d.uri != p.TextDocument.URI {
-		s.c.notify("textDocument/publishDiagnostics", publishDiagnosticsParams{URI: d.uri, Diagnostics: []Diagnostic{}})
+	// Diagnostics belong to open documents: clear them under each URI.
+	for _, u := range uris {
+		s.c.notify("textDocument/publishDiagnostics", publishDiagnosticsParams{URI: u, Diagnostics: []Diagnostic{}})
 	}
 	return nil
 }

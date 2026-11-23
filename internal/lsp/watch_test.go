@@ -660,6 +660,12 @@ func TestTwoDocumentsOutsideEveryRoot(t *testing.T) {
 // it (a case variant on a folding volume) leaves no entry in the URI map,
 // and the diagnostics published under the opening URI are cleared.
 func TestCloseUnderCaseVariantURI(t *testing.T) {
+	for name, opens := range map[string][]string{"one open": {"MAIN.sh"}, "opened twice": {"MAIN.sh", "main.sh"}} {
+		t.Run(name, func(t *testing.T) { closeUnderVariant(t, opens) })
+	}
+}
+
+func closeUnderVariant(t *testing.T, opens []string) {
 	root := t.TempDir()
 	put(t, filepath.Join(root, "main.sh"), "if then\n")
 	real, _ := filepath.EvalSymlinks(root)
@@ -678,7 +684,9 @@ func TestCloseUnderCaseVariantURI(t *testing.T) {
 	send("initialized", map[string]any{})
 	upper := workspace.URIFromPath(filepath.Join(root, "MAIN.sh"))
 	lower := workspace.URIFromPath(filepath.Join(root, "main.sh"))
-	send("textDocument/didOpen", map[string]any{"textDocument": map[string]any{"uri": upper, "languageId": "sh", "version": 1, "text": "if then\n"}})
+	for _, o := range opens {
+		send("textDocument/didOpen", map[string]any{"textDocument": map[string]any{"uri": workspace.URIFromPath(filepath.Join(root, o)), "languageId": "sh", "version": 1, "text": "if then\n"}})
+	}
 	send("textDocument/didClose", map[string]any{"textDocument": map[string]any{"uri": lower}})
 	if len(s.byURI) != 0 || len(s.docs) != 0 {
 		t.Fatalf("after close: byURI %v, %d docs", s.byURI, len(s.docs))
@@ -700,8 +708,10 @@ func TestCloseUnderCaseVariantURI(t *testing.T) {
 			last[m.Params.URI] = len(m.Params.Diagnostics)
 		}
 	}
-	if n, ok := last[upper]; !ok || n != 0 {
-		t.Fatalf("diagnostics left under %s: %v", upper, last)
+	for _, u := range []string{upper, lower} {
+		if n, ok := last[u]; !ok || n != 0 {
+			t.Fatalf("diagnostics left under %s: %v", u, last)
+		}
 	}
 }
 
