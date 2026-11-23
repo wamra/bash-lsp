@@ -12,7 +12,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 class Server:
     def __init__(self, cmd, root):
         self.root = root
-        self.p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        self.p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0,
                                   stderr=(open(os.environ["BENCH_STDERR"], "wb") if os.environ.get("BENCH_STDERR") else subprocess.DEVNULL), cwd=root)
         self.nid = 0
         self.diags = {}
@@ -20,20 +20,34 @@ class Server:
 
     def _write(self, m):
         b = json.dumps(m).encode()
-        self.p.stdin.write(b"Content-Length: %d\r\n\r\n" % len(b) + b)
-        self.p.stdin.flush()
+        data = memoryview(b"Content-Length: %d\r\n\r\n" % len(b) + b)
+        while data:  # unbuffered pipe: a raw write may be partial
+            data = data[self.p.stdin.write(data):]
+
+    def _readn(self, n):
+        """Read exactly n bytes from the unbuffered pipe (a raw read may return fewer)."""
+        b = b""
+        while len(b) < n:
+            c = self.p.stdout.read(n - len(b))
+            if not c:
+                return None
+            b += c
+        return b
 
     def _read(self, timeout):
+        # The pipe is unbuffered (bufsize=0): with a buffered reader a second message
+        # already in Python's buffer is invisible to select() and the call stalls.
         if not select.select([self.p.stdout], [], [], timeout)[0]:
             return None
         h = b""
         while not h.endswith(b"\r\n\r\n"):
-            c = self.p.stdout.read(1)
-            if not c:
+            c = self._readn(1)
+            if c is None:
                 return None
             h += c
         n = int([l for l in h.split(b"\r\n") if l.lower().startswith(b"content-length")][0].split(b":")[1])
-        return json.loads(self.p.stdout.read(n))
+        body = self._readn(n)
+        return None if body is None else json.loads(body)
 
     def _handle(self, m):
         if m.get("method") == "textDocument/publishDiagnostics":
