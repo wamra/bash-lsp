@@ -104,6 +104,7 @@ type graphCtx struct {
 	ws   *workspace.Workspace
 	snap *analysis.Snapshot
 	root string
+	conv map[string]*tree.Converter // per path, made on first use (pos)
 }
 
 func cmdGraph(cmd string, args []string, stdout, stderr io.Writer) int {
@@ -163,7 +164,17 @@ func (c *graphCtx) rel(p string) string { return relSlash(c.root, p) }
 // pos is a 1-based line and UTF-16 column of p in path.
 func (c *graphCtx) pos(path string, p tree.Pos) (line, col int) {
 	if ff := c.snap.Facts(path); ff != nil && ff.File != nil {
-		l, ch := ff.File.ToUTF16(p)
+		// one converter per file: File.ToUTF16 scans the line from its start
+		// per call, O(sites x line length) on a long line
+		cv := c.conv[path]
+		if cv == nil {
+			if c.conv == nil {
+				c.conv = map[string]*tree.Converter{}
+			}
+			cv = ff.File.NewConverter()
+			c.conv[path] = cv
+		}
+		l, ch := cv.ToUTF16(p)
 		return l + 1, ch + 1
 	}
 	return p.Line, p.Col

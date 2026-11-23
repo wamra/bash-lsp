@@ -253,7 +253,8 @@ func (x *extractor) fileRecords(path string) []extractRec {
 		return nil
 	}
 	f := ff.File
-	at := func(p tree.Pos) (int, int) { pos := pos16(f, p); return pos[0], pos[1] }
+	conv := f.NewConverter()
+	at := func(p tree.Pos) (int, int) { pos := pos16(conv, p); return pos[0], pos[1] }
 	var rs []sited
 	add := func(off int, r extractRec) { r.File = path; rs = append(rs, sited{off, r}) }
 
@@ -266,6 +267,7 @@ func (x *extractor) fileRecords(path string) []extractRec {
 		}
 		return ""
 	}
+	funcAt := funcsAround(ff)
 	for _, d := range ff.Decls {
 		switch d.Kind {
 		case analysis.DeclFunction:
@@ -280,7 +282,7 @@ func (x *extractor) fileRecords(path string) []extractRec {
 			l, c := at(d.NameRange.Start)
 			el, ec := at(d.NameRange.End)
 			add(d.NameRange.Start.Offset, extractRec{T: "alias", Alias: d.Name, Target: d.AliasTo, Line: l, Col: c, EndLine: el, EndCol: ec,
-				In: inFunc(x.snap.CallerAt(path, d.NameRange.Start.Offset))})
+				In: funcAt(d.NameRange.Start.Offset)})
 		}
 	}
 	siteText := func(r tree.Range) string {
@@ -344,6 +346,46 @@ func (x *extractor) fileRecords(path string) []extractRec {
 		out = append(out, r.rec)
 	}
 	return out
+}
+
+// funcsAround returns a function giving the name of the innermost function
+// of ff whose definition spans an offset ("" when none), what CallerAt says
+// for that offset. The offsets must be asked in ascending order: one sweep
+// over the function definitions sorted by start, instead of a walk down and
+// up the tree per alias (O(aliases x depth): an alias run 3,900 subshells
+// deep took minutes).
+func funcsAround(ff *analysis.FileFacts) func(off int) string {
+	var fs []*analysis.Decl
+	for _, d := range ff.Decls {
+		if d.Kind == analysis.DeclFunction && d.Node != nil {
+			fs = append(fs, d)
+		}
+	}
+	sort.SliceStable(fs, func(i, j int) bool { return fs[i].Node.Range.Start.Offset < fs[j].Node.Range.Start.Offset })
+	// open holds the definitions spanning the last offset, outermost first
+	// (definitions nest or are disjoint, so the ones still open form a chain).
+	var open []*analysis.Decl
+	pop := func(off int) {
+		for len(open) > 0 && open[len(open)-1].Node.Range.End.Offset <= off {
+			open = open[:len(open)-1]
+		}
+	}
+	next, last := 0, -1
+	return func(off int) string {
+		if off < last { // not ascending: start over
+			open, next = open[:0], 0
+		}
+		last = off
+		for ; next < len(fs) && fs[next].Node.Range.Start.Offset <= off; next++ {
+			pop(fs[next].Node.Range.Start.Offset)
+			open = append(open, fs[next])
+		}
+		pop(off)
+		if len(open) == 0 {
+			return ""
+		}
+		return open[len(open)-1].Name
+	}
 }
 
 // literalPath is the path an unresolved source names when its word is a

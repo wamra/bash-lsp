@@ -105,9 +105,13 @@ func relSlash(root, p string) string {
 
 // pos16 is p as a 1-based line and UTF-16 column, the position every command
 // prints and every "path:line:col" spec reads.
-func pos16(f *tree.File, p tree.Pos) [2]int {
-	l, c := f.ToUTF16(p)
-	return [2]int{l + 1, c + 1}
+//
+// c is one converter per file and command: File.ToUTF16 scans the line from
+// its start, so a long line with many printed positions cost O(positions x
+// line length).
+func pos16(c *tree.Converter, p tree.Pos) [2]int {
+	l, ch := c.ToUTF16(p)
+	return [2]int{l + 1, ch + 1}
 }
 
 // --- ast ---
@@ -185,7 +189,7 @@ func commentParent(f *tree.File, loc *tree.Locator, c *tree.Node) *tree.Node {
 	return p
 }
 
-func (v *astView) json(f *tree.File) astNode {
+func (v *astView) json(f *tree.Converter) astNode {
 	n := v.n
 	out := astNode{
 		Kind:      n.Kind.String(),
@@ -202,7 +206,7 @@ func (v *astView) json(f *tree.File) astNode {
 	return out
 }
 
-func (v *astView) print(w io.Writer, f *tree.File, depth int) {
+func (v *astView) print(w io.Writer, f *tree.Converter, depth int) {
 	n := v.n
 	label := n.Name
 	if label == "" {
@@ -283,19 +287,21 @@ func cmdAst(args []string, stdout, stderr io.Writer) int {
 	if depth := viewDepth(f); depth > astMaxDepth {
 		return fail(stderr, fmt.Errorf("tree too deep to print (depth %d)", depth))
 	}
+	conv := f.NewConverter()
 	if asJSON {
-		doc := astDoc{Path: filepath.ToSlash(pos[0]), Dialect: f.Dialect.String(), Errors: []astError{}, Root: fileView(f).json(f)}
+		doc := astDoc{Path: filepath.ToSlash(pos[0]), Dialect: f.Dialect.String(), Errors: []astError{}, Root: fileView(f).json(conv)}
 		for _, e := range f.Errors {
-			doc.Errors = append(doc.Errors, astError{pos16(f, e.Range.Start)[0], pos16(f, e.Range.Start)[1], e.Msg})
+			p := pos16(conv, e.Range.Start)
+			doc.Errors = append(doc.Errors, astError{p[0], p[1], e.Msg})
 		}
 		if err := writeJSON(stdout, doc); err != nil {
 			return fail(stderr, err)
 		}
 		return 0
 	}
-	fileView(f).print(stdout, f, 0)
+	fileView(f).print(stdout, conv, 0)
 	for _, e := range f.Errors {
-		p := pos16(f, e.Range.Start)
+		p := pos16(conv, e.Range.Start)
 		fmt.Fprintf(stderr, "%s:%d:%d: %s\n", filepath.ToSlash(pos[0]), p[0], p[1], e.Msg)
 	}
 	return 0
@@ -325,12 +331,13 @@ func kindName(k analysis.DeclKind) string {
 // flattenSymbols lists a file's outline in source order, each function
 // followed by its locals (Container set). Depth 1 marks a local.
 func flattenSymbols(rel string, f *tree.File, ds []analysis.DocSymbol) (out []symOut, depth []int) {
+	conv := f.NewConverter()
 	for _, d := range ds {
-		sp := pos16(f, d.Selection.Start)
+		sp := pos16(conv, d.Selection.Start)
 		out = append(out, symOut{rel, sp[0], sp[1], kindName(d.Kind), d.Name, ""})
 		depth = append(depth, 0)
 		for _, c := range d.Children {
-			cp := pos16(f, c.Selection.Start)
+			cp := pos16(conv, c.Selection.Start)
 			out = append(out, symOut{rel, cp[0], cp[1], kindName(c.Kind), c.Name, d.Name})
 			depth = append(depth, 1)
 		}
