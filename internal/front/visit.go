@@ -1,6 +1,6 @@
 package front
 
-import "mvdan.cc/sh/v3/syntax"
+import "github.com/wamra/bash-lsp/internal/front/syntax"
 
 // visitAll calls f on every node under root, root included, in no particular
 // order. It replaces syntax.Walk for the two whole-file scans (comments and
@@ -14,7 +14,7 @@ import "mvdan.cc/sh/v3/syntax"
 //     chain: a chain of `f() # c` lines took seconds.
 //
 // visitAll keeps its own stack and never calls End. The cases follow
-// syntax.Walk in mvdan.cc/sh v3.14.1, with one difference: Walk stops at the
+// syntax.Walk in the vendored parser (internal/front/syntax/walk.go), with one difference: Walk stops at the
 // first comment that trails a statement or case item and skips any after it
 // (`a) ;; # one` then `# two` before `esac`); visitAll visits them all.
 func visitAll(root syntax.Node, f func(syntax.Node)) {

@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"mvdan.cc/sh/v3/syntax"
+	"github.com/wamra/bash-lsp/internal/front/syntax"
 
 	"github.com/wamra/bash-lsp/tree"
 )
@@ -34,7 +34,7 @@ type lowerer struct {
 // 3*maxDepth nodes deep (a level adds a statement, its command and a block at
 // most) and every recursive walk over it (tree.Node.Walk, Bind, hover, the
 // ast view) stays within a few megabytes of stack. The parser has already
-// accepted the statement by then: the stack guard (scan.go) bounds what it
+// accepted the statement by then: its own nesting limit bounds what it
 // recurses on. The whole-file scans over the parser's tree do not recurse
 // (visit.go).
 const maxDepth = 4000

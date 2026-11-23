@@ -34,7 +34,7 @@ func TestDeeplyNestedFileKeepsServerAlive(t *testing.T) {
 	d := c.waitDiag("opened.sh")
 	found := false
 	for _, x := range d {
-		if x.Message == "nesting too deep, or comment block too long, to parse safely" {
+		if x.Message == "nesting is deeper than 10000 levels" && x.Code == "WB1001" {
 			found = true
 		}
 	}

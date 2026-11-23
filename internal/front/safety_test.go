@@ -1,21 +1,16 @@
 package front
 
 import (
-	"bytes"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
-
-	"mvdan.cc/sh/v3/syntax"
 
 	"github.com/wamra/bash-lsp/tree"
 )
@@ -32,9 +27,9 @@ func numbered(n int, format string) string {
 	return b.String()
 }
 
-// P2: valid but unusual files are analysed, not refused. The first two were
-// refused whole by the pre-scan this guard replaced (an unclosed `[` made
-// every later operator count as nesting); the rest are shapes a nesting
+// P2: valid but unusual files are analysed, with no nesting error. The first
+// two were refused whole by a pre-scan that counted brackets (an unclosed `[`
+// made every later operator count as nesting); the rest are shapes a nesting
 // count is tempted to refuse. bench/repro-c1/fp.py holds the same list.
 func TestNoFalseRefusal(t *testing.T) {
 	cases := map[string]string{
@@ -55,10 +50,22 @@ func TestNoFalseRefusal(t *testing.T) {
 		"comment-smileys":      strings.Repeat("# :( :( :( :(\n", 6000),
 		"sequential-if-5000":   strings.Repeat("if x; then y; fi\n", 5000),
 		"time-seq":             strings.Repeat("time ls\n", 3000),
-		"func-seq":             numbered(3000, "f%d() { :; }\n"),
+		// Flat input far longer than the nesting limit: each heredoc and
+		// each comment line is read at the same depth as the one before.
+		"heredoc-seq-20000": strings.Repeat("cat <<E\n$x (\nE\n", 20000),
+		"comments-300000":   strings.Repeat("# (\n", 300000),
+		"long-string":       "x='" + strings.Repeat("((((\n", 200000) + "'\n",
+		"statements-200000": strings.Repeat("a=$(b)\n", 200000),
+		"comments-in-if":    "if a; then\n" + strings.Repeat("# c\n", 100000) + ":\nfi\n",
+		"pipeline-9999":     "cat x" + strings.Repeat(" | cat", 9999) + "\n",
+		"array-20000":       "a=(\n" + numbered(20000, "x%d\n") + ")\n",
+		"case-items-20000":  "case $1 in\n" + numbered(20000, "a%d) : ;;\n") + "esac\n",
+		"args-continued":    "cmd" + numbered(20000, " \\\n  --opt%d") + "\n",
+		"dquote-substs":     "echo \"" + strings.Repeat("$(a) ${b} $((c)) ", 20000) + "\"\n",
+		"func-seq":          numbered(3000, "f%d() { :; }\n"),
 		// The stray `)` makes resync start parses inside the heredoc, where
-		// each line of its literal body reads as code deep enough to be
-		// stopped; that must not refuse the file.
+		// each line of its literal body reads as code nested past the limit;
+		// that must not cost the file the function after it.
 		"broken-heredoc-line": "cat <<'EOF' )\n" + strings.Repeat(strings.Repeat("$(", 40000)+"\n", 5) + "EOF\n",
 	}
 	for name, src := range cases {
@@ -82,22 +89,6 @@ func TestNoFalseRefusal(t *testing.T) {
 			}
 		})
 	}
-}
-
-// A refusal says why and nothing else: no level count, one error.
-func TestRefusalMessage(t *testing.T) {
-	f := Parse("x.sh", []byte(strings.Repeat("$(", 100000)+"\n"), Bash)
-	const want = "nesting too deep, or comment block too long, to parse safely"
-	if f.Skipped != want {
-		t.Fatalf("Skipped = %q, want %q", f.Skipped, want)
-	}
-	if len(f.Errors) != 1 || f.Errors[0].Msg != want {
-		t.Fatalf("errors %v, want one %q", f.Errors, want)
-	}
-	if len(f.Root.Children) != 0 {
-		t.Fatal("a refused file has no statements")
-	}
-	checkInvariants(t, f)
 }
 
 // wraps are the constructs the parser recurses on (docs/m2a-nesting-design.md),
@@ -142,9 +133,9 @@ var wraps = []struct{ pre, open, close, post string }{
 // wrap nests seed n levels deep in one construct. Bits of shape leave the
 // nesting unclosed (1), put a line with an unterminated quote in front so
 // that the deep part is first parsed by resync (2), and multiply the depth
-// by 64, up to what fits in the file limit (4): at 3,000 levels no
-// construct uses half the stack the guard allows, so without that bit every
-// input would be one the guard accepts.
+// by 64, up to what fits in the file limit (4): at 3,000 levels few
+// constructs reach the parser's limit, so without that bit nearly every
+// input would be one it accepts.
 func wrap(seed []byte, construct, shape uint8, n uint16) []byte {
 	w := wraps[int(construct)%len(wraps)]
 	levels := int(n) % 3001
@@ -169,9 +160,9 @@ func wrap(seed []byte, construct, shape uint8, n uint16) []byte {
 	return []byte(b.String())
 }
 
-// FuzzNestingGuard is the differential check behind P1: whatever Parse
-// accepts must parse, lower and walk inside a small fixed stack, and whatever
-// it refuses must be refused before the stack is gone. Each input runs in a
+// FuzzNestingGuard is the check behind P1: whatever the input, Parse must
+// parse (or stop at the nesting limit), lower and walk inside a small fixed
+// stack. Each input runs in a
 // child (TestCrashHelper) under a 64 MiB stack limit, an eighth of what
 // a stack can reach by default; the child must exit 0. With the race detector a child takes over
 // a second to start, so the inputs run in this process instead, under the
@@ -244,11 +235,10 @@ func FuzzNestingGuard(f *testing.F) {
 	})
 }
 
-// costCases hold the parser deep for megabytes: the most work the guard can
-// be made to do.
+// costCases hold the parser deep for megabytes, once and through resync.
 func costCases() map[string]string {
 	return map[string]string{
-		// One parse, about 9,600 frames deep for 2 MiB.
+		// One parse, 2,400 levels deep for 2 MiB.
 		"sustained-under-limit": fill("echo "+strings.Repeat("$(", 1200), " a", "\n"),
 		// An unterminated quote, then fifty lines that open twenty levels each
 		// and never close them: resync parses the tail again from every one
@@ -257,246 +247,27 @@ func costCases() map[string]string {
 	}
 }
 
-// holdStack parks a goroutine on a stack of at least n bytes until the
-// returned function is called; that function returns once the stack has
-// been given back.
-func holdStack(n int) (release func()) {
-	ready, done, gone := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	var dive func(left int) int
-	dive = func(left int) int {
-		var pad [1024]byte
-		if left <= 0 {
-			close(ready)
-			<-done
-			return int(pad[0])
-		}
-		return dive(left-len(pad)) + int(pad[len(pad)-1])
-	}
-	go func() {
-		defer close(gone)
-		dive(n)
-	}()
-	<-ready
-	return func() {
-		close(done)
-		<-gone
-		runtime.GC() // a stack freed while the collector runs is released when it ends
-		runtime.GC()
-		// The guard takes a process that held this much a second ago for
-		// one that still does (settleEvery). The tests do not wait.
-		lane.Lock()
-		floor, settledAt = 0, time.Time{}
-		lane.Unlock()
-	}
-}
-
-// P3: the guard's work is bounded per file, whatever the input and whatever
-// else the process is doing. Alone in the process, the cost cases do not get
-// the parser's frames counted: its stack stays small. Next to a goroutine
-// with a large stack they are counted at every read, until the file's budget
-// is spent; then resync stops and a parse that still needs counting is
-// refused. BenchmarkGuard turns the counts into time.
-func TestGuardCostIsBounded(t *testing.T) {
-	for name, src := range costCases() {
-		run := func(t *testing.T) (*resyncer, attempt) {
-			f := tree.NewFile("x.sh", []byte(src))
-			r := &resyncer{f: f, d: Bash, budget: maxResyncAttempts}
-			a := r.raw(0)
-			if !a.tooDeep {
-				r.resolve(a)
-			}
-			r.g.release()
-			t.Logf("%d bytes: %d frames counted, %d resync attempts, stopped: %v", len(src), r.g.frames, maxResyncAttempts-r.budget, a.tooDeep)
-			return r, a
-		}
-		t.Run(name+"/alone", func(t *testing.T) {
-			// Frames are counted here only while a stack an earlier test
-			// grew has not been released yet.
-			if _, a := run(t); a.tooDeep {
-				t.Fatal("stopped")
-			}
-		})
-		t.Run(name+"/beside-a-large-stack", func(t *testing.T) {
-			defer holdStack(maxStackMemory)()
-			// The last count may start just under the budget.
-			if r, _ := run(t); r.g.frames > maxProbeFrames+maxFrames+1 {
-				t.Fatalf("%d frames counted, bound %d", r.g.frames, maxProbeFrames+maxFrames+1)
-			}
-		})
-	}
-}
-
-// Another goroutine's large stack makes the guard count frames; it must not
-// make it refuse a file whose own nesting is ordinary.
-func TestLargeStackElsewhereDoesNotRefuse(t *testing.T) {
-	defer holdStack(maxStackMemory)()
-	src := strings.Repeat("f() { if a; then echo \"$(b \"$(c)\")\"; fi; }\n", 20000)
-	f := Parse("x.sh", []byte(src), Bash)
-	if f.Skipped != "" || len(f.Errors) != 0 || len(f.Root.Children) != 20000 {
-		t.Fatalf("skipped %q, %d errors, %d statements", f.Skipped, len(f.Errors), len(f.Root.Children))
-	}
-}
-
-// A comment line costs the parser one small frame (the lexer calls itself
-// for the next token) until a line of code ends the block. A hundred
-// thousand of them in a row is about 13 MiB of stack, more under the race
-// detector: accepted.
-func TestLongCommentBlockParses(t *testing.T) {
-	runtime.GC() // release the stacks earlier tests grew
-	runtime.GC()
+// A block of comment lines is flat input: the lexer loops over it, whatever
+// its length (it called itself once per line before; 2 MiB of them took
+// 256 MiB of stack). TestNoCrashSubprocess runs the same under a stack limit.
+func TestCommentBlockOfAnyLengthParses(t *testing.T) {
 	f := Parse("x.sh", []byte(strings.Repeat("# c\n", 100000)+lastFunc), Bash)
-	if f.Skipped != "" || len(f.Errors) != 0 || len(f.Comments) != 100000 {
-		t.Fatalf("skipped %q, errors %v, %d comments", f.Skipped, f.Errors, len(f.Comments))
+	if f.Skipped != "" || len(f.Errors) != 0 || len(f.Comments) != 100000 || len(f.Root.Children) != 1 {
+		t.Fatalf("100,000 lines: skipped %q, errors %v, %d comments", f.Skipped, f.Errors, len(f.Comments))
+	}
+	f = Parse("x.sh", []byte(strings.Repeat("#\n", 1<<20)), Bash)
+	if f.Skipped != "" || len(f.Errors) != 0 || len(f.Comments) != 1<<20 {
+		t.Fatalf("2 MiB: skipped %q, errors %v, %d comments", f.Skipped, f.Errors, len(f.Comments))
 	}
 }
 
-// The second regime (scan.go): in a process that already holds more than
-// maxStackMemory of stack, the guard cannot tell whose it is and falls back
-// to counting frames, so the limit is maxFrames frames, whatever their size,
-// and the counting itself is rationed. A comment block is the cheapest way
-// to get there.
-func TestFrameLimitBesideLargeStack(t *testing.T) {
-	defer holdStack(maxStackMemory)()
-	under := Parse("x.sh", []byte(strings.Repeat("# c\n", 10000)+lastFunc), Bash)
-	if under.Skipped != "" || len(under.Errors) != 0 {
-		t.Fatalf("10,000 comment lines: skipped %q, errors %v", under.Skipped, under.Errors)
-	}
-	over := Parse("x.sh", []byte(strings.Repeat("# c\n", maxFrames+5000)+lastFunc), Bash)
-	if over.Skipped != refusal {
-		t.Fatalf("%d comment lines: skipped %q, errors %v", maxFrames+5000, over.Skipped, over.Errors)
-	}
-}
-
-// A refused parse must not leave its stack behind: the run's goroutine is
-// gone a moment after Parse returns, and its 64 MiB with it, without a
-// collection being forced.
-func TestRefusalGivesTheStackBack(t *testing.T) {
-	runtime.GC() // release the stacks earlier tests grew
-	runtime.GC()
-	g := &stackGuard{}
-	before := g.stackMemory()
-	if before >= maxStackMemory/2 {
-		t.Skipf("%d bytes of stack held before the test", before)
-	}
-	f := Parse("x.sh", []byte(strings.Repeat("(", 200000)+"\n"), Bash)
-	if f.Skipped != refusal {
-		t.Fatalf("not refused: %q", f.Skipped)
-	}
-	after := g.stackMemory()
-	for i := 0; i < 2000 && after >= before+settleSlack; i++ {
-		time.Sleep(time.Millisecond) // a collector cycle in progress holds it until the cycle ends
-		after = g.stackMemory()
-	}
-	if after >= before+settleSlack {
-		t.Fatalf("%d bytes of stack held after a refusal, %d before", after, before)
-	}
-}
-
-// Files that each need most of what a parse may use must all parse when
-// they are parsed at once: together they pass maxStackMemory, alone none
-// does.
-func TestDeepAcceptedFilesTogether(t *testing.T) {
-	depth := 20000
-	if raceBuild {
-		depth = 6000 // the race detector's frames are larger
-	}
-	src := []byte(nested("echo ", "$(", "x", ")", "\n", depth)())
-	if f := Parse("x.sh", src, Bash); f.Skipped != "" {
-		t.Fatalf("alone: skipped %q", f.Skipped)
-	}
-	rounds := 6
-	if raceBuild || testing.Short() {
-		rounds = 2
-	}
-	var wg sync.WaitGroup
-	var refused atomic.Int64
-	for range 6 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for range rounds {
-				if f := Parse("x.sh", src, Bash); f.Skipped != "" {
-					refused.Add(1)
-				}
-			}
-		}()
-	}
-	wg.Wait()
-	if n := refused.Load(); n != 0 {
-		t.Fatalf("%d of %d parses were refused", n, 6*rounds)
-	}
-}
-
-// In a process that holds large stacks for other work every parse runs
-// alone. Ordinary files must still parse, at once, and without a forced
-// collection each: the settled reading (floor) covers the host's stacks.
-func TestManyParsesBesideLargeStack(t *testing.T) {
-	defer holdStack(maxStackMemory)()
-	src := []byte(strings.Repeat("f() { if a; then echo \"$(b \"$(c)\")\"; fi; }\n", 200))
-	Parse("x.sh", src, Bash) // settles once
-	var before, after debug.GCStats
-	debug.ReadGCStats(&before)
-	var wg sync.WaitGroup
-	var bad atomic.Int64
-	for range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for range 50 {
-				if f := Parse("x.sh", src, Bash); f.Skipped != "" || len(f.Root.Children) != 200 {
-					bad.Add(1)
-				}
-			}
-		}()
-	}
-	wg.Wait()
-	debug.ReadGCStats(&after)
-	if n := bad.Load(); n != 0 {
-		t.Fatalf("%d of 400 parses went wrong", n)
-	}
-	// 400 parses allocate enough for a few cycles of their own; one forced
-	// per parse would be 400.
-	if n := after.NumGC - before.NumGC; n > 100 {
-		t.Fatalf("%d collections during 400 parses", n)
-	}
-}
-
-// One unbroken block of comment lines uses parser stack like nesting does
-// (the lexer calls itself once per comment line), so a long enough block is
-// refused; the message says so. This pins where: well past 100,000 lines,
-// before 300,000.
-func TestCommentBlockThreshold(t *testing.T) {
-	runtime.GC() // release the stacks earlier tests grew
-	runtime.GC()
-	if f := Parse("x.sh", []byte(strings.Repeat("#\n", 100000)), Bash); f.Skipped != "" || len(f.Comments) != 100000 {
-		t.Fatalf("100,000 lines: skipped %q, %d comments", f.Skipped, len(f.Comments))
-	}
-	f := Parse("x.sh", []byte(strings.Repeat("#\n", 300000)), Bash)
-	if f.Skipped != refusal || !strings.Contains(f.Skipped, "comment block") {
-		t.Fatalf("300,000 lines: skipped %q", f.Skipped)
-	}
-}
-
-// The reader gives the parser at most maxRead bytes between two looks at
-// the stack, whatever it is asked for.
-func TestReaderCapsWhatItHandsOut(t *testing.T) {
-	r := &guardedReader{g: &stackGuard{}, src: bytes.Repeat([]byte("a"), 10000)}
-	n, err := r.Read(make([]byte, 8192))
-	if err != nil || n != maxRead {
-		t.Fatalf("Read = %d, %v; want %d", n, err, maxRead)
-	}
-}
-
-// BenchmarkGuard measures what the guard adds. WB_BENCH_FILE names the input
-// (bench/gen_big.py's file for the P3 number); the cost cases above are
-// always run. "unguarded" is the same parser reading the bytes directly.
-// With WB_BENCH_LARGE_STACK=1 a parked goroutine holds a large stack, which
-// makes the guard count frames at every read: its worst case.
+// BenchmarkGuard measures what a parse costs now that the parser counts its
+// own nesting: "parser" is the vendored parser alone, "Parse" adds lowering
+// and resync. WB_BENCH_FILE names the input (bench/gen_big.py's file for the
+// P3 number); the cost cases above are always run. The same benchmark at the
+// commit before the parser was vendored gives the cost without the counter.
 func BenchmarkGuard(b *testing.B) {
 	inputs := costCases()
-	if os.Getenv("WB_BENCH_LARGE_STACK") == "1" {
-		defer holdStack(maxStackMemory)()
-	}
 	if p := os.Getenv("WB_BENCH_FILE"); p != "" {
 		src, err := os.ReadFile(p)
 		if err != nil {
@@ -506,17 +277,9 @@ func BenchmarkGuard(b *testing.B) {
 	}
 	for name, s := range inputs {
 		src := []byte(s)
-		b.Run(name+"/parser-unguarded", func(b *testing.B) {
+		b.Run(name+"/parser", func(b *testing.B) {
 			for b.Loop() {
-				p := syntax.NewParser(syntax.KeepComments(true), syntax.RecoverErrors(50), syntax.Variant(syntax.LangBash))
-				p.Parse(bytes.NewReader(src), "x.sh")
-			}
-		})
-		b.Run(name+"/parser-guarded", func(b *testing.B) {
-			for b.Loop() {
-				g := &stackGuard{}
-				parseSafely(g, src, "x.sh", Bash)
-				g.release()
+				parseSafely(src, "x.sh", Bash)
 			}
 		})
 		b.Run(name+"/Parse", func(b *testing.B) {
@@ -527,101 +290,57 @@ func BenchmarkGuard(b *testing.B) {
 	}
 }
 
-// TestDeepFileBesideOthers is the workspace scan with one pathological file
-// in it: while one goroutine keeps parsing a file nested far too deep, files
-// that parse alone must parse beside it, every time.
+// summary is what a caller can tell two parses of one file apart by.
+func summary(f *tree.File) string {
+	nodes := 0
+	f.Root.Walk(func(*tree.Node) bool { nodes++; return true })
+	return fmt.Sprintf("skipped %q, %d statements, %d nodes, %d comments, errors %v", f.Skipped, len(f.Root.Children), nodes, len(f.Comments), f.Errors)
+}
+
+// Parses share no state: a file's result is the same whatever else is being
+// parsed at the time. Here a file nested far too deep, files at the parser's
+// limit and flat files are parsed side by side, and each must come out as it
+// does alone, every time.
 func TestDeepFileBesideOthers(t *testing.T) {
-	deep := []byte(strings.Repeat("(", 200000) + "\n")
-	flat := []byte(strings.Repeat("# a typical comment line of moderate length here\n", 30000))
-	if f := Parse("flat.sh", flat, Bash); f.Skipped != "" {
-		t.Fatalf("alone: skipped %q", f.Skipped)
+	inputs := map[string][]byte{
+		"too-deep":    []byte(strings.Repeat("(", 200000) + "\n"),
+		"deep-lines":  []byte("f() { :; }\n" + strings.Repeat("if a;then\n", 20000)),
+		"at-limit":    []byte(atLimit(0, limits[0].ok)),
+		"cmdsubst":    []byte(atLimit(1, 3000)),
+		"comments":    []byte(strings.Repeat("# a typical comment line of moderate length here\n", 30000)),
+		"functions":   []byte(strings.Repeat("f() { if a; then echo \"$(b \"$(c)\")\"; fi; }\n", 2000)),
+		"broken-line": []byte("a() { :; }\necho 'x\nb() { :; }\n"),
 	}
-	rounds := 20
+	alone := map[string]string{}
+	for name, src := range inputs {
+		alone[name] = summary(Parse(name+".sh", src, Bash))
+	}
+	if !strings.Contains(alone["too-deep"], nestingError) || strings.Contains(alone["at-limit"], nestingError) {
+		t.Fatalf("alone: too-deep: %.200s\nat-limit: %.200s", alone["too-deep"], alone["at-limit"])
+	}
+	rounds := 10
 	if raceBuild || testing.Short() {
-		rounds = 4
+		rounds = 2
 	}
-	stop, stopped := make(chan struct{}), make(chan struct{})
-	go func() {
-		defer close(stopped)
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			if f := Parse("deep.sh", deep, Bash); f.Skipped == "" {
-				t.Error("the deep file was parsed")
-				return
-			}
-		}
-	}()
 	var wg sync.WaitGroup
-	var refused atomic.Int64
-	for range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for range rounds {
-				if f := Parse("flat.sh", flat, Bash); f.Skipped != "" || len(f.Comments) != 30000 {
-					refused.Add(1)
+	var changed atomic.Int64
+	for name, src := range inputs {
+		for range 2 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for range rounds {
+					if got := summary(Parse(name+".sh", src, Bash)); got != alone[name] {
+						changed.Add(1)
+						t.Errorf("%s beside the others: %.200s\nalone: %.200s", name, got, alone[name])
+						return
+					}
 				}
-			}
-		}()
-	}
-	wg.Wait()
-	close(stop)
-	<-stopped
-	if n := refused.Load(); n != 0 {
-		t.Fatalf("%d of %d parses beside the deep file were refused", n, 8*rounds)
-	}
-}
-
-// After a collection that met a deep stack the runtime starts goroutines on
-// stacks of megabytes and keeps those of finished goroutines (see settle):
-// here a few hundred megabytes that no goroutine uses. That must not leave
-// the process refusing what it parsed before.
-func TestStacksOfFinishedGoroutines(t *testing.T) {
-	flat := []byte(strings.Repeat("# a typical comment line of moderate length here\n", 30000))
-	release := holdStack(maxStackMemory)
-	runtime.GC() // the next goroutines start large
-	var wg sync.WaitGroup
-	for range 400 { // a host's goroutines: they do little and finish
-		wg.Add(1)
-		go func() { wg.Done() }()
-	}
-	wg.Wait()
-	release()
-	g := &stackGuard{}
-	held := g.stackMemory()
-	if held < maxStackMemory {
-		t.Skipf("the runtime kept only %d bytes of finished goroutines' stacks", held)
-	}
-	for i := range 5 {
-		if f := Parse("flat.sh", flat, Bash); f.Skipped != "" || len(f.Comments) != 30000 {
-			t.Fatalf("parse %d, %d bytes of stack held by finished goroutines: skipped %q", i, held, f.Skipped)
+			}()
 		}
 	}
-	if left := g.stackMemory(); left >= maxStackMemory/2 {
-		t.Fatalf("%d bytes still held, of %d", left, held)
-	}
-}
-
-// A file that is refused again and again (edited while it is too deep) must
-// not cost a forced collection each time.
-func TestRefusalsForceNoCollections(t *testing.T) {
-	runtime.GC() // release the stacks earlier tests grew
-	runtime.GC()
-	deep := []byte(strings.Repeat("(", 200000) + "\n")
-	Parse("x.sh", deep, Bash) // the first may have to settle
-	var before, after runtime.MemStats
-	runtime.ReadMemStats(&before)
-	for range 10 {
-		if f := Parse("x.sh", deep, Bash); f.Skipped != refusal {
-			t.Fatalf("not refused: %q", f.Skipped)
-		}
-	}
-	runtime.ReadMemStats(&after)
-	if n := after.NumForcedGC - before.NumForcedGC; n > 1 {
-		t.Fatalf("%d forced collections for 10 refusals", n)
+	wg.Wait()
+	if n := changed.Load(); n != 0 {
+		t.Fatalf("%d files changed their result", n)
 	}
 }

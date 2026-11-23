@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"mvdan.cc/sh/v3/syntax"
+	"github.com/wamra/bash-lsp/internal/front/syntax"
 )
 
 // nodeKey names a node by type and position; Pos panics on some partial nodes.

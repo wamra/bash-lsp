@@ -10,7 +10,12 @@ import (
 	"testing"
 )
 
-const parserPrefix = "mvdan.cc/sh/"
+// The parser is a patched copy of mvdan.cc/sh/v3/syntax (see
+// internal/front/syntax/UPGRADING.md). Nothing imports the upstream module.
+const (
+	upstreamParser = "mvdan.cc/sh"
+	vendoredParser = "github.com/wamra/bash-lsp/internal/front/syntax"
+)
 
 // forbidden reports why a non-test file may not import p: milestone 1 starts
 // no subprocess and opens no network connection (net/url only parses URIs).
@@ -25,8 +30,9 @@ func forbidden(p string) string {
 }
 
 // TestOnlyFrontImportsParser walks every .go file in the repo and fails if a
-// file outside internal/front imports the mvdan parser, or if a non-test
-// file imports os/exec or a network package.
+// file outside internal/front imports the vendored parser, if any file
+// imports the upstream module it was copied from, or if a non-test file
+// imports os/exec or a network package.
 func TestOnlyFrontImportsParser(t *testing.T) {
 	skip := map[string]bool{".git": true, ".scratch": true, "testdata": true}
 	checked := 0
@@ -58,7 +64,10 @@ func TestOnlyFrontImportsParser(t *testing.T) {
 				t.Errorf("%s: bad import literal %s", slashed, imp.Path.Value)
 				continue
 			}
-			if !front && strings.HasPrefix(p, parserPrefix) {
+			if p == upstreamParser || strings.HasPrefix(p, upstreamParser+"/") {
+				t.Errorf("%s imports %q: the parser is vendored in internal/front/syntax", slashed, p)
+			}
+			if !front && (p == vendoredParser || strings.HasPrefix(p, vendoredParser+"/")) {
 				t.Errorf("%s imports %q: only internal/front may import the parser", slashed, p)
 			}
 			if why := forbidden(p); why != "" && !test {

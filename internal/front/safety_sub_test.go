@@ -23,12 +23,13 @@ const (
 )
 
 // safetyStack is the stack limit the children run under: an eighth of the
-// 512 MiB a stack can reach under the runtime's default limit, so a pass
-// leaves a wide margin.
+// 512 MiB a stack can reach under the runtime's default limit. The parser
+// stops at 10,000 levels, which is 42 MiB of stack for the costliest
+// construct (docs/m2a-nesting-design.md).
 const safetyStack = 64 << 20
 
 // crashCases are inputs under the 2 MiB file limit that overflowed the stack
-// at some point: the first four in review finding C1, the rest in the
+// at some point, or come as close to it as the parser now lets them: the first four in review finding C1, the rest in the
 // re-review of its first fix (bench/repro-c1) or in deep_test.go. Each is
 // built on demand: a child needs one, not a hundred megabytes of them.
 func crashCases() map[string]func() string {
@@ -97,35 +98,33 @@ func crashCases() map[string]func() string {
 		"esac-argument":   func() string { return fill("", "$(case x in a) echo esac;; b) ", "\n") },
 		"comment-closers": func() string { return strings.Repeat("$( # ))\n", 260000) },
 		"heredoc-closers": func() string { return strings.Repeat("$(cat <<'E'\n)))\nE\n", 100000) },
-		// Nesting held just under the guard's limit for the rest of the file,
-		// then deepened: the most stack an accepted prefix can reach.
+		// Nesting held deep for megabytes, then taken past the limit.
 		"sustained": func() string {
 			return "echo " + strings.Repeat("$(", 1200) + strings.Repeat(" a", 900000) + strings.Repeat("$(", 60000) + "\n"
 		},
-		// Nesting the guard accepts, closed properly, at about the deepest it
-		// lets through (some 30 MiB of parser stack): the lowerer and the
-		// walks then meet the deepest tree the parser can hand them.
-		"accepted-cmdsubst":     nested("echo ", "$(", "x", ")", "\n", 20000),
-		"accepted-dq-cmdsubst":  nested("echo ", `"$(`, "x", `)"`, "\n", 13000),
-		"accepted-arith-paren":  nested("echo $((", "(", "1", ")", "))\n", 7800),
-		"accepted-param":        nested("echo ", "${a:-", "x", "}", "\n", 28000),
-		"accepted-brace":        nested("", "{ ", ":", "; }", "\n", 27000),
-		"accepted-if":           nested("", "if a; then\n", ":\n", "fi\n", "", 25000),
-		"accepted-while":        nested("", "while a; do\n", ":\n", "done\n", "", 28000),
-		"accepted-case":         nested("", "case a in b)\n", ":\n", "esac\n", "", 27000),
-		"accepted-ternary":      nested("echo $((", "a?", "1", ":1", "))\n", 50000),
-		"accepted-arith-not":    nested("echo $((", "!", "1", "", "))\n", 240000),
-		"accepted-arith-asgn":   nested("echo $((", "a=", "1", "", "))\n", 180000),
-		"accepted-test-not":     nested("[[ ", "! ", "a", "", " ]]\n", 55000),
-		"accepted-test-paren":   nested("[[ ", "( ", "a", " )", " ]]\n", 55000),
-		"accepted-test-and":     nested("[[ ", "a && ", "a", "", " ]]\n", 70000),
-		"accepted-time":         nested("", "time ", "a", "", "\n", 78000),
-		"accepted-funcs":        nested("", "f() ", "{ :; }", "", "\n", 46000),
-		"accepted-comments":     nested("", "# c\n", "a", "", "\n", 240000),
 		"sustained-under-limit": func() string { return costCases()["sustained-under-limit"] },
 		"resync-sustained":      func() string { return costCases()["resync-sustained"] },
+		// One comment line was one parser frame until the lexer's self-call
+		// became a loop: 2 MiB of them took 256 MiB of stack.
+		"comments-2MiB":      func() string { return strings.Repeat("#\n", 1<<20) },
+		"comments-then-code": func() string { return strings.Repeat("# c\n", 500000) + lastFunc },
+		"comments-in-pipes":  func() string { return fill("a ", "|\n#\n", "a\n") },
+		"comments-in-subst":  func() string { return "echo $(\n" + strings.Repeat("#\n", 1000000) + "a)\n" },
+		// `++` and `--` recurse; an error ends it after two levels, and the
+		// parser now counts it anyway.
+		"arith-incr": func() string { return fill("echo $((", "++", "a))\n") },
+		"arith-decr": func() string { return fill("echo $((", "-- ", "a))\n") },
+		// A heredoc body is read by a nested call of the lexer, counted now.
+		"heredoc-lines":  func() string { return fill("", "cat <<E\n$(\nE\n", "") },
+		"heredoc-nested": func() string { return fill("", "cat <<E\n$(cat <<E\n", "") },
 	} {
 		cases[name] = src
+	}
+	// Every construct at the deepest the parser accepts, closed properly:
+	// the most stack a parse can use, and the deepest tree the lowerer and
+	// the walks can be handed.
+	for i, l := range limits {
+		cases["limit-"+l.name] = func() string { return atLimit(i, l.ok) }
 	}
 	return cases
 }
@@ -174,12 +173,9 @@ func parseAndWalk(src []byte) string {
 		panic(fmt.Sprintf("tree depth %d over the lowerer's bound", d))
 	}
 	if f.Skipped != "" {
-		if len(f.Root.Children) != 0 || len(f.Errors) != 1 || f.Errors[0].Msg != f.Skipped {
-			panic(fmt.Sprintf("refused file is not empty with one error: %d statements, errors %v", len(f.Root.Children), f.Errors))
-		}
-		return "result: refused: " + f.Skipped
+		panic("skipped: " + f.Skipped)
 	}
-	return fmt.Sprintf("result: parsed: %d statements, %d nodes, %d errors", len(f.Root.Children), nodes, len(f.Errors))
+	return fmt.Sprintf("result: parsed: %d statements, %d nodes, %d errors, nesting error: %v", len(f.Root.Children), nodes, len(f.Errors), hasErr(f, nestingError))
 }
 
 // runChild runs TestCrashHelper in a child process and returns its output.
@@ -218,16 +214,16 @@ func TestNoCrashSubprocess(t *testing.T) {
 			if err != nil {
 				t.Fatalf("child failed: %v\n%s", err, firstLines(out, 12))
 			}
-			refused, parsed := strings.Contains(out, "result: refused: "+refusal), strings.Contains(out, "result: parsed: ")
-			if !refused && !parsed {
-				t.Fatalf("child neither refused nor parsed:\n%s", firstLines(out, 12))
+			if !strings.Contains(out, "result: parsed: ") {
+				t.Fatalf("child printed no result:\n%s", firstLines(out, 12))
 			}
-			// The cases named for it sit just under the limit: a guard that
-			// refuses them has become stricter than the design note says.
-			// (Not with the race detector: its frames are larger, so the
-			// same input passes the limit.)
-			if !raceBuild && (strings.HasPrefix(name, "accepted-") || name == "sustained-under-limit") && !parsed {
-				t.Fatalf("refused, want parsed:\n%s", firstLines(out, 12))
+			// The cases named for it sit at the parser's limit, not past it.
+			if strings.HasPrefix(name, "limit-") && !strings.Contains(out, "nesting error: false") {
+				t.Fatalf("nesting error at the limit:\n%s", firstLines(out, 12))
+			}
+			// Flat input is never a nesting error, whatever its length.
+			if strings.HasPrefix(name, "comments-") && !strings.Contains(out, "nesting error: false") {
+				t.Fatalf("nesting error in comments:\n%s", firstLines(out, 12))
 			}
 		})
 	}

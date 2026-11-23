@@ -2,7 +2,6 @@ package analysis
 
 import (
 	"testing"
-	"time"
 
 	"github.com/wamra/bash-lsp/internal/front"
 	"github.com/wamra/bash-lsp/tree"
@@ -31,17 +30,7 @@ func FuzzBind(f *testing.F) {
 		if len(src) > 1<<16 {
 			return
 		}
-		// front.Parse can spin on some inputs (known, owned by the nesting work, e.g.
-		// "${0=$((((..." with stray bytes); this fuzz target is about Bind, so give the
-		// parse a deadline and skip the input rather than hang the worker.
-		parsed := make(chan *tree.File, 1)
-		go func() { parsed <- front.Parse("/ws/f.sh", src, front.Bash) }()
-		var file *tree.File
-		select {
-		case file = <-parsed:
-		case <-time.After(3 * time.Second):
-			t.Skip("front.Parse did not return")
-		}
+		file := front.Parse("/ws/f.sh", src, front.Bash)
 		ff := Bind(file)
 		check := func(what, name string, s, e int, arith bool) {
 			if s < 0 || e > len(src) || s > e {

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"mvdan.cc/sh/v3/syntax"
+	"github.com/wamra/bash-lsp/internal/front/syntax"
 
 	"github.com/wamra/bash-lsp/tree"
 )
@@ -19,8 +19,7 @@ const maxResyncAttempts = 50
 type resyncer struct {
 	f      *tree.File
 	d      Dialect
-	g      stackGuard // watches the parser's stack in every run (scan.go)
-	budget int        // candidate lines still allowed, shared by the whole file
+	budget int // candidate lines still allowed, shared by the whole file
 }
 
 // attempt is one parser run over f.Src[off:], lowered to absolute positions.
@@ -30,50 +29,19 @@ type attempt struct {
 	comments []*tree.Node
 	failOff  int // absolute offset of the failure, -1 when the run was clean
 	failErr  tree.SyntaxError
-	tooDeep  bool // the guard stopped the run at failOff; nothing was lowered
 }
 
 // parseFile parses all of f.Src and returns its statements, errors and
-// comments. deepAt is -1, or the offset where the parse of the whole file was
-// stopped for using too much stack; nothing else is returned then.
-//
-// The file is first parsed side by side with whatever else is being parsed.
-// If the guard could not tell this parse's stack from another's (scan.go),
-// that attempt is dropped and the file is parsed again alone.
-func parseFile(f *tree.File, d Dialect) (stmts []*tree.Node, errs []tree.SyntaxError, comments []*tree.Node, deepAt int) {
-	run := func(alone bool) (contended bool) {
-		if alone {
-			lane.Lock()
-			defer lane.Unlock()
-		} else {
-			lane.RLock()
-			defer lane.RUnlock()
-		}
-		r := &resyncer{f: f, d: d, budget: maxResyncAttempts}
-		r.g.alone = alone
-		defer r.g.release()
-		a := r.raw(0)
-		if a.tooDeep {
-			stmts, errs, comments, deepAt = nil, nil, nil, a.failOff
-		} else {
-			stmts, errs, comments = r.resolve(a)
-			deepAt = -1
-		}
-		return r.g.contended
-	}
-	if run(false) {
-		run(true)
-	}
-	return stmts, errs, comments, deepAt
+// comments.
+func parseFile(f *tree.File, d Dialect) (stmts []*tree.Node, errs []tree.SyntaxError, comments []*tree.Node) {
+	r := &resyncer{f: f, d: d, budget: maxResyncAttempts}
+	return r.resolve(r.raw(0))
 }
 
 // raw runs the parser once over f.Src[off:]. It does not resync.
 func (r *resyncer) raw(off int) attempt {
 	f := r.f
-	af, err, crashed, deepAt := parseSafely(&r.g, f.Src[off:], f.Path, r.d)
-	if deepAt >= 0 {
-		return attempt{tooDeep: true, failOff: off + deepAt}
-	}
+	af, err, crashed := parseSafely(f.Src[off:], f.Path, r.d)
 	if af == nil {
 		af = &syntax.File{}
 	}
@@ -99,38 +67,21 @@ func (r *resyncer) raw(off int) attempt {
 }
 
 // parseSafely runs the parser over src. The parser can panic on some broken
-// input (`A=$((0 A` indexes past a slice in v3.14.1); crashed reports that,
-// with err describing it, instead of letting the panic end the process.
+// input (`A=$((0 A` indexes past a slice); crashed reports that, with err
+// describing it, instead of letting the panic end the process.
 //
-// The parser runs on a goroutine of its own and reads src through g's
-// reader, which stops it when its stack grows too deep: deepAt is then how
-// many bytes it had been given, and the partial tree is dropped. Otherwise
-// deepAt is -1. The goroutine is what gives the stack back: a stopped run
-// has grown it to 64 MiB, and a goroutine keeps its stack until the
-// collector shrinks it, half at a time.
-func parseSafely(g *stackGuard, src []byte, path string, d Dialect) (af *syntax.File, err error, crashed bool, deepAt int) {
-	if g.alone {
-		g.settle()
-	}
-	rd := &guardedReader{g: g, src: src}
-	deepAt = -1
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		defer func() {
-			if r := recover(); r != nil {
-				af, err, crashed = nil, fmt.Errorf("parser failure: %v", r), true
-			}
-		}()
-		outgrow()
-		p := syntax.NewParser(syntax.KeepComments(true), syntax.RecoverErrors(50), syntax.Variant(variant(d)))
-		af, err = p.Parse(rd, path)
+// What cannot be recovered from, a stack overflow, the parser rules out
+// itself: it counts nesting and returns an error past 10,000 levels
+// (internal/front/syntax, docs/m2a-nesting-design.md).
+func parseSafely(src []byte, path string, d Dialect) (af *syntax.File, err error, crashed bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			af, err, crashed = nil, fmt.Errorf("parser failure: %v", r), true
+		}
 	}()
-	<-done
-	if rd.tripped {
-		return nil, errTooDeep, false, rd.off
-	}
-	return af, err, crashed, -1
+	p := syntax.NewParser(syntax.KeepComments(true), syntax.RecoverErrors(50), syntax.Variant(variant(d)))
+	af, err = p.Parse(bytes.NewReader(src), path)
+	return af, err, false
 }
 
 // unclosedQuote returns the offset (relative to the parsed text) of the first
@@ -201,20 +152,12 @@ func (r *resyncer) resolve(a attempt) ([]*tree.Node, []tree.SyntaxError, []*tree
 	src := f.Src
 	// Candidates start after both the failure and the dropped statements: a
 	// gap must not end before it starts.
-	// A candidate the guard stopped is dropped like one that did not parse:
-	// the text from there may only look deep because the parse started in the
-	// middle of a heredoc or a string. Once the guard's own budget is spent,
-	// or the guard has no verdict (the whole file is then parsed again), no
-	// further line is tried.
-	for pos := nextLine(src, max(a.failOff, gapStart)); pos < len(src) && r.budget > 0 && !r.g.spent() && !r.g.contended; pos = nextLine(src, pos) {
+	for pos := nextLine(src, max(a.failOff, gapStart)); pos < len(src) && r.budget > 0; pos = nextLine(src, pos) {
 		if !resyncPoint(src, pos) {
 			continue
 		}
 		r.budget--
 		t := r.raw(pos)
-		if t.tooDeep {
-			continue
-		}
 		_, tailKept := t.cut(f)
 		if len(tailKept) == 0 || errorAt(t.errs, tailKept[0].Range.Start.Offset) {
 			continue

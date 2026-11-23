@@ -1,11 +1,14 @@
 package front
 
 import (
+	"os"
+	"runtime"
 	"runtime/debug"
+	"runtime/metrics"
 	"strings"
 	"testing"
 
-	"mvdan.cc/sh/v3/syntax"
+	"github.com/wamra/bash-lsp/internal/front/syntax"
 
 	"github.com/wamra/bash-lsp/tree"
 )
@@ -46,12 +49,17 @@ func fill(prefix, unit, suffix string) string {
 	return prefix + strings.Repeat(unit, n) + suffix
 }
 
-// Parse must refuse these: a Skipped file with an error that says why. Each
-// drove mvdan's recursive-descent parser past Go's stack limit (a fatal error
-// no recover() catches; review finding C1), or used a quarter of it or more,
-// measured with debug.SetMaxStack. TestNoCrashSubprocess runs the same
-// shapes, and more, under a 64 MiB stack limit.
-func TestDeepNestingIsSkipped(t *testing.T) {
+// nestingError is the parser's text for input nested past its limit
+// (maxNesting in internal/front/syntax).
+const nestingError = "nesting is deeper than 10000 levels"
+
+// Each of these drove the recursive-descent parser past Go's stack limit (a
+// fatal error no recover() catches; review finding C1) before it counted its
+// own nesting. Now it stops at 10,000 levels with a syntax error like any
+// other: the file is not skipped, and the error carries the parser's text.
+// TestNoCrashSubprocess runs the same shapes, and more, under a 64 MiB stack
+// limit.
+func TestDeepNestingIsASyntaxError(t *testing.T) {
 	cases := map[string]string{
 		"paren":       strings.Repeat("(", 200000) + "\n",
 		"cmdsubst":    "echo " + strings.Repeat("$(", 500000) + "\n",
@@ -59,7 +67,7 @@ func TestDeepNestingIsSkipped(t *testing.T) {
 		"procsubst":   "cat " + strings.Repeat("<(", 500000) + "\n",
 		"dq-cmdsubst": "echo " + strings.Repeat(`"$(`, 400000) + "\n",
 		"dollar-brk":  "echo " + strings.Repeat("$[", 500000) + "\n",
-		// Operator chains the parser recurses on.
+		// Operator chains: every operator is a level.
 		"ternary":      fill("echo $((", "a?", "1))\n"),
 		"ternary-sp":   fill("(( ", "a ? ", "1 ))\n"),
 		"let-ternary":  fill("let ", "a?", "1\n"),
@@ -71,14 +79,21 @@ func TestDeepNestingIsSkipped(t *testing.T) {
 		"arith-power":  fill("echo $((", "2**", "2))\n"),
 		"arith-minus":  fill("echo $((", "- ", "1))\n"),
 		"arith-not":    fill("echo $((", "!", "1))\n"),
+		"arith-plus":   fill("echo $((", "1+", "1))\n"),
+		"arith-comma":  fill("echo $((", "1,", "1))\n"),
 		"test-not":     fill("[[ ", "! ", "a ]]\n"),
 		"test-and":     fill("[[ ", "a && ", "a ]]\n"),
+		"andor":        fill("a ", "&& a ", "\n"),
+		"pipes":        fill("a ", "| a ", "\n"),
+		// Comments inside a chain made the parser's Walk call Stmt.End at every level.
+		"pipes-commented": fill("a ", "| # c\na ", "\n"),
 		// Compound commands, prefixes and function headers.
 		"if":              fill("", "if a;then\n", ""),
 		"while":           fill("", "while a;do\n", ""),
 		"for":             fill("", "for a in b;do\n", ""),
 		"for-in-done":     fill("", "for x in done; do ", ":\n"),
 		"case":            fill("", "case a in b)\n", ""),
+		"elif":            fill("if a; then :\n", "elif a; then :\n", "fi\n"),
 		"time":            fill("", "time ", "a\n"),
 		"coproc":          fill("", "coproc ", "a\n"),
 		"funcs":           fill("", "f() ", "{ :; }\n"),
@@ -95,37 +110,138 @@ func TestDeepNestingIsSkipped(t *testing.T) {
 	for name, src := range cases {
 		t.Run(name, func(t *testing.T) {
 			f := Parse("x.sh", []byte(src), Bash)
-			if f.Skipped == "" {
-				t.Fatalf("not skipped (%d errors, depth %d)", len(f.Errors), treeDepth(f))
+			if f.Skipped != "" {
+				t.Fatalf("skipped: %q", f.Skipped)
 			}
-			if f.Skipped != refusal || len(f.Errors) != 1 || f.Errors[0].Msg != refusal {
-				t.Fatalf("skipped %q, errors %v", f.Skipped, f.Errors)
+			if len(f.Errors) == 0 || f.Errors[0].Msg != nestingError {
+				t.Fatalf("first error is not the nesting error: %v", firstErrors(f, 3))
 			}
-			if len(f.Root.Children) != 0 {
-				t.Fatal("a skipped file has no statements")
+			if hasErr(f, "parser failure") {
+				t.Fatalf("parser failure: %v", firstErrors(f, 3))
 			}
 			checkInvariants(t, f)
 		})
 	}
 }
 
-// Shapes the parser handles without recursing, so the stack guard never sees
-// them, but that recursed (or ran quadratically) in the lowerer, mvdan's Walk
-// or End: at the 2 MiB limit they lower whole, to a shallow tree.
-func TestLongChainsLowerSafely(t *testing.T) {
-	cases := map[string]string{
-		"andor":       fill("a ", "&& a ", "\n"),
-		"pipes":       fill("a ", "| a ", "\n"),
-		"arith-plus":  fill("echo $((", "1+", "1))\n"),
-		"arith-comma": fill("echo $((", "1,", "1))\n"),
-		// Comments inside a chain made mvdan's Walk call Stmt.End at every level.
-		"pipes-commented": fill("a ", "| # c\na ", "\n"),
+func firstErrors(f *tree.File, n int) []tree.SyntaxError {
+	if len(f.Errors) > n {
+		return f.Errors[:n]
 	}
-	for name, src := range cases {
-		t.Run(name, func(t *testing.T) {
-			f := Parse("x.sh", []byte(src), Bash)
+	return f.Errors
+}
+
+// A nesting error is an ordinary syntax error: one diagnostic at the place
+// the limit was passed, the statements before it analysed, the lines after
+// it recovered.
+func TestNestingErrorKeepsTheRestOfTheFile(t *testing.T) {
+	src := "before() { :; }\necho " + strings.Repeat("$(", 100000) + "\nafter() { :; }\n"
+	f := Parse("x.sh", []byte(src), Bash)
+	if f.Skipped != "" {
+		t.Fatalf("skipped: %q", f.Skipped)
+	}
+	if len(f.Errors) != 1 || f.Errors[0].Msg != nestingError {
+		t.Fatalf("errors %v, want one %q", firstErrors(f, 3), nestingError)
+	}
+	// 5,000 `$(` are 10,000 levels; the next one is refused where it starts.
+	if at := f.Errors[0].Range.Start; at.Line != 2 || at.Col != 6+2*5000 {
+		t.Fatalf("error at %d:%d", at.Line, at.Col)
+	}
+	found := map[string]bool{}
+	f.Root.Walk(func(n *tree.Node) bool {
+		if n.Kind == tree.KFuncDecl {
+			found[n.Name] = true
+		}
+		return true
+	})
+	if !found["before"] || !found["after"] {
+		t.Fatalf("functions found: %v", found)
+	}
+	checkInvariants(t, f)
+}
+
+// limits is where the parser's nesting limit falls for each construct it
+// recurses on or counts: ok repetitions of open (closed by as many close)
+// parse, one more is the nesting error. The limit is 10,000 levels; a
+// construct that takes two levels (a command substitution is a word part and
+// a statement) or three reaches it sooner, and what surrounds the repeated
+// part takes a few. Every operator of a chain and every elif is a level too:
+// a chain or ladder longer than this is a syntax error (ruling for milestone
+// 2a; real scripts do not have them). docs/m2a-nesting-design.md has the table.
+var limits = []struct {
+	name, pre, open, mid, close, post string
+	ok                                int
+}{
+	{"paren", "", "(", "a", ")", "\n", 10000},
+	{"cmdsubst", "echo ", "$(", "a", ")", "\n", 4999},
+	{"brace", "", "{ ", "a", "; }", "\n", 9999},
+	{"procsubst", "cat ", "<(", "a", ")", "\n", 4999},
+	{"dq-cmdsubst", "echo ", `"$(`, "a", `)"`, "\n", 3333},
+	{"dollar-brk", "echo ", "$[", "1", "]", "\n", 4999},
+	{"param", "echo ", "${a:-", "a", "}", "\n", 9998},
+	{"param-index", "echo ", "${x[", "1", "]}", "\n", 4999},
+	{"arith-paren", "echo $((", "(", "1", ")", "))\n", 9997},
+	{"ternary", "echo $((", "a?", "1", ":1", "))\n", 9997},
+	{"arith-assign", "echo $((", "a=", "1", "", "))\n", 9997},
+	{"arith-power", "echo $((", "2**", "2", "", "))\n", 9997},
+	{"arith-minus", "echo $((", "- ", "1", "", "))\n", 9997},
+	{"arith-not", "echo $((", "!", "1", "", "))\n", 9997},
+	{"arith-plus", "echo $((", "1+", "1", "", "))\n", 9997},
+	{"arith-comma", "echo $((", "1,", "1", "", "))\n", 9997},
+	{"let-ternary", "let ", "a?", "1", ":1", "\n", 9998},
+	{"test-not", "[[ ", "! ", "a", "", " ]]\n", 9997},
+	{"test-paren", "[[ ", "( ", "a", " )", " ]]\n", 9997},
+	{"test-and", "[[ ", "a && ", "a", "", " ]]\n", 9997},
+	{"if", "", "if a;then\n", ":", "\nfi", "\n", 9999},
+	{"while", "", "while a;do\n", ":", "\ndone", "\n", 9999},
+	{"for", "", "for a in b;do\n", ":", "\ndone", "\n", 9999},
+	{"case", "", "case a in b)\n", ":", "\nesac", "\n", 9999},
+	{"elif", "if a; then :\n", "elif a; then :\n", "", "", "fi\n", 9998},
+	{"time", "", "time ", "a", "", "\n", 9999},
+	{"coproc", "", "coproc ", "a", "", "\n", 9998},
+	{"funcs", "", "f() ", "{ :; }", "", "\n", 9998},
+	{"function-kw", "", "function f\n", "{ :; }", "", "\n", 9998},
+	{"andor", "", "a && ", "a", "", "\n", 9998},
+	{"pipes", "", "a | ", "a", "", "\n", 9999},
+	{"pipes-commented", "a ", "| # c\na ", "", "", "\n", 9999},
+}
+
+// atLimit is the i'th construct of limits nested n deep.
+func atLimit(i, n int) string {
+	l := limits[i]
+	return l.pre + strings.Repeat(l.open, n) + l.mid + strings.Repeat(l.close, n) + l.post
+}
+
+// The parser's limit, pinned per construct: an upgrade of the vendored parser
+// that moves it, or stops counting something, fails here.
+func TestNestingLimit(t *testing.T) {
+	for i, l := range limits {
+		t.Run(l.name, func(t *testing.T) {
+			if f := Parse("x.sh", []byte(atLimit(i, l.ok)), Bash); f.Skipped != "" || hasErr(f, "nesting is deeper") {
+				t.Fatalf("%d levels: skipped %q, errors %v", l.ok, f.Skipped, firstErrors(f, 3))
+			}
+			f := Parse("x.sh", []byte(atLimit(i, l.ok+1)), Bash)
+			if f.Skipped != "" || len(f.Errors) == 0 || f.Errors[0].Msg != nestingError {
+				t.Fatalf("%d levels: skipped %q, errors %v, want %q", l.ok+1, f.Skipped, firstErrors(f, 3), nestingError)
+			}
+		})
+	}
+}
+
+// Chains the parser builds without nesting the tree, and that recursed (or
+// ran quadratically) in the lowerer, the parser's Walk or End: at the longest
+// the parser accepts they lower whole, to a shallow tree.
+func TestLongChainsLowerSafely(t *testing.T) {
+	for i, l := range limits {
+		switch l.name {
+		case "andor", "pipes", "arith-plus", "arith-comma", "pipes-commented":
+		default:
+			continue
+		}
+		t.Run(l.name, func(t *testing.T) {
+			f := Parse("x.sh", []byte(atLimit(i, l.ok)), Bash)
 			if f.Skipped != "" || len(f.Errors) != 0 {
-				t.Fatalf("skipped %q, errors %v", f.Skipped, f.Errors)
+				t.Fatalf("skipped %q, errors %v", f.Skipped, firstErrors(f, 3))
 			}
 			if len(f.Root.Children) != 1 {
 				t.Fatal("statement dropped")
@@ -137,11 +253,9 @@ func TestLongChainsLowerSafely(t *testing.T) {
 	}
 }
 
-// The lowerer's own bound, tested without the stack guard (the parser is
-// called directly): a statement nested deeper than maxDepth lowering levels
-// is dropped and reported, so analysis never sees a deep tree. Of these only
-// the elif chain reaches the lowerer through Parse: the parser builds it in a
-// loop, so the guard has nothing to stop.
+// The lowerer's own bound, lower than the parser's: a statement nested deeper
+// than maxDepth lowering levels is dropped and reported, so analysis never
+// sees a deep tree.
 func TestLowererDepthBound(t *testing.T) {
 	cases := map[string]string{
 		"if":              strings.Repeat("if a;then\n", 2100) + ":\n" + strings.Repeat("fi\n", 2100),
@@ -172,8 +286,8 @@ func TestLowererDepthBound(t *testing.T) {
 	}
 }
 
-// Nesting far deeper than any real script, but under the stack guard's
-// limit, parses, and within 64 MB of stack: a 16th of the 1 GB limit.
+// Nesting far deeper than any real script parses without an error, and
+// within 64 MiB of stack.
 func TestNestingAtTheBoundParses(t *testing.T) {
 	defer debug.SetMaxStack(debug.SetMaxStack(64 << 20))
 	const n = 990
@@ -260,4 +374,61 @@ func TestParserPanicIsReported(t *testing.T) {
 		t.Fatal("the line after the failure was not recovered")
 	}
 	checkInvariants(t, f)
+}
+
+// TestStackPerLevel measures, for each construct, the stack one level of it
+// costs, and so what a parse at the limit uses. It prints; it asserts
+// nothing. Run with WB_MEASURE_STACK=1 (bench/results has the output).
+//
+// The runtime doubles a goroutine's stack when it is full, so the stack
+// memory of the process steps up when the parse passes a power of two. The
+// test finds the nesting at which the last step is taken: there the parse
+// uses half the new size.
+func TestStackPerLevel(t *testing.T) {
+	if os.Getenv("WB_MEASURE_STACK") != "1" {
+		t.Skip("set WB_MEASURE_STACK=1 to measure")
+	}
+	stacks := func() uint64 {
+		s := []metrics.Sample{{Name: "/memory/classes/heap/stacks:bytes"}}
+		metrics.Read(s)
+		return s[0].Value.Uint64()
+	}
+	grown := func(src string) uint64 {
+		runtime.GC() // return the stacks of earlier parses
+		runtime.GC()
+		before, after := stacks(), make(chan uint64)
+		go func() {
+			Parse("x.sh", []byte(src), Bash)
+			after <- stacks()
+		}()
+		if a := <-after; a > before {
+			return a - before
+		}
+		return 0
+	}
+	worst := 0.0
+	for i, l := range limits {
+		top := grown(atLimit(i, l.ok))
+		if top < 2<<20 {
+			t.Logf("%-16s %5d levels at the limit: under 2 MiB of stack", l.name, l.ok)
+			continue
+		}
+		step := uint64(1 << 20)
+		for step*2 <= top {
+			step *= 2
+		}
+		lo, hi := 1, l.ok // hi: the least nesting whose parse holds a stack of step bytes
+		for hi-lo > 1 {
+			if m := (lo + hi) / 2; grown(atLimit(i, m)) >= step {
+				hi = m
+			} else {
+				lo = m
+			}
+		}
+		per := float64(step/2) / float64(hi)
+		atLim := per * float64(l.ok) / (1 << 20)
+		worst = max(worst, atLim)
+		t.Logf("%-16s %5d levels at the limit: stack of %2d MiB from %5d levels on, %4.0f bytes a level, %4.1f MiB at the limit", l.name, l.ok, step>>20, hi, per, atLim)
+	}
+	t.Logf("most stack at the limit: %.1f MiB", worst)
 }
