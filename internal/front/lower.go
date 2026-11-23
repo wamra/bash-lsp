@@ -209,8 +209,21 @@ func (l *lowerer) missing(n *tree.Node, p syntax.Pos, tok string) {
 	l.errs = append(l.errs, tree.SyntaxError{Range: tree.Range{Start: n.Range.End, End: n.Range.End}, Msg: "missing " + tok})
 }
 
+// rng is the range [a, b), shrunk past NUL bytes at either end: the lexer
+// ignores NUL, so a literal's value omits it while its positions span it. Used
+// for name ranges, which must hold the name's bytes and nothing else.
 func (l *lowerer) rng(a, b syntax.Pos) tree.Range {
-	return tree.Range{Start: l.pos(a), End: l.pos(b)}
+	s, e := l.base.Offset+int(a.Offset()), l.base.Offset+int(b.Offset())
+	src := l.f.Src
+	if s >= 0 && e <= len(src) && s <= e {
+		for s < e && src[s] == 0 {
+			s++
+		}
+		for e > s && src[e-1] == 0 {
+			e--
+		}
+	}
+	return tree.Range{Start: l.f.PosAt(s), End: l.f.PosAt(e)}
 }
 
 func (l *lowerer) stmts(list []*syntax.Stmt) []*tree.Node {
