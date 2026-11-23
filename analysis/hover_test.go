@@ -38,7 +38,16 @@ func TestHoverFunction(t *testing.T) { // AC-08, C14, C14b
 	md, _ = q.hover("lib/util.sh", "log() {", 0, 1)
 	wantLines(t, md, "log [args...]", "Log a message to stderr.")
 	md, _ = q.hover("main.sh", `  br "$name"`, 0, 2) // hover on an alias call shows the function and says how
-	wantLines(t, md, "build_release <name>", "through alias `br`")
+	wantLines(t, md, "build_release <name>", "calls `build_release` through alias `br` (resolved/alias)")
+	noLine(t, md, "Reached through") // the label line says strictly more (ruling R50)
+}
+
+// noLine fails when a line of md contains bad.
+func noLine(t *testing.T, md, bad string) {
+	t.Helper()
+	if strings.Contains(md, bad) {
+		t.Fatalf("a line contains %q in:\n%s", bad, md)
+	}
 }
 
 func TestHoverFunctionExactText(t *testing.T) {
@@ -81,7 +90,8 @@ func TestHoverVariable(t *testing.T) {
 	if !ok {
 		t.Fatal()
 	}
-	wantLines(t, md, "build_release <name>", "Reached through variable `cmd`")
+	wantLines(t, md, "build_release <name>", "calls `build_release` through variable `cmd` (candidate/variable-constant)")
+	noLine(t, md, "Reached through")
 	md, ok = q.hover("main.sh", `local cmd=build_release`, 0, 6)
 	if !ok {
 		t.Fatal()

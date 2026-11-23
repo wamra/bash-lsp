@@ -141,7 +141,7 @@ func TestCallHierarchyPrepare(t *testing.T) { // C09
 		}
 	}
 
-	// Elsewhere: a variable, a builtin, a comment-free blank spot.
+	// Elsewhere: a variable, a builtin, the path of a `source` command.
 	for _, at := range []struct {
 		text string
 		col  int
@@ -461,4 +461,65 @@ func readFile(t *testing.T, root, rel string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// Item data comes back from the client and is untrusted: whatever it names,
+// the answer is from the current snapshot only. A file the snapshot does not
+// hold (outside the root, not a shell file, a name the snapshot has no
+// function for) answers [], never an error, and is never read from disk: the
+// files outside the root and the text file below define and call functions,
+// so reading and parsing one would answer calls.
+func TestCallHierarchyHostileItemData(t *testing.T) {
+	root := copyCorpus(t)
+	outside := t.TempDir()
+	evil := "evil() { victim; }\nvictim() { :; }\nevil\n"
+	if err := os.WriteFile(filepath.Join(outside, "evil.sh"), []byte(evil), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "notes.txt"), []byte(evil), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := client(t, root)
+	c.open("main.sh")
+	main := filepath.Join(root, "main.sh")
+	long := strings.Repeat("a", 2<<20)
+	data := func(v any) json.RawMessage { b, _ := json.Marshal(v); return b }
+	item := func(uri, name string, kind int, d json.RawMessage) map[string]any {
+		it := map[string]any{"name": name, "kind": kind, "uri": uri,
+			"range": rng(0, 0, 0, 0), "selectionRange": rng(0, 0, 0, 0)}
+		if d != nil {
+			it["data"] = d
+		}
+		return it
+	}
+	mainURI := c.uri("main.sh")
+	for name, params := range map[string]any{
+		"outside the root":         map[string]any{"item": item(mainURI, "evil", 12, data(map[string]any{"path": filepath.Join(outside, "evil.sh"), "name": "evil"}))},
+		"outside, file item":       map[string]any{"item": item(mainURI, "x", 1, data(map[string]any{"path": filepath.Join(outside, "evil.sh"), "name": ""}))},
+		"dot-dot to /etc/hosts":    map[string]any{"item": item(mainURI, "x", 1, data(map[string]any{"path": root + "/../../../etc/hosts", "name": ""}))},
+		"not a shell file":         map[string]any{"item": item(mainURI, "evil", 12, data(map[string]any{"path": filepath.Join(root, "notes.txt"), "name": "evil"}))},
+		"2 MiB path":               map[string]any{"item": item(mainURI, "x", 12, data(map[string]any{"path": "/" + long, "name": "deploy"}))},
+		"2 MiB name":               map[string]any{"item": item(mainURI, "x", 12, data(map[string]any{"path": main, "name": long}))},
+		"a variable's name":        map[string]any{"item": item(mainURI, "name", 12, data(map[string]any{"path": main, "name": "name"}))},
+		"data 12345":               map[string]any{"item": item("file:///etc/passwd", "x", 12, json.RawMessage(`12345`))},
+		"data array":               map[string]any{"item": item("file:///etc/passwd", "x", 12, json.RawMessage(`[1,2,3]`))},
+		"data null":                map[string]any{"item": item("file:///etc/passwd", "x", 1, json.RawMessage(`null`))},
+		"data path a number":       map[string]any{"item": item("file:///etc/passwd", "x", 1, json.RawMessage(`{"path":5}`))},
+		"uri /etc/passwd":          map[string]any{"item": item("file:///etc/passwd", "root", 12, nil)},
+		"uri outside, no data":     map[string]any{"item": item("file://"+filepath.ToSlash(filepath.Join(outside, "evil.sh")), "evil", 12, nil)},
+		"uri not a file scheme":    map[string]any{"item": item("https://example.invalid/x.sh", "deploy", 12, nil)},
+		"missing item":             map[string]any{},
+		"item with no uri or data": map[string]any{"item": map[string]any{"name": "deploy", "kind": 12}},
+	} {
+		for _, m := range []string{"callHierarchy/incomingCalls", "callHierarchy/outgoingCalls"} {
+			r := c.rawCall(m, params)
+			if r.Error != nil || string(r.Result) != "[]" {
+				t.Errorf("%s, %s: error %+v, result %.200s; want []", name, m, r.Error, r.Result)
+			}
+		}
+	}
+	// The session is intact.
+	if got := c.prepare("main.sh", "deploy app", 0); len(got) != 1 {
+		t.Fatalf("prepare after hostile items: %d items", len(got))
+	}
 }

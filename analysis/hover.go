@@ -43,7 +43,6 @@ func (s *Snapshot) Hover(path string, offset int) (markdown string, rng tree.Ran
 		return "", tree.Range{}, false
 	}
 	var sym *Symbol
-	via, viaVar := "", ""
 	switch {
 	case h.decl != nil:
 		sym = s.declSym[h.decl]
@@ -54,24 +53,15 @@ func (s *Snapshot) Hover(path string, offset int) (markdown string, rng tree.Ran
 	case len(h.binds) > 0:
 		sym = h.binds[0].Sym
 		rng = h.binds[0].Use.Range
-		for _, b := range h.binds {
-			if b.Sym == sym && b.Reason == ReasonAlias {
-				via = b.Use.Name
-			}
-		}
-		if u := h.binds[0].Use; u.Via == ViaVariable {
-			viaVar = u.Name
-		}
 	}
 	if sym == nil {
 		return "", tree.Range{}, false
 	}
 	switch sym.Kind {
 	case DeclFunction:
-		md := s.hoverFunction(sym, via)
-		if viaVar != "" {
-			md += "Reached through variable `" + viaVar + "`\n"
-		}
+		// How a call reaches the function (through an alias, a variable, a
+		// string) is said by the label lines.
+		md := s.hoverFunction(sym)
 		if len(h.binds) > 0 {
 			for _, l := range s.siteLabels(file, h.binds) {
 				md += l + "\n"
@@ -143,7 +133,7 @@ func (s *Snapshot) siteLabels(file int, binds []Binding) []string {
 
 func fence(line string) string { return "```bash\n" + line + "\n```\n" }
 
-func (s *Snapshot) hoverFunction(sym *Symbol, via string) string {
+func (s *Snapshot) hoverFunction(sym *Symbol) string {
 	var sb strings.Builder
 	sb.WriteString(fence(s.signature(sym.Decls[0])))
 	if len(sym.Decls) > 1 {
@@ -183,9 +173,6 @@ func (s *Snapshot) hoverFunction(sym *Symbol, via string) string {
 	}
 	if exits {
 		sb.WriteString("Calls `exit`\n")
-	}
-	if via != "" {
-		sb.WriteString("Reached through alias `" + via + "`\n")
 	}
 	return sb.String()
 }

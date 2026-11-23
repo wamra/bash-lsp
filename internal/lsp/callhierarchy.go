@@ -44,13 +44,12 @@ func (s *server) item(cs converters, snap *analysis.Snapshot, n analysis.Node, l
 		it.Detail += " · " + strings.Join(labels, ", ")
 	}
 	data := itemData{Path: n.Path}
-	f := fileOf(snap, n.Path)
 	if d := snap.FuncDecl(n); d != nil {
 		it.Name, it.Kind, data.Name = n.Func.Name, kindFunction, n.Func.Name
 		it.Range, it.SelectionRange = s.rangeIn(cs, snap, n.Path, d.Node.Range), s.rangeIn(cs, snap, n.Path, d.NameRange)
 	} else {
 		it.Name, it.Kind = s.relPath(n.Path), kindFile
-		if f != nil {
+		if f := fileOf(snap, n.Path); f != nil {
 			whole := tree.Range{Start: f.PosAt(0), End: f.PosAt(len(f.Src))}
 			it.Range = cs.rangeOf(f, whole)
 			it.SelectionRange = Range{Start: it.Range.Start, End: it.Range.Start}
