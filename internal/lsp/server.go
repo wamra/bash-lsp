@@ -125,11 +125,11 @@ type server struct {
 
 // Serve runs the server until the client exits. It returns nil after `exit`
 // following `shutdown`, and an error if `exit` arrives first or the input ends.
-func Serve(in io.Reader, out io.Writer, logw io.Writer, version string) error {
+func newServer(in io.Reader, out io.Writer, logw io.Writer, version string) *server {
 	if logw == nil {
 		logw = io.Discard
 	}
-	s := &server{
+	return &server{
 		c:       newConn(in, out),
 		log:     log.New(logw, "bash-lsp: ", log.LstdFlags),
 		version: version,
@@ -138,6 +138,10 @@ func Serve(in io.Reader, out io.Writer, logw io.Writer, version string) error {
 		byURI:   map[string]string{},
 		pending: map[string]string{},
 	}
+}
+
+func Serve(in io.Reader, out io.Writer, logw io.Writer, version string) error {
+	s := newServer(in, out, logw, version)
 	for !s.exit {
 		body, err := s.c.read()
 		if err != nil {
@@ -470,9 +474,18 @@ func (s *server) didClose(raw json.RawMessage) *rpcError {
 		return nil
 	}
 	delete(s.docs, d.path)
+	for u, path := range s.byURI { // every URI that led to it (case variants)
+		if path == d.path {
+			delete(s.byURI, u)
+		}
+	}
 	d.be.CloseOverlay(d.path)
-	// Diagnostics belong to open documents: clear them.
+	// Diagnostics belong to open documents: clear them, under the URI they
+	// were published under too.
 	s.c.notify("textDocument/publishDiagnostics", publishDiagnosticsParams{URI: p.TextDocument.URI, Diagnostics: []Diagnostic{}})
+	if d.uri != p.TextDocument.URI {
+		s.c.notify("textDocument/publishDiagnostics", publishDiagnosticsParams{URI: d.uri, Diagnostics: []Diagnostic{}})
+	}
 	return nil
 }
 

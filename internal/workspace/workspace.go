@@ -69,6 +69,35 @@ func keyFor(p string, fold bool) string {
 // key is the map key of p in this workspace.
 func (w *Workspace) key(p string) string { return keyFor(p, w.fold) }
 
+// skipDir reports whether a directory named name is never walked, with this
+// workspace's case rule.
+func (w *Workspace) skipDir(name string) bool {
+	if !w.fold {
+		return skipDirs[name]
+	}
+	for d := range skipDirs {
+		if strings.EqualFold(d, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// inSkipDir reports whether a component of path below the root (the last
+// included) is a skipped directory name. String-only: no file is touched.
+func (w *Workspace) inSkipDir(path string) bool {
+	rel, err := filepath.Rel(w.root, path)
+	if err != nil {
+		return false
+	}
+	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+		if w.skipDir(part) {
+			return true
+		}
+	}
+	return false
+}
+
 // detectFold reports whether the volume of a resolved root is
 // case-insensitive; a variable so tests can force it.
 var detectFold = caseInsensitive
@@ -358,6 +387,25 @@ func (w *Workspace) SetOverlay(path string, version int, text []byte) {
 	w.rebuild()
 }
 
+// diskSpelling is c with its last element spelled as the directory on disk
+// spells it (on a folding volume, after a case-only rename, the workspace
+// still holds the old spelling); c when no entry differs from it in case
+// only. Called only when an event's spelling disagrees with the held one.
+// Caller holds w.mu; w.fold is set.
+func (w *Workspace) diskSpelling(c string) string {
+	base := filepath.Base(c)
+	ents, err := os.ReadDir(filepath.Dir(c))
+	if err != nil {
+		return c
+	}
+	for _, e := range ents {
+		if e.Name() != base && strings.EqualFold(e.Name(), base) {
+			return filepath.Join(filepath.Dir(c), e.Name())
+		}
+	}
+	return c
+}
+
 // OversizeFile is the tree of a document over the size limit: no text, no
 // statements, Skipped set to reason.
 func OversizeFile(path, reason string) *tree.File {
@@ -405,6 +453,8 @@ func (w *Workspace) Refresh(paths ...string) {
 	}
 	full := len(paths) == 0 || len(paths) > maxRefreshPaths
 	var todo []string
+	at := map[string]int{}         // index in todo by key: one refresh per file
+	spelled := map[string]string{} // the first spelling an event gave for each key
 	for _, p := range paths {
 		if full {
 			break
@@ -414,13 +464,31 @@ func (w *Workspace) Refresh(paths ...string) {
 		}
 		c := w.canon(p, false)
 		k := w.key(c)
-		if !w.within(c) || w.excluded(c) || w.overlays[k] != nil {
+		if !w.within(c) || w.excluded(c) || w.overlays[k] != nil || w.inSkipDir(c) {
 			continue
 		}
-		if filepath.Base(c) == ".gitignore" || w.isDirEvent(c, k) {
+		gi := filepath.Base(c) == ".gitignore"
+		if dir := !gi && w.isDirEvent(c, k); gi || dir {
+			// Inside an ignored directory nothing is listed and no .gitignore
+			// is read: the walk would not change.
+			if rel, err := filepath.Rel(w.root, c); err == nil && rel != "." && w.ignoredPath(rel, dir) {
+				continue
+			}
 			full = true
 			break
 		}
+		if i, ok := at[k]; ok {
+			// A case-only rename names one file twice (delete and create):
+			// on disk only one spelling exists.
+			if w.fold && filepath.Base(spelled[k]) != filepath.Base(p) {
+				todo[i] = w.diskSpelling(todo[i])
+			}
+			continue
+		}
+		if w.fold && filepath.Base(p) != filepath.Base(c) { // the event's spelling is not the one held
+			c = w.diskSpelling(c)
+		}
+		at[k], spelled[k] = len(todo), p
 		todo = append(todo, c)
 	}
 	if full {
@@ -442,8 +510,17 @@ func (w *Workspace) Refresh(paths ...string) {
 // isDirEvent reports whether the canonical path c (key k) names a directory
 // now, or named one the walk held files under. Caller holds w.mu.
 func (w *Workspace) isDirEvent(c, k string) bool {
-	if fi, err := os.Stat(c); err == nil {
-		return fi.IsDir()
+	if fi, err := os.Lstat(c); err == nil {
+		if fi.Mode()&os.ModeSymlink == 0 {
+			return fi.IsDir()
+		}
+		// As the walk: a link to a directory inside the root is walked.
+		rt, err := filepath.EvalSymlinks(c)
+		if err != nil || !w.within(rt) {
+			return false
+		}
+		ti, err := os.Stat(rt)
+		return err == nil && ti.IsDir()
 	}
 	if _, ok := w.disk[k]; ok {
 		return false
@@ -759,7 +836,7 @@ func (w *Workspace) walk() (cands []candidate) {
 				isDir, target = true, rt
 			}
 			if isDir {
-				if skipDirs[name] || set.Ignored(relp, true) || visited[w.key(target)] || w.excluded(target) {
+				if w.skipDir(name) || set.Ignored(relp, true) || visited[w.key(target)] || w.excluded(target) {
 					continue
 				}
 				visited[w.key(target)] = true
@@ -809,7 +886,7 @@ func (w *Workspace) reconcileAll() (changed bool) {
 	for _, c := range cands {
 		k := w.key(c.path)
 		seen[k] = true
-		if e := w.disk[k]; e != nil && e.size == c.size && e.mtime == c.mtime {
+		if e := w.disk[k]; e != nil && e.size == c.size && e.mtime == c.mtime && e.path == c.path {
 			continue
 		}
 		todo = append(todo, c)
@@ -837,7 +914,7 @@ func (w *Workspace) reconcileAll() (changed bool) {
 				return
 			}
 			h := sha256.Sum256(src)
-			if e := w.disk[w.key(c.path)]; e != nil && e.hash == h { // map is only read during this phase
+			if e := w.disk[w.key(c.path)]; e != nil && e.hash == h && e.path == c.path { // map is only read during this phase
 				loaded[i].e = &entry{path: e.path, size: c.size, mtime: c.mtime, hash: h, dialect: e.dialect, facts: e.facts}
 				return
 			}
@@ -915,7 +992,7 @@ func (w *Workspace) refreshOne(path string) (changed bool) {
 	}
 	delete(w.skips, k)
 	h := sha256.Sum256(src)
-	if old != nil && old.hash == h {
+	if old != nil && old.hash == h && old.path == path {
 		old.size, old.mtime = fi.Size(), fi.ModTime().UnixNano()
 		return false
 	}
@@ -933,16 +1010,28 @@ func (w *Workspace) accepts(path string) status {
 	if err != nil || !w.within(path) || w.excluded(path) {
 		return notShell
 	}
+	if w.ignoredPath(rel, false) {
+		return notShell
+	}
+	return classify(path)
+}
+
+// ignoredPath reports whether the walk would not reach rel (relative to the
+// root): a directory above it is skipped or git-ignored, or rel itself is
+// git-ignored (as a directory when dir). Skipped names are checked before
+// any .gitignore is read. The .gitignore files of the directories on the
+// way are read.
+func (w *Workspace) ignoredPath(rel string, dir bool) bool {
 	parts := strings.Split(filepath.ToSlash(rel), "/")
-	for _, part := range parts[:len(parts)-1] { // before any .gitignore is read
-		if skipDirs[part] {
-			return notShell
+	for _, part := range parts[:len(parts)-1] {
+		if w.skipDir(part) {
+			return true
 		}
 	}
 	set := &ignore.Set{}
-	dir, relDir := w.root, ""
+	d, relDir := w.root, ""
 	for i, part := range parts {
-		if data, ok := w.readConfig(filepath.Join(dir, ".gitignore"), maxIgnoreBytes); ok {
+		if data, ok := w.readConfig(filepath.Join(d, ".gitignore"), maxIgnoreBytes); ok {
 			set = set.Clone()
 			set.Add(ignore.Parse(relDir, data))
 		}
@@ -950,16 +1039,16 @@ func (w *Workspace) accepts(path string) status {
 		if relDir != "" {
 			relp = relDir + "/" + part
 		}
-		last := i == len(parts)-1
-		if !last && (skipDirs[part] || set.Ignored(relp, true)) {
-			return notShell
+		if i < len(parts)-1 {
+			if set.Ignored(relp, true) {
+				return true
+			}
+		} else if set.Ignored(relp, dir) {
+			return true
 		}
-		if last && set.Ignored(relp, false) {
-			return notShell
-		}
-		dir, relDir = filepath.Join(dir, part), relp
+		d, relDir = filepath.Join(d, part), relp
 	}
-	return classify(path)
+	return false
 }
 
 // ---- .shellcheckrc ----

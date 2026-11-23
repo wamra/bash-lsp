@@ -43,7 +43,8 @@ func resolveRoot(p string) string {
 
 // openFolders opens the roots one after the other, each without the
 // subtrees of the others nested in it, so no file is read or parsed twice
-// and the cost is the sum of the folders. A root that does not open is
+// and the cost is the sum of the folders (a root that resolves but fails to
+// open is given back to its enclosing folder afterwards, by one re-walk). A root that does not open is
 // logged and left out; one that resolves to a root already open is a
 // duplicate.
 func (s *server) openFolders(roots []string) []*folder {
@@ -72,6 +73,16 @@ func (s *server) openFolders(roots []string) []*folder {
 			continue
 		}
 		out = append(out, &folder{client: r, ws: ws})
+	}
+	// Each folder was opened without every root that resolved; only the
+	// folders that opened exclude (as at runtime). A no-op unless a root
+	// failed to open inside another.
+	open := make([]string, len(out))
+	for i, f := range out {
+		open[i] = f.ws.Root()
+	}
+	for _, f := range out {
+		f.ws.SetExcluded(open)
 	}
 	return out
 }
@@ -152,10 +163,12 @@ func (s *server) toClient(p string) string {
 }
 
 // didChangeFolders applies workspace/didChangeWorkspaceFolders: removed
-// folders are dropped with their workspaces, added ones are opened (on the
-// message loop, as any other change), enclosing folders give up or take back
-// the subtrees of nested ones, and open documents move to whatever serves
-// them now and are published again from there.
+// folders are dropped with their workspaces, added ones are opened,
+// enclosing folders give up or take back the subtrees of nested ones, and
+// open documents move to whatever serves them now and are published again
+// from there. Known limit: the opening and the re-walks run synchronously
+// on the message loop, so requests wait for them (docs/m1-deferred.md, "M3
+// limits").
 func (s *server) didChangeFolders(raw json.RawMessage) *rpcError {
 	var p didChangeWorkspaceFoldersParams
 	if rerr := decode(raw, &p); rerr != nil {

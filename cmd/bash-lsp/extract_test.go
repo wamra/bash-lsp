@@ -514,14 +514,22 @@ func keyOrder(t *testing.T, line string) []string {
 // The key order of a record is documented (docs/code-index-integration.md
 // section 3 and the golden-file note): pin it on raw output.
 func TestExtractRawKeyOrder(t *testing.T) {
-	root := writeRoot(t, map[string]string{"a.sh": "alias g=f\nf() { :; }\nrun() {\n  f\n  \"$x\"\n}\nsource ./gone.sh\n"})
+	root := writeRoot(t, map[string]string{
+		"a.sh":    "alias g=f\nf() { :; }\nrun() {\n  f\n  \"$x\"\n  ./tool.sh\n}\nsource ./gone.sh\n",
+		"tool.sh": "#!/bin/bash\n:\n",
+		"bad.sh":  "f() {\n  echo $(\n",
+		"z.zsh":   "#!/bin/zsh\n:\n",
+	})
 	out := runOK(t, "extract", "--root", root)
 	want := map[string][]string{
-		"func":      {"t", "file", "line", "col", "endLine", "endCol", "name"},
-		"alias":     {"t", "file", "line", "col", "endLine", "endCol", "alias", "target"},
-		"call":      {"t", "file", "line", "col", "name", "in", "to", "resolution", "reason"},
-		"dynamic":   {"t", "file", "line", "col", "expr", "in", "resolution", "reason"},
-		"dotsource": {"t", "file", "line", "col", "path", "expr", "resolution", "reason"},
+		"func":        {"t", "file", "line", "col", "endLine", "endCol", "name"},
+		"alias":       {"t", "file", "line", "col", "endLine", "endCol", "alias", "target"},
+		"call":        {"t", "file", "line", "col", "name", "in", "to", "resolution", "reason"},
+		"dynamic":     {"t", "file", "line", "col", "expr", "in", "resolution", "reason"},
+		"dotsource":   {"t", "file", "line", "col", "path", "expr", "resolution", "reason"},
+		"invoke":      {"t", "file", "line", "col", "path", "expr", "in", "resolution", "reason"},
+		"parse_error": {"t", "file", "line", "col", "first", "count"},
+		"error":       {"t", "file", "line", "col", "message"},
 	}
 	seen := map[string]bool{}
 	for _, line := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {

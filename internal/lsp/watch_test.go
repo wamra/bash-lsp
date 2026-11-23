@@ -575,9 +575,14 @@ func sameDir(t *testing.T, p string, fi os.FileInfo) bool {
 
 // ---- concurrency ----
 
-// Events and requests sent while the workspace is still being opened (the
-// one place the server runs work off its message loop) are served once it
-// is open. Run with -race.
+// Events and requests sent while the workspace is still being opened are
+// served, in order, once it is open. The handlers do not interleave with
+// the open: the first one blocks the message loop in wait() until the
+// opener goroutine (the one place the server works off the loop) has
+// published the folders. Under -race this checks that hand-over (folders
+// written by the opener, read by the loop after ready is closed); it is not
+// a test of handlers running concurrently with each other, which the
+// server never does.
 func TestEventsDuringOpen(t *testing.T) {
 	root := t.TempDir()
 	for i := 0; i < 300; i++ {
@@ -648,5 +653,72 @@ func TestTwoDocumentsOutsideEveryRoot(t *testing.T) {
 	}
 	if len(ls) != 1 || ls[0].URI != workspace.URIFromPath(filepath.Join(out, "p.sh")) {
 		t.Fatalf("definition across documents outside every folder: %+v", ls)
+	}
+}
+
+// A document opened under one URI and closed under another that leads to
+// it (a case variant on a folding volume) leaves no entry in the URI map,
+// and the diagnostics published under the opening URI are cleared.
+func TestCloseUnderCaseVariantURI(t *testing.T) {
+	root := t.TempDir()
+	put(t, filepath.Join(root, "main.sh"), "if then\n")
+	real, _ := filepath.EvalSymlinks(root)
+	if fi, err := os.Stat(strings.ToUpper(real)); err != nil || !sameDir(t, real, fi) {
+		t.Skip("case-sensitive volume")
+	}
+	var out syncBuffer
+	s := newServer(strings.NewReader(""), &out, io.Discard, "t")
+	send := func(method string, params any) {
+		b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": method, "params": params})
+		s.dispatch(b)
+	}
+	b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize",
+		"params": map[string]any{"capabilities": map[string]any{}, "rootUri": workspace.URIFromPath(root)}})
+	s.dispatch(b)
+	send("initialized", map[string]any{})
+	upper := workspace.URIFromPath(filepath.Join(root, "MAIN.sh"))
+	lower := workspace.URIFromPath(filepath.Join(root, "main.sh"))
+	send("textDocument/didOpen", map[string]any{"textDocument": map[string]any{"uri": upper, "languageId": "sh", "version": 1, "text": "if then\n"}})
+	send("textDocument/didClose", map[string]any{"textDocument": map[string]any{"uri": lower}})
+	if len(s.byURI) != 0 || len(s.docs) != 0 {
+		t.Fatalf("after close: byURI %v, %d docs", s.byURI, len(s.docs))
+	}
+	// The last diagnostics for the opening URI are empty.
+	cn := newConn(strings.NewReader(out.String()), io.Discard)
+	last := map[string]int{}
+	for {
+		body, err := cn.read()
+		if err != nil {
+			break
+		}
+		var m struct {
+			Method string                   `json:"method"`
+			Params publishDiagnosticsParams `json:"params"`
+		}
+		_ = json.Unmarshal(body, &m)
+		if m.Method == "textDocument/publishDiagnostics" {
+			last[m.Params.URI] = len(m.Params.Diagnostics)
+		}
+	}
+	if n, ok := last[upper]; !ok || n != 0 {
+		t.Fatalf("diagnostics left under %s: %v", upper, last)
+	}
+}
+
+// A folder that resolves but does not open (here a file) excludes nothing:
+// only open folders take a subtree from an enclosing one, at startup as at
+// runtime.
+func TestFolderThatFailsToOpenExcludesNothing(t *testing.T) {
+	root := t.TempDir()
+	put(t, filepath.Join(root, "a.sh"), "a_fn() { :; }\n")
+	put(t, filepath.Join(root, "sub", "b.sh"), "b_fn() { :; }\n")
+	c := clientWith(t, clientCfg{folders: []string{root, filepath.Join(root, "a.sh")}})
+	c.root = root
+	if got := c.symbols("_fn"); !eq(got, "a.sh:1 a_fn", "sub/b.sh:1 b_fn") {
+		t.Fatalf("startup: %v", got)
+	}
+	c.folders([]string{filepath.Join(root, "sub", "b.sh")}, nil)
+	if got := c.symbols("_fn"); !eq(got, "a.sh:1 a_fn", "sub/b.sh:1 b_fn") {
+		t.Fatalf("runtime: %v", got)
 	}
 }

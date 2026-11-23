@@ -319,3 +319,119 @@ func TestConcurrentRefreshAndQueries(t *testing.T) {
 		t.Fatalf("stale after the last refresh: %+v", got)
 	}
 }
+
+// ---- fix round 1 ----
+
+// rewalked reports whether a full walk ran: b.sh was changed on disk before
+// the call and only a walk (no event names it) picks the change up.
+func rewalkProbe(t *testing.T, w *Workspace) func() bool {
+	t.Helper()
+	b := filepath.Join(w.Root(), "b.sh")
+	write(t, b, "b_new() { :; }\n")
+	g := w.Snapshot().Generation()
+	return func() bool {
+		return w.Snapshot().Generation() != g || len(w.Snapshot().WorkspaceSymbols("b_new", 5)) != 0
+	}
+}
+
+// Events in skipped or ignored directories (every git operation makes them
+// under a `**/*` watch) are dropped before the directory and .gitignore
+// checks: no re-walk, no rebuild.
+func TestRefreshSkippedDirectoriesDoNotRewalk(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "a.sh"), "a() { :; }\n")
+	write(t, filepath.Join(root, "b.sh"), "b_old() { :; }\n")
+	write(t, filepath.Join(root, ".gitignore"), "build/\n")
+	write(t, filepath.Join(root, ".git", "objects", "ab", "cd"), "x")
+	write(t, filepath.Join(root, "node_modules", "p", ".gitignore"), "*\n")
+	write(t, filepath.Join(root, "build", "sub", "x.sh"), "x() { :; }\n")
+	w := open(t, root)
+	r := w.Root()
+	for _, p := range []string{
+		filepath.Join(r, ".git"),
+		filepath.Join(r, ".git", "objects", "ab"),
+		filepath.Join(r, ".git", "objects", "gone"),
+		filepath.Join(r, "node_modules", "p", ".gitignore"),
+		filepath.Join(r, "node_modules", "p"),
+		filepath.Join(r, "build", "sub"),
+		filepath.Join(r, "build", "sub", ".gitignore"),
+	} {
+		rewalked := rewalkProbe(t, w)
+		w.Refresh(p)
+		if rewalked() {
+			t.Fatalf("an event for %s re-walked the root", p)
+		}
+		write(t, filepath.Join(r, "b.sh"), "b_old() { :; }\n")
+		w.Refresh(filepath.Join(r, "b.sh"))
+	}
+}
+
+// A symlink to a directory outside the root is not a directory event: the
+// walk does not follow it, so no re-walk.
+func TestRefreshSymlinkOutIsNotADirectoryEvent(t *testing.T) {
+	outside := t.TempDir()
+	root := t.TempDir()
+	write(t, filepath.Join(root, "b.sh"), "b_old() { :; }\n")
+	symlink(t, outside, filepath.Join(root, "link"))
+	w := open(t, root)
+	rewalked := rewalkProbe(t, w)
+	w.Refresh(filepath.Join(w.Root(), "link"))
+	if rewalked() {
+		t.Fatal("an event for a symlink out of the root re-walked")
+	}
+}
+
+// On a folding workspace skipDirs fold too: `.GIT` is `.git`.
+func TestSkipDirsFoldForced(t *testing.T) {
+	old := detectFold
+	detectFold = func(string) bool { return true }
+	defer func() { detectFold = old }()
+	root := t.TempDir()
+	write(t, filepath.Join(root, "a.sh"), "a() { :; }\n")
+	write(t, filepath.Join(root, ".GIT", "x.sh"), "x() { :; }\n")
+	write(t, filepath.Join(root, "NODE_MODULES", "y.sh"), "y() { :; }\n")
+	w := open(t, root)
+	if got := rels(w); !reflect.DeepEqual(got, []string{"a.sh"}) {
+		t.Fatalf("walk listed a skipped directory in another case: %v", got)
+	}
+	for _, p := range []string{".GIT/x.sh", ".git/x.sh", "NODE_MODULES/y.sh"} {
+		w.Refresh(filepath.Join(w.Root(), p))
+		if got := rels(w); !reflect.DeepEqual(got, []string{"a.sh"}) {
+			t.Fatalf("Refresh(%s) listed %v", p, got)
+		}
+	}
+}
+
+// A case-only rename on a folding volume takes the new spelling, whichever
+// order the delete and create events come in, and through a full walk.
+func TestCaseOnlyRename(t *testing.T) {
+	root := t.TempDir()
+	if !volumeFolds(t, root) {
+		t.Skip("case-sensitive volume")
+	}
+	write(t, filepath.Join(root, "a.sh"), "a_fn() { :; }\n")
+	write(t, filepath.Join(root, "lib", "c.sh"), "c_fn() { :; }\n")
+	w := open(t, root)
+	r := w.Root()
+	mv := func(from, to string) {
+		t.Helper()
+		if err := os.Rename(filepath.Join(r, from), filepath.Join(r, to)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mv("a.sh", "A.sh")
+	w.Refresh(filepath.Join(r, "a.sh"), filepath.Join(r, "A.sh"))
+	if got := rels(w); !reflect.DeepEqual(got, []string{"A.sh", "lib/c.sh"}) {
+		t.Fatalf("delete then create: %v", got)
+	}
+	mv("A.sh", "a.sh")
+	w.Refresh(filepath.Join(r, "a.sh"), filepath.Join(r, "A.sh"))
+	if got := rels(w); !reflect.DeepEqual(got, []string{"a.sh", "lib/c.sh"}) {
+		t.Fatalf("create then delete: %v", got)
+	}
+	mv("lib", "LIB")
+	w.Refresh(filepath.Join(r, "lib"), filepath.Join(r, "LIB"))
+	if got := rels(w); !reflect.DeepEqual(got, []string{"LIB/c.sh", "a.sh"}) {
+		t.Fatalf("directory renamed: %v", got)
+	}
+}
