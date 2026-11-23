@@ -46,8 +46,9 @@ type notification struct {
 	Params  any    `json:"params"`
 }
 
-// errBadFrame marks a frame whose headers are unusable; the stream is still
-// aligned on the next header block, so reading can continue.
+// errBadFrame marks a header block with a missing or invalid Content-Length.
+// The body, if any, was not consumed and its length is unknown, so the stream
+// cannot be re-aligned: it is fatal for the session.
 var errBadFrame = errors.New("bad frame")
 
 // conn reads and writes Content-Length framed messages.

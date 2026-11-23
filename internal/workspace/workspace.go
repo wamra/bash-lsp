@@ -226,6 +226,16 @@ func (w *Workspace) Report() Report {
 	return r
 }
 
+// Canon returns the key SetOverlay would store path under: the spelling the
+// discovery walk uses (symlinks in parent directories and in the final element
+// resolved, directory aliases renamed to the walk's names). Snapshot queries
+// take this spelling.
+func (w *Workspace) Canon(path string) string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.canon(path, true)
+}
+
 // canon returns the canonical spelling of a client path: parent directories
 // resolved through symlinks, then renamed to the walk's directory names (so a
 // directory alias and its target agree). With followFinal a symlink as the

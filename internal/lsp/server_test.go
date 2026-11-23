@@ -660,20 +660,95 @@ func TestExitWithoutShutdownAndEndOfInput(t *testing.T) {
 	}
 }
 
-func TestMalformedInput(t *testing.T) {
+// Well-framed messages that are not valid requests get an error reply and the
+// session continues.
+func TestMalformedMessagesKeepSessionAlive(t *testing.T) {
 	c := client(t, "")
-	c.sendRaw([]byte(`{not json`))
-	// A frame with no Content-Length, then a valid request must still work.
-	if _, err := c.in.Write([]byte("X-Junk: 1\r\n\r\n")); err != nil {
-		t.Fatal(err)
+	for _, tc := range []struct {
+		body string
+		code int
+	}{
+		{`{not json`, -32700},
+		{`[1,2,3]`, -32600},
+		{`{"jsonrpc":"2.0","id":"s","method":42}`, -32600},
+	} {
+		c.sendRaw([]byte(tc.body))
+		if r := c.waitReply("null"); r.Error == nil || r.Error.Code != tc.code {
+			t.Fatalf("%s: %+v", tc.body, r)
+		}
 	}
-	c.sendRaw([]byte(`[1,2,3]`))
-	c.sendRaw([]byte(`{"jsonrpc":"2.0","id":"s","method":42}`))
 	c.openText("a.sh", "f() { :; }\n")
 	if got := c.symbolNames("a.sh"); !eq(got, "f") {
 		t.Fatal(got)
 	}
-	// Request before it is allowed: handled in TestRequestBeforeInitialize.
+}
+
+// A header block without a valid Content-Length cannot be re-aligned (its body
+// length is unknown), so it ends the session; nothing but frames reaches stdout.
+func TestBadFrameWithBodyIsFatal(t *testing.T) {
+	for name, bad := range map[string]string{
+		"missing":  "Content-Type: x\r\n\r\n" + `{"jsonrpc":"2.0","id":9,"method":"shutdown"}`,
+		"invalid":  "Content-Length: abc\r\n\r\n" + `{"jsonrpc":"2.0","id":9,"method":"shutdown"}`,
+		"negative": "Content-Length: -5\r\n\r\n" + `{"jsonrpc":"2.0","id":9,"method":"shutdown"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			init := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}`
+			later := `{"jsonrpc":"2.0","id":2,"method":"shutdown"}`
+			in := fmt.Sprintf("Content-Length: %d\r\n\r\n%s%s", len(init), init, bad) +
+				fmt.Sprintf("Content-Length: %d\r\n\r\n%s", len(later), later)
+			var out, logs bytes.Buffer
+			err := Serve(strings.NewReader(in), &out, &logs, "t")
+			if err == nil || !strings.Contains(err.Error(), "Content-Length") {
+				t.Fatalf("Serve returned %v", err)
+			}
+			if !strings.Contains(logs.String(), "fatal framing error") {
+				t.Fatalf("log: %q", logs.String())
+			}
+			cn := newConn(&out, io.Discard)
+			frames := 0
+			for {
+				body, rerr := cn.read()
+				if rerr != nil {
+					if rerr != io.EOF {
+						t.Fatalf("stdout is not whole frames: %v", rerr)
+					}
+					break
+				}
+				if !json.Valid(body) {
+					t.Fatalf("bad frame %q", body)
+				}
+				frames++
+			}
+			if frames != 1 {
+				t.Fatalf("%d frames on stdout, want only the initialize reply", frames)
+			}
+		})
+	}
+}
+
+func TestDocumentThroughSymlinkedDirectoryInRoot(t *testing.T) {
+	root := copyCorpus(t)
+	if err := os.Symlink(filepath.Join(root, "lib"), filepath.Join(root, "liblink")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	c := client(t, root)
+	orig, err := os.ReadFile(filepath.Join(root, "lib", "util.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.openText("liblink/util.sh", string(orig)+"build_release\n")
+	if d := c.waitDiag("liblink/util.sh"); len(d) != 0 {
+		t.Fatalf("%+v", d)
+	}
+	names := c.symbolNames("liblink/util.sh")
+	if !contains(names, "build_release") || !contains(names, "log") {
+		t.Fatalf("documentSymbol through a directory alias: %v", names)
+	}
+	use := Position{strings.Count(string(orig), "\n"), 2}
+	ls := c.locs("textDocument/definition", "liblink/util.sh", use, nil)
+	if len(ls) != 1 || ls[0].URI != c.uri("liblink/util.sh") {
+		t.Fatalf("definition must come back under the client's URI %s: %+v", c.uri("liblink/util.sh"), ls)
+	}
 }
 
 func TestRequestBeforeInitialize(t *testing.T) {

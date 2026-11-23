@@ -25,6 +25,7 @@ type backend interface {
 	SetOverlay(path string, version int, text []byte)
 	CloseOverlay(path string)
 	Refresh(paths ...string)
+	Canon(path string) string // the key SetOverlay stores path under
 }
 
 // docsOnly serves open documents when the client gave no root.
@@ -75,6 +76,8 @@ func (d *docsOnly) CloseOverlay(path string) {
 
 func (d *docsOnly) Refresh(...string) {}
 
+func (d *docsOnly) Canon(path string) string { return filepath.Clean(path) }
+
 type document struct {
 	uri     string
 	version int
@@ -118,11 +121,10 @@ func Serve(in io.Reader, out io.Writer, logw io.Writer, version string) error {
 	}
 	for !s.exit {
 		body, err := s.c.read()
-		if errors.Is(err, errBadFrame) {
-			s.log.Printf("skipping frame: %v", err)
-			continue
-		}
 		if err != nil {
+			if errors.Is(err, errBadFrame) {
+				s.log.Printf("fatal framing error: %v", err)
+			}
 			if err == io.EOF {
 				return errors.New("lsp: input ended before exit")
 			}
@@ -137,9 +139,13 @@ func Serve(in io.Reader, out io.Writer, logw io.Writer, version string) error {
 }
 
 func (s *server) dispatch(body []byte) {
+	if !json.Valid(body) {
+		s.c.reply(nil, nil, &rpcError{codeParseError, "parse error: invalid JSON"})
+		return
+	}
 	var m message
 	if err := json.Unmarshal(body, &m); err != nil {
-		s.c.reply(nil, nil, &rpcError{codeParseError, "parse error: " + err.Error()})
+		s.c.reply(nil, nil, &rpcError{codeInvalidRequest, "invalid request: " + err.Error()})
 		return
 	}
 	if m.Method == "" {
@@ -322,17 +328,12 @@ func under(root, p string) (string, bool) {
 	return rel, true
 }
 
-// fromClient maps a path the client spelled to the workspace's spelling (the
-// workspace root has symlinks resolved).
+// fromClient maps a path the client spelled to the workspace's canonical
+// key: the one overlays are stored under and snapshot queries take.
 func (s *server) fromClient(p string) string {
 	p = filepath.Clean(p)
-	if s.clientRoot != "" {
-		if rel, ok := under(s.clientRoot, p); ok {
-			return filepath.Join(s.realRoot, rel)
-		}
-		if real, err := filepath.EvalSymlinks(filepath.Dir(p)); err == nil {
-			return filepath.Join(real, filepath.Base(p))
-		}
+	if s.be != nil {
+		return s.be.Canon(p)
 	}
 	return p
 }
@@ -347,7 +348,14 @@ func (s *server) toClient(p string) string {
 	return p
 }
 
-func (s *server) uriOf(path string) string { return workspace.URIFromPath(s.toClient(path)) }
+// uriOf names path to the client: a document the client opened keeps the URI
+// it used; other files get the root-rebased spelling.
+func (s *server) uriOf(path string) string {
+	if d := s.docs[path]; d != nil {
+		return d.uri
+	}
+	return workspace.URIFromPath(s.toClient(path))
+}
 
 func (s *server) pathOf(uri string) (string, *rpcError) {
 	p, err := workspace.PathFromURI(uri)

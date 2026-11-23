@@ -367,6 +367,24 @@ func TestOverlayThroughDirectoryAlias(t *testing.T) {
 	}
 }
 
+func TestCanonMatchesOverlayKey(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "real", "a.sh"), "old() { :; }\n")
+	symlink(t, "real", filepath.Join(root, "alias"))
+	w := open(t, root)
+	for _, p := range []string{"real/a.sh", "alias/a.sh"} {
+		in := filepath.Join(root, p)
+		w.SetOverlay(in, 1, []byte("new() { :; }\n"))
+		c := w.Canon(in)
+		if w.Snapshot().Facts(c) == nil {
+			t.Fatalf("Canon(%s) = %s is not a snapshot key: %v", p, c, w.Snapshot().Paths())
+		}
+	}
+	if a, b := w.Canon(filepath.Join(root, "real", "a.sh")), w.Canon(filepath.Join(root, "alias", "a.sh")); a != b {
+		t.Fatalf("aliases disagree: %s vs %s", a, b)
+	}
+}
+
 func TestShellcheckrcEditTakesEffect(t *testing.T) {
 	for _, mode := range []string{"path", "all"} {
 		t.Run(mode, func(t *testing.T) {
