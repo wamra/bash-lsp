@@ -767,8 +767,13 @@ func (l *lowerer) declArg(w *syntax.Word) *tree.Node {
 	if lit, ok := w.Parts[0].(*syntax.Lit); ok && lit.ValuePos.IsValid() {
 		if name := identPrefix.FindString(lit.Value); name != "" {
 			rest := lit.Value[len(name):]
-			start := l.pos(lit.ValuePos)
-			nameRange := tree.Range{Start: start, End: l.f.PosAt(start.Offset + len(name))}
+			// source offsets: lit.Value has no NUL bytes, the source may
+			nameStart := l.valueEnd(lit, 0, true)
+			nameEnd := l.valueEnd(lit, len(name), false)
+			nameRange := tree.Range{Start: l.f.PosAt(nameStart), End: l.f.PosAt(nameEnd)}
+			if text := l.f.Src[nameStart:nameEnd]; string(text) != name {
+				name = string(text)
+			}
 			bare := len(w.Parts) == 1 && rest == ""
 			valued := strings.HasPrefix(rest, "=") || strings.HasPrefix(rest, "+=")
 			if bare || valued {
@@ -777,7 +782,7 @@ func (l *lowerer) declArg(w *syntax.Word) *tree.Node {
 					eq := len(name) + strings.IndexByte(rest, '=') + 1 // offset just past '='
 					var parts []*tree.Node
 					if eq < len(lit.Value) {
-						ls := l.f.PosAt(start.Offset + eq)
+						ls := l.f.PosAt(l.valueEnd(lit, eq, true))
 						ln := &tree.Node{Kind: tree.KLit, Value: lit.Value[eq:], Range: tree.Range{Start: ls, End: l.pos(lit.ValueEnd)}}
 						parts = append(parts, ln)
 					}
@@ -800,6 +805,25 @@ func (l *lowerer) declArg(w *syntax.Word) *tree.Node {
 		}
 	}
 	return l.mk(tree.KAssign, syntax.Pos{}, syntax.Pos{}, l.word(w))
+}
+
+// valueEnd is the absolute source offset just after the n-th byte of lit's
+// value (the lexer's value omits NUL bytes that the source holds); with
+// skipNUL, past any NUL bytes that follow, so the offset starts the next byte.
+func (l *lowerer) valueEnd(lit *syntax.Lit, n int, skipNUL bool) int {
+	src := l.f.Src
+	i := min(max(l.base.Offset+int(lit.ValuePos.Offset()), 0), len(src))
+	for ; n > 0 && i < len(src); i++ {
+		if src[i] != 0 {
+			n--
+		}
+	}
+	if skipNUL {
+		for i < len(src) && src[i] == 0 {
+			i++
+		}
+	}
+	return i
 }
 
 // name is a name and its range. A NUL inside the literal is in the source but
