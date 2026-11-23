@@ -455,8 +455,23 @@ func (s *Snapshot) group(kind DeclKind, name string, es []declEntry) []*Symbol {
 		}
 		return x
 	}
-	for a := range es {
-		for b := a + 1; b < len(es); b++ {
+	// Declarations in one file are always one symbol (a file sees itself), so
+	// link them first and compare files, not declarations, below: a variable
+	// name declared 2,000 times in one file is not 2 million visibility tests.
+	// Every link goes to the lowest index, so a component's root is its lowest
+	// index whatever order the links are made in.
+	firstOf := map[int]int{}
+	var reps []int
+	for i, e := range es {
+		if f, ok := firstOf[e.file]; ok {
+			parent[i] = f
+		} else {
+			firstOf[e.file] = i
+			reps = append(reps, i)
+		}
+	}
+	for x, a := range reps {
+		for _, b := range reps[x+1:] {
 			if s.visible[es[a].file].has(es[b].file) {
 				if ra, rb := find(a), find(b); ra != rb {
 					if ra > rb {

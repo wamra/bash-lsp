@@ -210,3 +210,73 @@ func TestIncrementalBuildsEqualScratchBuilds(t *testing.T) {
 		}
 	}
 }
+
+// naiveGroup is group as first written: every pair of declarations is tested.
+func naiveGroup(s *Snapshot, es []declEntry) [][]*Decl {
+	parent := make([]int, len(es))
+	for i := range parent {
+		parent[i] = i
+	}
+	find := func(x int) int {
+		for parent[x] != x {
+			x = parent[x]
+		}
+		return x
+	}
+	for a := range es {
+		for b := a + 1; b < len(es); b++ {
+			if s.visible[es[a].file].has(es[b].file) {
+				if ra, rb := find(a), find(b); ra != rb {
+					if ra > rb {
+						ra, rb = rb, ra
+					}
+					parent[rb] = ra
+				}
+			}
+		}
+	}
+	var out [][]*Decl
+	at := map[int]int{}
+	for i, e := range es {
+		r := find(i)
+		k, ok := at[r]
+		if !ok {
+			k = len(out)
+			at[r] = k
+			out = append(out, nil)
+		}
+		out[k] = append(out[k], e.d)
+	}
+	return out
+}
+
+// group, which links same-file declarations first, makes the same symbols in
+// the same order as testing every pair, for any file order of the entries.
+func TestGroupMatchesPairwise(t *testing.T) {
+	rng := rand.New(rand.NewSource(11))
+	for trial := 0; trial < 300; trial++ {
+		n := 1 + rng.Intn(25)
+		adj := make([][]int, n)
+		for i := range adj {
+			for j := 0; j < n; j++ {
+				if rng.Float64() < 0.06 {
+					adj[i] = append(adj[i], j)
+				}
+			}
+		}
+		s := &Snapshot{paths: make([]string, n), declSym: map[*Decl]*Symbol{}}
+		s.computeVisibility(adj, make([]bool, n))
+		es := make([]declEntry, rng.Intn(40))
+		for i := range es {
+			es[i] = declEntry{file: rng.Intn(n), d: &Decl{Name: "x"}}
+		}
+		want := naiveGroup(s, es)
+		var got [][]*Decl
+		for _, sym := range s.group(DeclVariable, "x", es) {
+			got = append(got, sym.Decls)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("trial %d: group differs from the pairwise grouping (adj %v)", trial, adj)
+		}
+	}
+}
