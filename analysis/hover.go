@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -37,7 +38,7 @@ func (s *Snapshot) src(d *Decl) []byte { return s.facts[s.declFile[d]].File.Src 
 // Hover describes the symbol under the cursor in Markdown. rng is the range
 // of the hovered token (the whole definition when the cursor is on a function's name).
 func (s *Snapshot) Hover(path string, offset int) (markdown string, rng tree.Range, ok bool) {
-	h, _, found := s.at(path, offset)
+	h, file, found := s.at(path, offset)
 	if !found || h.edge != nil {
 		return "", tree.Range{}, false
 	}
@@ -71,11 +72,73 @@ func (s *Snapshot) Hover(path string, offset int) (markdown string, rng tree.Ran
 		if viaVar != "" {
 			md += "Reached through variable `" + viaVar + "`\n"
 		}
+		if len(h.binds) > 0 {
+			for _, l := range s.siteLabels(file, h.binds) {
+				md += l + "\n"
+			}
+		}
 		return md, rng, true
 	case DeclAlias:
 		return s.hoverAlias(sym), rng, true
 	}
 	return s.hoverVariable(sym), rng, true
+}
+
+// siteLabels are the label lines of a call site: how the use of binds
+// reaches each function, with the resolution and reason of the edge, e.g.
+// "calls `build_release` through alias `br` (resolved/alias)". One line per
+// distinct way, from the edges at the site (they carry conditional-definition
+// and unset-in-view, which bindings do not); a plain resolved/direct call has
+// none. A literal value (`cmd=f`) has no edge: its line comes from its
+// bindings.
+func (s *Snapshot) siteLabels(file int, binds []Binding) []string {
+	u := binds[0].Use
+	if u.Kind != UseCall {
+		return nil
+	}
+	var out []string
+	add := func(l string) {
+		if !slices.Contains(out, l) {
+			out = append(out, l)
+		}
+	}
+	if u.Via == ViaValue {
+		for _, b := range binds {
+			if b.Sym != nil && b.Sym.Kind == DeclFunction && u.Node != nil {
+				add(fmt.Sprintf("value of `%s` names `%s` (%s/%s)", u.Node.Name, b.Sym.Name, b.Res, b.Reason))
+			}
+		}
+		return out
+	}
+	for _, r := range s.edgesAt(file, u) {
+		name := s.declSym[r.to].Name
+		if r.rel == RelCalls && r.res == Resolved && r.reason == codeDirect {
+			continue
+		}
+		var how string
+		switch {
+		case r.rel == RelAliases:
+			alias := "?"
+			if d := s.aliasDeclOf(file, u); d != nil {
+				alias = d.Name
+			}
+			how = fmt.Sprintf("alias `%s` names `%s`", alias, name)
+		case u.Via == ViaVariable:
+			how = fmt.Sprintf("calls `%s` through variable `%s`", name, u.Name)
+		case u.Via == ViaEval:
+			how = fmt.Sprintf("calls `%s` through an `eval` string", name)
+		case u.Via == ViaTrap:
+			how = fmt.Sprintf("calls `%s` through a `trap` string", name)
+		case u.Via == ViaShellC:
+			how = fmt.Sprintf("calls `%s` through a shell `-c` string", name)
+		case u.Name != name: // the command word is an alias of the function
+			how = fmt.Sprintf("calls `%s` through alias `%s`", name, u.Name)
+		default:
+			how = fmt.Sprintf("calls `%s`", name)
+		}
+		add(fmt.Sprintf("%s (%s/%s)", how, r.res, reasonNames[r.reason]))
+	}
+	return out
 }
 
 func fence(line string) string { return "```bash\n" + line + "\n```\n" }

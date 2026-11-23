@@ -1,6 +1,8 @@
 package lsp
 
-// Only the protocol structures milestone 1 uses.
+import "encoding/json"
+
+// Only the protocol structures the server uses.
 
 // Position is a 0-based line and a column in UTF-16 code units.
 type Position struct {
@@ -95,6 +97,7 @@ type SymbolInformation struct {
 
 // Symbol kinds (LSP SymbolKind).
 const (
+	kindFile     = 1
 	kindFunction = 12
 	kindVariable = 13
 )
@@ -132,7 +135,10 @@ type initializeParams struct {
 	RootURI          *string           `json:"rootUri"`
 	RootPath         *string           `json:"rootPath"`
 	WorkspaceFolders []workspaceFolder `json:"workspaceFolders"`
-	Capabilities     struct {
+	// InitializationOptions is read leniently (see resolvedOnlyOption): a
+	// malformed value must not fail initialize.
+	InitializationOptions json.RawMessage `json:"initializationOptions"`
+	Capabilities          struct {
 		TextDocument struct {
 			DocumentSymbol struct {
 				Hierarchical bool `json:"hierarchicalDocumentSymbolSupport"`
@@ -167,5 +173,54 @@ func capabilities() map[string]any {
 		"hoverProvider":           true,
 		"documentSymbolProvider":  true,
 		"workspaceSymbolProvider": true,
+		"callHierarchyProvider":   true,
 	}
+}
+
+// ---- call hierarchy ----
+//
+// Field names as in LSP 3.17 (all @since 3.16.0), copied from the generated
+// protocol of gopls v0.24.0 (golang.org/x/tools/gopls/internal/protocol/
+// tsprotocol.go, generated from the vscode-languageserver-node metaModel at
+// release/protocol/3.18.2, in which these types are unchanged since 3.16):
+// CallHierarchyItem, CallHierarchyIncomingCall, CallHierarchyOutgoingCall,
+// CallHierarchyPrepareParams (= TextDocumentPositionParams plus
+// workDoneToken), CallHierarchyIncomingCallsParams and
+// CallHierarchyOutgoingCallsParams (item plus work-done and partial-result
+// tokens, which this server ignores), and the capability
+// `callHierarchyProvider`. SymbolTag has one value (Deprecated = 1), so tags
+// cannot carry a resolution label: it goes into detail.
+
+// callHierarchyItem is CallHierarchyItem. Data is preserved by the client
+// between prepare and the incoming/outgoing requests; this server puts an
+// itemData in it.
+type callHierarchyItem struct {
+	Name           string          `json:"name"`
+	Kind           int             `json:"kind"`
+	Tags           []int           `json:"tags,omitempty"`
+	Detail         string          `json:"detail,omitempty"`
+	URI            string          `json:"uri"`
+	Range          Range           `json:"range"`
+	SelectionRange Range           `json:"selectionRange"`
+	Data           json.RawMessage `json:"data,omitempty"`
+}
+
+// callHierarchyIncomingCall is CallHierarchyIncomingCall: fromRanges are
+// the call sites, in the document of From.
+type callHierarchyIncomingCall struct {
+	From       callHierarchyItem `json:"from"`
+	FromRanges []Range           `json:"fromRanges"`
+}
+
+// callHierarchyOutgoingCall is CallHierarchyOutgoingCall: fromRanges are
+// the call sites in the document of the item the request was made for.
+type callHierarchyOutgoingCall struct {
+	To         callHierarchyItem `json:"to"`
+	FromRanges []Range           `json:"fromRanges"`
+}
+
+// callHierarchyCallsParams is CallHierarchyIncomingCallsParams and
+// CallHierarchyOutgoingCallsParams (same shape).
+type callHierarchyCallsParams struct {
+	Item callHierarchyItem `json:"item"`
 }

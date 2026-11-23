@@ -28,7 +28,8 @@ bash-lsp symbols [PATH...] [--json]   functions, aliases and variables; default 
 bash-lsp doctor [PATH]            workspace report: files, dialects, limits, syntax errors, unresolved sources
 ```
 
-Positions are 1-based `line:col`, with columns counted in bytes. Paths are
+Positions are 1-based `line:col`, with columns counted in UTF-16 code units
+(the LSP column plus one), printed and accepted alike. Paths are
 relative to the workspace root, with forward slashes on every OS. Exit codes:
 0 success, 1 runtime failure, 2 usage error.
 

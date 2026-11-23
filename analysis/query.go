@@ -138,6 +138,20 @@ func (s *Snapshot) Definition(path string, offset int) []Location {
 // declarations when includeDecl. Without includeDecl, the write that is a
 // declaration's own name is left out.
 func (s *Snapshot) References(path string, offset int, includeDecl bool) []Location {
+	return s.references(path, offset, includeDecl, false)
+}
+
+// ResolvedReferences is References without the uncertain sites of a
+// function: a use of a function symbol is kept only when the call edge at
+// that site to the symbol is resolved (an edge, not the binding, carries
+// conditional-definition and unset-in-view), so candidate sites and literal
+// values (`cmd=f`, which has no edge) are left out. Declarations follow
+// includeDecl; references to variables and aliases are those of References.
+func (s *Snapshot) ResolvedReferences(path string, offset int, includeDecl bool) []Location {
+	return s.references(path, offset, includeDecl, true)
+}
+
+func (s *Snapshot) references(path string, offset int, includeDecl, resolvedOnly bool) []Location {
 	h, _, ok := s.at(path, offset)
 	if !ok {
 		return nil
@@ -151,14 +165,49 @@ func (s *Snapshot) References(path string, offset int, includeDecl bool) []Locat
 				ls.add(s.declLoc(d))
 			}
 		}
+		filter := resolvedOnly && sym.Kind == DeclFunction
 		for _, b := range s.BindingsOf(sym) {
 			if !includeDecl && declAt[[2]interface{}{b.File, b.Use.Range.Start.Offset}] {
+				continue
+			}
+			if filter && !s.resolvedSite(b, sym) {
 				continue
 			}
 			ls.add(Location{Path: b.File, Range: b.Use.Range})
 		}
 	}
 	return ls.sorted()
+}
+
+// resolvedSite reports whether a calls or aliases edge from the use of b to
+// sym is resolved.
+func (s *Snapshot) resolvedSite(b Binding, sym *Symbol) bool {
+	file, ok := s.idx[b.File]
+	if !ok {
+		return false
+	}
+	for _, r := range s.edgesAt(file, b.Use) {
+		if r.res == Resolved && s.declSym[r.to] == sym {
+			return true
+		}
+	}
+	return false
+}
+
+// edgesAt returns the calls and aliases edge records of file whose site is
+// the use u, by binary search over the file's records (sorted by site offset).
+func (s *Snapshot) edgesAt(file int, u *Use) []edgeRec {
+	recs := s.recs[s.recAt[file]:s.recAt[file+1]]
+	off := u.Range.Start.Offset
+	i := sort.Search(len(recs), func(i int) bool { return s.recOffset(file, &recs[i]) >= off })
+	var out []edgeRec
+	for ; i < len(recs) && s.recOffset(file, &recs[i]) == off; i++ {
+		r := recs[i]
+		if (r.rel == RelCalls || r.rel == RelAliases) && r.tgt != tgtDynamic && r.to != nil && s.bindings[file][r.at].Use == u {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // Implementation returns every declaration of the function under the cursor.

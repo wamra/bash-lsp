@@ -17,6 +17,14 @@ Every slice a snapshot returns (`Paths`, `SourceEdges` with its `Targets`,
 `Visible`, `BindingsOf`) is a copy you may modify. The facts, declarations and
 tree nodes a snapshot hands out are read-only (see the doc comments).
 
+Columns differ between the library and the tools. A library `tree.Range`
+(and the `Range` of every `analysis.Location`) has a 1-based line, a 1-based
+column counted in bytes, and a byte offset. Every position the CLI prints or
+accepts is a 1-based line with a 1-based column counted in UTF-16 code units,
+and every LSP position is a line with a UTF-16 column (0-based on the wire, as
+the protocol defines). `tree.File.ToUTF16` and `tree.File.NewConverter` convert
+a library position to the UTF-16 form.
+
 Tree shapes you can rely on: one `tree.KAndOr` node spans a whole `&&`/`||`
 chain (children are the operands in order, operators are not recorded);
 `tree.KPipeline` is flat; every statement is a `tree.KStmt`.

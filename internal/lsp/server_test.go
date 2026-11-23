@@ -66,8 +66,14 @@ func copyCorpus(t *testing.T) string {
 
 func client(t *testing.T, root string) *testClient { return clientOpt(t, root, false) }
 
-// clientOpt starts Serve on in-memory pipes and runs initialize + initialized.
 func clientOpt(t *testing.T, root string, hierarchical bool) *testClient {
+	t.Helper()
+	return clientInit(t, root, hierarchical, nil)
+}
+
+// clientInit starts Serve on in-memory pipes and runs initialize +
+// initialized; initOpts, when not nil, is sent as initializationOptions.
+func clientInit(t *testing.T, root string, hierarchical bool, initOpts any) *testClient {
 	t.Helper()
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
@@ -89,6 +95,9 @@ func clientOpt(t *testing.T, root string, hierarchical bool) *testClient {
 		"documentSymbol": map[string]any{"hierarchicalDocumentSymbolSupport": hierarchical}}}}
 	if root != "" {
 		params["rootUri"] = workspace.URIFromPath(root)
+	}
+	if initOpts != nil {
+		params["initializationOptions"] = initOpts
 	}
 	c.call("initialize", params)
 	c.notify("initialized", map[string]any{})
@@ -365,7 +374,7 @@ func TestInitializeCapabilities(t *testing.T) {
 	if err := json.Unmarshal(got, &resp); err != nil {
 		t.Fatal(err)
 	}
-	want := `{"definitionProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"implementationProvider":true,` +
+	want := `{"callHierarchyProvider":true,"definitionProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"implementationProvider":true,` +
 		`"positionEncoding":"utf-16","referencesProvider":true,"textDocumentSync":{"change":2,"openClose":true},"workspaceSymbolProvider":true}`
 	have, _ := json.Marshal(resp.Result.Capabilities) // map keys marshal sorted
 	if string(have) != want {

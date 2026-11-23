@@ -102,6 +102,39 @@ func (s *Snapshot) declOffset(sym *Symbol, path string) int {
 	return best
 }
 
+// FuncNode returns the node of the function name as defined in path; false
+// when path is no file of the snapshot or defines no function of that name.
+// Unlike Lookup it never reads name as a file or position spec.
+func (s *Snapshot) FuncNode(path, name string) (Node, bool) {
+	file, ok := s.idx[path]
+	if !ok {
+		return Node{}, false
+	}
+	for _, sym := range s.funcSyms[name] {
+		for _, d := range sym.Decls {
+			if s.declFile[d] == file {
+				return Node{Path: path, Func: sym}, true
+			}
+		}
+	}
+	return Node{}, false
+}
+
+// FuncDecl returns the first definition of n.Func in n.Path, nil for a file
+// node or a function with no definition there.
+func (s *Snapshot) FuncDecl(n Node) *Decl {
+	file, ok := s.idx[n.Path]
+	if n.Func == nil || !ok {
+		return nil
+	}
+	for _, d := range n.Func.Decls { // in (path, offset) order
+		if s.declFile[d] == file {
+			return d
+		}
+	}
+	return nil
+}
+
 // compareNodes orders nodes by path, the file itself before its functions,
 // then by the offset of the definition.
 func (s *Snapshot) compareNodes(a, b Node) int {
