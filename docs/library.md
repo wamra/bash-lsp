@@ -8,7 +8,7 @@ and `tree`. The parser behind them is internal and cannot be imported.
 | `github.com/wamra/bash-lsp` | `Load(root)`: discover the shell files under a directory the way the language server does (`.gitignore`, symlink policy, default size and count limits) and return an `*analysis.Snapshot`. A missing or non-directory root is an error; a file that does not parse is not. |
 | `.../parse` | `Detect(path, src)`, `File(path, src)` (detect, then parse) and `FileAs(path, src, dialect)`. Never returns nil. `File.Dialect` says what was used; syntax problems are in `File.Errors`, a file that was not parsed says why in `File.Skipped`. |
 | `.../analysis` | `Bind(file)` gives the facts of one file; `Analyze(files, opts)` parses and binds a set of in-memory files (keys are absolute paths), resolves `source` among them and returns generation 1. Files over `analysis.MaxFileBytes` (2 MiB) are in the snapshot as skipped. The snapshot answers `Definition`, `References`, `WorkspaceSymbols`, `DocumentSymbols`, `Visible`, `SourceEdges`, `BindingsOf`. |
-| `.../tree` | The syntax tree: `tree.File`, `tree.Node`, `tree.Kind`, `tree.Dialect`. |
+| `.../tree` | The syntax tree: `tree.File`, `tree.Node`, `tree.Kind`, `tree.Dialect`. Positions are byte offsets with 1-based line and column; `File.ToUTF16` converts one to an LSP line and UTF-16 column, and `File.NewConverter` returns a `tree.Converter` that converts many positions of one file, in any order, without rescanning a long line for each (results equal `File.ToUTF16`; not safe for concurrent use, make one per request). |
 
 Use `bashlsp.Load` for a directory on disk, `analysis.Analyze` for files you
 hold in memory, and `parse.File` for one file's tree.
@@ -16,6 +16,17 @@ hold in memory, and `parse.File` for one file's tree.
 Every slice a snapshot returns (`Paths`, `SourceEdges` with its `Targets`,
 `Visible`, `BindingsOf`) is a copy you may modify. The facts, declarations and
 tree nodes a snapshot hands out are read-only (see the doc comments).
+
+`BindingsOf` returns `Binding`s, each with a `Resolution` and a reason. In
+this milestone a binding is `Resolved` (reason `direct`, or `alias` for a call
+reached through an alias), `Candidate` (reason `name-match-outside-closure`:
+a call that resolves to no function in view, matched by name to every
+function of that name, in a file whose source graph is incomplete or that
+neither sources nor is sourced by another file) or
+`Unresolved` (reason `environment`: a variable read with no declaration in
+view). `Dynamic` and the reason `not-found` are declared but nothing produces
+them yet: `Dynamic` is reserved for call edges, and a call that names no known
+function has no binding at all.
 
 Tree shapes you can rely on: one `tree.KAndOr` node spans a whole `&&`/`||`
 chain (children are the operands in order, operators are not recorded);
@@ -155,15 +166,31 @@ What a host can rely on:
   at all is `File.Skipped` set, to the same text; the file then has its
   errors and no statements.
 - Each operator of a chain is a level, so a pipeline, an `&&`/`||` list or
-  an arithmetic chain of about 10,000 operators, or an `if` with about
-  10,000 `elif` branches, is that same syntax error. The exact figure per
-  construct is in the design note ("The limit, per construct").
+  an arithmetic chain of about 10,000 operators is that same syntax error.
+  The exact figure per construct is in the design note ("The limit, per
+  construct").
 - Comment blocks, heredocs, strings and long runs of statements are not
   nesting and have no limit.
-- A statement nested deeper than 4,000 levels, but within the parser's
-  limit, is left out of the tree with the error `statement nested deeper
-  than 4000 levels: not analysed`; the rest of the file is analysed. The
-  tree handed to `analysis` is therefore at most about 12,000 nodes deep.
+- The lowerer, which turns the parser's tree into `tree.Node`s, has a lower
+  limit of its own: 4,000 lowering levels, where each statement, word, word
+  part (expansion, quote or literal) and `if` or `elif` clause inside another
+  is one level. A statement past it is left out of the tree with the error
+  `statement not analysed: nested more than 4000 levels deep, counting each
+  statement, word, word part (expansion, quote or literal) and if or elif
+  clause inside another`; the rest of the file is analysed. A construct costs
+  one to four lowering levels, so the depth a user meets depends on the
+  construct. The first refused depth (`bench/results/lowerer-depth-m2a-final.txt`,
+  from `TestLowererLimitPerConstruct`, which pins each figure):
+
+  | Construct, nested n times | Refused from n = |
+  |---|---|
+  | `{ }`, `( )`, `while`, `for`, `case` | 3,998 |
+  | an `if` with n `elif` branches (flat to the user) | 3,996 |
+  | `if`, a function body `f() {`, `${x:-`, a pipeline stage `a \| (` | 1,999 |
+  | `$( )`, `<( )` | 1,333 |
+  | `"$( )"`, an `if` inside each function body | 1,000 |
+
+  The tree handed to `analysis` is therefore at most about 12,000 nodes deep.
 
 What it assumes of the host:
 
@@ -176,7 +203,8 @@ What it assumes of the host:
 - Parsing one file takes time in proportion to its size, except after a
   syntax error the parser cannot recover from: the rest of the file is then
   parsed again from up to 50 later lines. A 2 MiB file built for that takes
-  up to 9 s (`bench/results/resync-cost-m2a-task1-fix2.txt`).
+  up to 17.5 s (`bench/results/resync-cost-m2a-task5.txt`: one `front.Parse`
+  of the slowest input known, 17.46 to 17.63 s over three runs).
 
 ## `bash-lsp ast` on deep trees
 
