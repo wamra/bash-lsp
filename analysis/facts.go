@@ -134,6 +134,8 @@ type binder struct {
 	bats     bool
 	wholeCmt map[int]*tree.Node // line -> comment that is alone on its line (shebang excluded)
 
+	useSlab      []Use
+	declSlab     []Decl
 	ints         map[intKey]bool // integer-attribute declarations, by where they bind
 	tracking     bool            // declGlobal, declLocal and declPriv are maintained (from the first arithmetic write)
 	assocScanned bool
@@ -279,14 +281,24 @@ func isSpecialParam(name string) bool {
 }
 
 func (b *binder) use(k UseKind, name string, r tree.Range, sc *Scope, n *tree.Node) *Use {
-	u := &Use{Kind: k, Name: name, Range: r, Scope: sc, Node: n}
+	if len(b.useSlab) == 0 { // Uses are allocated in chunks: one allocation per 256 instead of 256
+		b.useSlab = make([]Use, 256)
+	}
+	u := &b.useSlab[0]
+	b.useSlab = b.useSlab[1:]
+	*u = Use{Kind: k, Name: name, Range: r, Scope: sc, Node: n}
 	b.ff.Uses = append(b.ff.Uses, u)
 	return u
 }
 
 // variable records a DeclVariable and its UseVarWrite.
 func (b *binder) variable(name string, r tree.Range, n *tree.Node, sc *Scope, attrs VarAttrs, literal, implicit string) {
-	d := &Decl{Kind: DeclVariable, Name: name, NameRange: r, Scope: sc, Attrs: attrs,
+	if len(b.declSlab) == 0 {
+		b.declSlab = make([]Decl, 128)
+	}
+	d := &b.declSlab[0]
+	b.declSlab = b.declSlab[1:]
+	*d = Decl{Kind: DeclVariable, Name: name, NameRange: r, Scope: sc, Attrs: attrs,
 		Doc: b.docAbove(n.Range.Start.Line), Node: n, Literal: literal, Implicit: implicit}
 	b.ff.Decls = append(b.ff.Decls, d)
 	b.noteDecl(d, 1)
