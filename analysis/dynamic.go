@@ -975,8 +975,16 @@ func (s *Snapshot) dynamicScope(added map[int][]Binding, replaced map[*Use]bool)
 		}
 		m := map[string][]*Symbol{}
 		want := names[g]
+		// each symbol once per name, checked with a set: a list scan cost
+		// O(callers^2) for a name local in many callers
+		type nameSym struct {
+			name string
+			sym  *Symbol
+		}
+		have := map[nameSym]bool{}
 		add := func(c callerLocal, name string) {
-			if sym := s.localSyms[localKey{c.file, c.fn, name}]; sym != nil && !slices.Contains(m[name], sym) {
+			if sym := s.localSyms[localKey{c.file, c.fn, name}]; sym != nil && !have[nameSym{name, sym}] {
+				have[nameSym{name, sym}] = true
 				m[name] = append(m[name], sym)
 			}
 		}

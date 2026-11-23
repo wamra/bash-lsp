@@ -92,6 +92,10 @@ shapes["dyn_reads_calls_local"] = "f() { " + "echo $y;" * (q // 8) + " }\nh() { 
 shapes["dyn_reads_callers"] = "f() { " + "echo $y;" * (q // 8) + " }\n" + "".join(f"h{i}() {{ f; }}\n" for i in range(q // 17))
 shapes["dyn_names_callers_local"] = ("f() { " + "".join(f"echo $v{i};" for i in range(q // 14)) + " }\n"
                                      + "".join(f"h{i}() {{ local w; f; }}\n" for i in range(q // 26)))
+# fix round 2: the read name is a local of many callers
+shapes["dyn_local_callers"] = "f() { echo $y; }\n" + "".join(f"h{i}() {{ local y; f; }}\n" for i in range(M // 27))
+shapes["dyn_local_callers_3"] = ("f() { echo $y; }\ng() { echo $y; }\nk() { echo $y; }\n"
+                                 + "".join(f"h{i}() {{ local y; f; g; k; }}\n" for i in range(M // 33)))
 for d in (1000, 1990):
     shapes[f"nested_funcs_defs_{d}"] = "f() { " * d + "h() { :; };" * ((M - 8 * d) // 11) + " }" * d + "\n"
 for k, v in shapes.items():

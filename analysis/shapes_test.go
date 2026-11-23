@@ -165,18 +165,37 @@ func dynamicShapes(size int) map[string]string {
 		fmt.Fprintf(&localCallers, "h%d() { local w; f; }\n", i)
 	}
 	reads := "f() { " + strings.Repeat("echo $y;", q/8) + " }\n"
+	// fix round 2: the read name is a local of many callers (one symbol
+	// each); also with three callees, each called by every caller
+	var localY, localY3 strings.Builder
+	localY.WriteString("f() { echo $y; }\n")
+	for i := 0; localY.Len() < size-30; i++ {
+		fmt.Fprintf(&localY, "h%d() { local y; f; }\n", i)
+	}
+	localY3.WriteString("f() { echo $y; }\ng() { echo $y; }\nk() { echo $y; }\n")
+	for i := 0; localY3.Len() < size-40; i++ {
+		fmt.Fprintf(&localY3, "h%d() { local y; f; g; k; }\n", i)
+	}
 	return map[string]string{
-		"reads, calls":            reads + "h() { " + strings.Repeat("f;", q/2) + " }\n",
-		"reads, calls, local":     reads + "h() { local y; " + strings.Repeat("f;", q/2) + " }\n",
-		"reads, callers":          reads + callers.String(),
-		"distinct names, callers": "f() { " + names.String() + " }\n" + localCallers.String(),
+		"read name local in callers":            localY.String(),
+		"read name local in callers, 3 callees": localY3.String(),
+		"reads, calls":                          reads + "h() { " + strings.Repeat("f;", q/2) + " }\n",
+		"reads, calls, local":                   reads + "h() { local y; " + strings.Repeat("f;", q/2) + " }\n",
+		"reads, callers":                        reads + callers.String(),
+		"distinct names, callers":               "f() { " + names.String() + " }\n" + localCallers.String(),
 	}
 }
 
 func TestDynamicScopeInBoundedTime(t *testing.T) {
 	size, bound := shapeSize()
 	for name, src := range dynamicShapes(size) {
+		b := bound
+		if strings.HasPrefix(name, "read name local") {
+			// O(callers^2) took 1.4 s and 2.6 s at 2 MiB, inside the
+			// general bound; once linear these take about 0.1 s
+			b = bound / 3
+		}
 		ff := parseClean(t, name, src)
-		withinBound(t, name, bound, func() { Build(map[string]*FileFacts{"/ws/a.sh": ff}, Options{Root: "/ws"}, 1) })
+		withinBound(t, name, b, func() { Build(map[string]*FileFacts{"/ws/a.sh": ff}, Options{Root: "/ws"}, 1) })
 	}
 }
