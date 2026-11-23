@@ -53,10 +53,19 @@ const (
 	// -gcflags=-S).
 	maxFrameBytes = 512
 	// maxFrames frames of the parser fit in the 32 MiB a parse may use
-	// without question. Real scripts stay under 2,000. What gets a file
-	// refused in practice is nesting some 8,000 levels deep or more, or one
-	// unbroken block of more than about 250,000 comment lines (the lexer
-	// calls itself once per comment line, about 128 bytes each).
+	// without question: 65,536. Real scripts stay under 2,000.
+	//
+	// What gets a file refused therefore depends on the rest of the process.
+	// While its stacks total less than maxStackMemory (the language server
+	// and the CLI): more than 32 MiB of parser stack, which takes nesting
+	// some 8,000 levels deep (22,000 for `$(`) or one unbroken block of
+	// about 250,000 comment lines (the lexer calls itself once per comment
+	// line, 128 bytes each). In a process that holds more stack than that
+	// for other work, frames are counted instead of bytes and the count is
+	// rationed (maxProbeFrames): the limit is maxFrames frames on the
+	// parsing goroutine, its caller's included, which is nesting some 2,200
+	// levels deep (8,000 for `$(`), and a comment block is refused from
+	// 12,000 to 55,000 lines on, sooner the longer its lines.
 	maxFrames = maxStackMemory / 2 / maxFrameBytes
 	// maxProbeFrames bounds the frames counted for one file, which bounds
 	// the guard's cost. Frames are counted only while stackMetric is high;
@@ -72,9 +81,10 @@ var errTooDeep = errors.New(refusal)
 
 // stackGuard is shared by every parser run over one file.
 type stackGuard struct {
-	sample [1]metrics.Sample
-	buf    *[]uintptr // scratch for runtime.Callers, borrowed from pcsPool
-	frames int        // frames counted so far, over all runs
+	sample  [1]metrics.Sample
+	buf     *[]uintptr // scratch for runtime.Callers, borrowed from pcsPool
+	frames  int        // frames counted so far, over all runs
+	stopped bool       // some run was stopped
 }
 
 var pcsPool = sync.Pool{New: func() any {
@@ -83,10 +93,18 @@ var pcsPool = sync.Pool{New: func() any {
 }}
 
 // release returns the scratch buffer. The guard must not be used afterwards.
+//
+// A run that was stopped leaves this goroutine on a stack of 64 MiB or more,
+// which keeps stackMetric high, and every parse in the process counting
+// frames, until the collector next shrinks it. Have it do that now: the
+// file was refused, a few milliseconds more do not matter.
 func (g *stackGuard) release() {
 	if g.buf != nil {
 		pcsPool.Put(g.buf)
 		g.buf = nil
+	}
+	if g.stopped {
+		runtime.GC()
 	}
 }
 
@@ -141,7 +159,7 @@ func (r *guardedReader) Read(p []byte) (int, error) {
 		return 0, io.EOF
 	}
 	if r.g.tooDeep() {
-		r.tripped = true
+		r.tripped, r.g.stopped = true, true
 		return 0, errTooDeep
 	}
 	copy(p, r.src[r.off:r.off+n])

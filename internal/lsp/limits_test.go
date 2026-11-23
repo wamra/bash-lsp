@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"testing"
 )
@@ -71,5 +72,38 @@ func TestOversizeDocumentIsSkipped(t *testing.T) {
 				t.Fatal(got)
 			}
 		})
+	}
+}
+
+// Nesting the parser's stack guard accepts, as deep as the lowerer keeps
+// (just under 4,000 loops), reaches every request that walks the tree:
+// diagnostics, the outline, hover and definition. Run under a 64 MiB stack
+// limit, a sixteenth of the default.
+func TestDeepestTreeIsServed(t *testing.T) {
+	defer debug.SetMaxStack(debug.SetMaxStack(64 << 20))
+	const n = 3900
+	text := strings.Repeat("while a; do\n", n) + "inner_most() { local v=1; echo \"$v\"; }\ninner_most now\n" + strings.Repeat("done\n", n) + "after_all() { :; }\n"
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "deep.sh"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := client(t, root)
+	c.open("deep.sh")
+	for _, d := range c.waitDiag("deep.sh") {
+		if d.Severity == 1 {
+			t.Fatalf("error diagnostic: %+v", d)
+		}
+	}
+	names := strings.Join(c.symbolNames("deep.sh"), " ")
+	if !strings.Contains(names, "inner_most") || !strings.Contains(names, "after_all") {
+		t.Fatalf("outline: %.200s", names)
+	}
+	if got := c.definition("deep.sh", "inner_most now", 0); len(got) != 1 {
+		t.Fatalf("definition of the innermost call: %v", got)
+	}
+	var hover struct{ Contents struct{ Value string } }
+	raw := c.call("textDocument/hover", map[string]any{"textDocument": map[string]any{"uri": c.uri("deep.sh")}, "position": c.pos("deep.sh", "inner_most now", 0)})
+	if err := json.Unmarshal(raw, &hover); err != nil || !strings.Contains(hover.Contents.Value, "inner_most") {
+		t.Fatalf("hover: %s (%v)", raw, err)
 	}
 }

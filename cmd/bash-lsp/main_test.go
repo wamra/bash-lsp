@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestVersion(t *testing.T) {
@@ -321,5 +323,53 @@ func BenchmarkAstManyComments(b *testing.B) {
 		if code := run([]string{"ast", path, "--json"}, strings.NewReader(""), &out, &errb); code != 0 {
 			b.Fatalf("exit %d: %s", code, errb.String())
 		}
+	}
+}
+
+// The deepest trees the front end hands on (just under the lowerer's bound;
+// the parser's stack guard lets far deeper nesting through) must be safe for
+// every consumer: binding, symbols and both ast views recurse over the tree.
+// Run under a 64 MiB stack limit, a sixteenth of the default.
+func TestDeepestTreesReachEveryConsumer(t *testing.T) {
+	defer debug.SetMaxStack(debug.SetMaxStack(64 << 20))
+	nest := func(open, close string, n int) string {
+		return strings.Repeat(open, n) + "inner_most() { local v=1; echo \"$v\"; }\n" + strings.Repeat(close, n) + "after_all() { :; }\n"
+	}
+	cases := map[string]string{
+		"if":       nest("if a; then\n", "fi\n", 1900),
+		"while":    nest("while a; do\n", "done\n", 3900),
+		"brace":    nest("{\n", "}\n", 3900),
+		"cmdsubst": "x=" + strings.Repeat("$(echo ", 1300) + "y" + strings.Repeat(")", 1300) + "\nafter_all() { :; }\n",
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "deep.sh")
+			if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			start := time.Now()
+			ast := runOK(t, "ast", path)
+			if strings.Contains(ast, "ErrorGap") || !strings.Contains(ast, "after_all") {
+				t.Fatal("the text view lacks the tree")
+			}
+			syms := runOK(t, "symbols", "--json", dir)
+			wantLines(t, syms, "after_all")
+			if name != "cmdsubst" {
+				wantLines(t, syms, "inner_most")
+			}
+			t.Logf("%d bytes of source: ast %d bytes, symbols %d bytes, %v", len(src), len(ast), len(syms), time.Since(start).Round(time.Millisecond))
+			if name != "brace" {
+				return
+			}
+			// The JSON view indents by depth, so it is quadratic in it, and
+			// encoding/json stops at 10,000 levels: it may give up, cleanly.
+			start = time.Now()
+			code, out, errs := runCode(t, "ast", "--json", path)
+			if code != 0 && !strings.Contains(errs, "exceeded max depth") {
+				t.Fatalf("ast --json: exit %d: %s", code, errs)
+			}
+			t.Logf("ast --json: exit %d, %d bytes, %v", code, len(out), time.Since(start).Round(time.Millisecond))
+		})
 	}
 }

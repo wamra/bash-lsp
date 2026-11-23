@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -242,9 +243,10 @@ func costCases() map[string]string {
 }
 
 // holdStack parks a goroutine on a stack of at least n bytes until the
-// returned function is called.
+// returned function is called; that function returns once the stack has
+// been given back.
 func holdStack(n int) (release func()) {
-	ready, done := make(chan struct{}), make(chan struct{})
+	ready, done, gone := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	var dive func(left int) int
 	dive = func(left int) int {
 		var pad [1024]byte
@@ -255,9 +257,17 @@ func holdStack(n int) (release func()) {
 		}
 		return dive(left-len(pad)) + int(pad[len(pad)-1])
 	}
-	go dive(n)
+	go func() {
+		defer close(gone)
+		dive(n)
+	}()
 	<-ready
-	return func() { close(done) }
+	return func() {
+		close(done)
+		<-gone
+		runtime.GC() // a stack freed while the collector runs is released when it ends
+		runtime.GC()
+	}
 }
 
 // P3: the guard's work is bounded per file, whatever the input and whatever
@@ -312,9 +322,50 @@ func TestLargeStackElsewhereDoesNotRefuse(t *testing.T) {
 // thousand of them in a row is about 13 MiB of stack, more under the race
 // detector: accepted.
 func TestLongCommentBlockParses(t *testing.T) {
+	runtime.GC() // release the stacks earlier tests grew
+	runtime.GC()
 	f := Parse("x.sh", []byte(strings.Repeat("# c\n", 100000)+lastFunc), Bash)
 	if f.Skipped != "" || len(f.Errors) != 0 || len(f.Comments) != 100000 {
 		t.Fatalf("skipped %q, errors %v, %d comments", f.Skipped, f.Errors, len(f.Comments))
+	}
+}
+
+// The second regime (scan.go): in a process that already holds more than
+// maxStackMemory of stack, the guard cannot tell whose it is and falls back
+// to counting frames, so the limit is maxFrames frames, whatever their size,
+// and the counting itself is rationed. A comment block is the cheapest way
+// to get there.
+func TestFrameLimitBesideLargeStack(t *testing.T) {
+	defer holdStack(maxStackMemory)()
+	under := Parse("x.sh", []byte(strings.Repeat("# c\n", 10000)+lastFunc), Bash)
+	if under.Skipped != "" || len(under.Errors) != 0 {
+		t.Fatalf("10,000 comment lines: skipped %q, errors %v", under.Skipped, under.Errors)
+	}
+	over := Parse("x.sh", []byte(strings.Repeat("# c\n", maxFrames+5000)+lastFunc), Bash)
+	if over.Skipped != refusal {
+		t.Fatalf("%d comment lines: skipped %q, errors %v", maxFrames+5000, over.Skipped, over.Errors)
+	}
+}
+
+// A refused file must not leave the process in the second regime: the stack
+// the parser grew is given back before Parse returns.
+func TestRefusalGivesTheStackBack(t *testing.T) {
+	runtime.GC() // release the stacks earlier tests grew
+	runtime.GC()
+	g := &stackGuard{}
+	if before := g.stackMemory(); before >= maxStackMemory/2 {
+		t.Skipf("%d bytes of stack held before the test", before)
+	}
+	done := make(chan uint64)
+	go func() {
+		f := Parse("x.sh", []byte(strings.Repeat("(", 200000)+"\n"), Bash)
+		if f.Skipped != refusal {
+			t.Errorf("not refused: %q", f.Skipped)
+		}
+		done <- g.stackMemory()
+	}()
+	if after := <-done; after >= maxStackMemory {
+		t.Fatalf("%d bytes of stack held after a refusal", after)
 	}
 }
 
