@@ -151,10 +151,19 @@ func (w *Workspace) Snapshot() *analysis.Snapshot { return w.snap.Load() }
 // path is canonicalised to the spelling the walk uses, so the overlay replaces
 // the file's disk entry.
 func (w *Workspace) SetOverlay(path string, version int, text []byte) {
+	hash := sha256.Sum256(text)
 	w.mu.Lock()
 	path = w.canon(path, true)
+	// Opening a document that equals its file on disk is the common case:
+	// reuse the facts the walk built instead of parsing the same bytes again.
+	var e *entry
+	if d := w.disk[key(path)]; d != nil && d.hash == hash && d.path == path {
+		e = d
+	}
 	w.mu.Unlock()
-	e := parseEntry(path, text)
+	if e == nil {
+		e = parseEntry(path, text)
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.overlays[key(path)] = &overlay{version: version, entry: e}
