@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/wamra/bash-lsp/analysis"
+	"github.com/wamra/bash-lsp/tree"
 )
 
 func open(t *testing.T, root string) *Workspace {
@@ -524,6 +525,36 @@ func TestOverlayOverSizeLimit(t *testing.T) {
 	w.CloseOverlay(p)
 	if len(w.Snapshot().WorkspaceSymbols("on_disk", 5)) != 1 {
 		t.Fatal("disk content not back after close")
+	}
+}
+
+// review M4: the tree of an oversize document carries the dialect detection
+// gives it, as tree.File.Dialect promises for every parse, skipped or not.
+func TestOversizeFileHasDialect(t *testing.T) {
+	root := t.TempDir()
+	w, err := Open(root, Limits{MaxFileBytes: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pad := strings.Repeat("# pad\n", 20)
+	for name, c := range map[string]struct {
+		text string
+		want tree.Dialect
+	}{
+		"a.sh":   {"#!/bin/sh\n" + pad, tree.POSIX},
+		"b.bash": {pad, tree.Bash},
+		"c.ksh":  {pad, tree.Mksh},
+		"d":      {"#!/usr/bin/env bats\n" + pad, tree.Bats},
+	} {
+		p := filepath.Join(root, name)
+		w.SetOverlay(p, 1, []byte(c.text))
+		f := w.Snapshot().Facts(w.Canon(p)).File
+		if f.Skipped == "" || f.Dialect != c.want {
+			t.Errorf("%s: Skipped %q, Dialect %v, want %v", name, f.Skipped, f.Dialect, c.want)
+		}
+	}
+	if f := OversizeFile("/x/e.zsh", nil, "too big"); f.Dialect != tree.Zsh {
+		t.Errorf("OversizeFile without text: Dialect %v", f.Dialect)
 	}
 }
 

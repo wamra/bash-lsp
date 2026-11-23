@@ -313,7 +313,7 @@ func TestLowererDepthBound(t *testing.T) {
 			stmts, errs := lowerStmts(f, f.PosAt(0), af.Stmts, newNULIndex(f.Src))
 			f.Root.Children = stmts
 			f.Errors = errs
-			if !hasErr(f, "nested deeper") {
+			if !hasErr(f, loweringLimitError) {
 				t.Fatalf("no depth error: %v", errs)
 			}
 			if d := treeDepth(f); d > 3*maxDepth+10 {

@@ -32,8 +32,14 @@ func checkNameRanges(t *testing.T, s string, d Dialect) {
 		var walk func(n *tree.Node)
 		walk = func(n *tree.Node) {
 			if n.Name != "" && n.NameRange != (tree.Range{}) {
-				got := string(src[n.NameRange.Start.Offset:n.NameRange.End.Offset])
-				if got != n.Name {
+				got := src[n.NameRange.Start.Offset:n.NameRange.End.Offset]
+				// a name holding a NUL and a line continuation is the name the
+				// shell reads: its range holds it with both removed
+				want := got
+				if bytes.IndexByte(got, 0) >= 0 && bytes.Contains(got, []byte("\\\n")) {
+					want = bytes.ReplaceAll(bytes.ReplaceAll(got, []byte{0}, nil), []byte("\\\n"), nil)
+				}
+				if string(want) != n.Name {
 					t.Errorf("%q (%v): %v name %q has range text %q", s, d, n.Kind, n.Name, got)
 				}
 			}

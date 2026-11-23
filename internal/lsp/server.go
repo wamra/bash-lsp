@@ -62,7 +62,7 @@ func (d *docsOnly) Snapshot() *analysis.Snapshot {
 func (d *docsOnly) SetOverlay(path string, _ int, text []byte) {
 	var f *tree.File
 	if len(text) > workspace.DefaultMaxFileBytes {
-		f = workspace.OversizeFile(path, fmt.Sprintf("%s: %d bytes exceeds the %d byte file limit",
+		f = workspace.OversizeFile(path, text, fmt.Sprintf("%s: %d bytes exceeds the %d byte file limit",
 			filepath.Base(path), len(text), workspace.DefaultMaxFileBytes))
 	} else {
 		f = parse.File(path, text)

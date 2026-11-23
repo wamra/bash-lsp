@@ -39,8 +39,10 @@ type lowerer struct {
 	valueFrom int
 }
 
-// maxDepth bounds the lowerer's recursion. A statement nested deeper is
-// dropped and reported, so the tree handed to analysis is at most about
+// maxDepth bounds the lowerer's recursion, counted in lowering levels: each
+// statement, word, word part and if or elif clause inside another is one, so
+// a user-level construct costs one to four (bench/results/
+// lowerer-depth-m2a-final.txt). A statement nested deeper is dropped and reported, so the tree handed to analysis is at most about
 // 3*maxDepth nodes deep (a level adds a statement, its command and a block at
 // most) and every recursive walk over it (tree.Node.Walk, Bind, hover, the
 // ast view) stays within a few megabytes of stack. The parser has already
@@ -48,6 +50,9 @@ type lowerer struct {
 // recurses on. The whole-file scans over the parser's tree do not recurse
 // (visit.go).
 const maxDepth = 4000
+
+// loweringLimitError is the error of a statement dropped at maxDepth.
+var loweringLimitError = fmt.Sprintf("statement not analysed: nested more than %d levels deep, counting each statement, word, word part (expansion, quote or literal) and if or elif clause inside another", maxDepth)
 
 // tooDeep is the panic value of a lowering that crossed maxDepth.
 type tooDeep struct{}
@@ -122,7 +127,7 @@ func (l *lowerer) safeStmt(s *syntax.Stmt) (n *tree.Node) {
 			at := l.f.PosAt(l.cursor)
 			msg := "internal error lowering statement"
 			if _, ok := r.(tooDeep); ok {
-				msg = fmt.Sprintf("statement nested deeper than %d levels: not analysed", maxDepth)
+				msg = loweringLimitError
 			}
 			l.errs = append(l.errs, tree.SyntaxError{Range: tree.Range{Start: at, End: at}, Msg: msg})
 		}
@@ -780,7 +785,8 @@ var declKeywords = map[string]bool{"local": true, "declare": true, "typeset": tr
 
 var identPrefix = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*`)
 
-// plainLit returns the text of a word that is a single unquoted literal.
+// plainLit returns the literal of a word that is a single unquoted literal
+// with a known position, and whether it is one.
 func plainLit(w *syntax.Word) (*syntax.Lit, bool) {
 	if len(w.Parts) != 1 {
 		return nil, false
@@ -820,8 +826,9 @@ func (l *lowerer) declArg(w *syntax.Word) *tree.Node {
 			nameEnd := l.valueEnd(lit, len(name), false)
 			nameRange := tree.Range{Start: l.f.PosAt(nameStart), End: l.f.PosAt(nameEnd)}
 			valueName := name // the lexer's name: eq below indexes lit.Value
-			if text := l.f.Src[nameStart:nameEnd]; string(text) != name {
-				name = string(text)
+			if l.nul != nil {
+				name, nameEnd = l.nulName(name, nameStart, nameEnd)
+				nameRange.End = l.f.PosAt(nameEnd)
 			}
 			bare := len(w.Parts) == 1 && rest == ""
 			valued := strings.HasPrefix(rest, "=") || strings.HasPrefix(rest, "+=")
@@ -952,15 +959,57 @@ func (z nulIndex) endsWith(src []byte, s, e int, v string) bool {
 	return k == 0
 }
 
-// name is a name and its range. A NUL inside the literal is in the source but
-// not in the lexer's value; then the name is the source bytes, so that the
-// range holds exactly the name (such a name is never a valid identifier).
+// name is a name and its range: the lexer's value and the parser's range
+// unless a NUL lies inside the name (nulName).
 func (l *lowerer) name(value string, a, b syntax.Pos) (string, tree.Range) {
 	r := l.rng(a, b)
-	if r.Start.Offset < r.End.Offset && r.End.Offset <= len(l.f.Src) {
-		if text := l.f.Src[r.Start.Offset:r.End.Offset]; string(text) != value {
-			return string(text), r
-		}
+	if l.nul != nil && r.Start.Offset < r.End.Offset && r.End.Offset <= len(l.f.Src) {
+		name, end := l.nulName(value, r.Start.Offset, r.End.Offset)
+		return name, tree.Range{Start: r.Start, End: l.f.PosAt(end)}
 	}
 	return value, r
+}
+
+// nulName corrects a name the lexer read as value from source offset s, with
+// e the end the parser gave it, in a source that holds a NUL byte. The
+// lexer's value omits NUL bytes and line continuations. When neither NUL nor
+// continuation lies inside the name, the name is value and ends at e, as in a
+// NUL-free source. A NUL inside makes the name the source bytes, so that the
+// range holds exactly the name (such a name is never a valid identifier),
+// unless the name also holds a line continuation: then it is value, the name
+// the shell reads, and it ends after its last byte (the parser's end counts
+// the continuation's bytes as name bytes).
+func (l *lowerer) nulName(value string, s, e int) (string, int) {
+	src := l.f.Src
+	i, cont := s, false
+	for k := 0; k < len(value); k++ {
+		for i < len(src) {
+			if src[i] == 0 {
+				i++
+			} else if src[i] == '\\' && i+1 < len(src) && src[i+1] == '\n' {
+				i, cont = i+2, true
+			} else {
+				break
+			}
+		}
+		if i >= len(src) || src[i] != value[k] { // not the lexer's reading: keep the parser's
+			return l.nulSourceName(value, s, e)
+		}
+		i++
+	}
+	switch {
+	case l.nul.count(s, i) == 0:
+		return value, e
+	case cont:
+		return value, i
+	}
+	return l.nulSourceName(value, s, e)
+}
+
+// nulSourceName is the name as the source bytes [s, e), when they differ from value.
+func (l *lowerer) nulSourceName(value string, s, e int) (string, int) {
+	if text := l.f.Src[s:e]; string(text) != value {
+		return string(text), e
+	}
+	return value, e
 }

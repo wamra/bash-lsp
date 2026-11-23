@@ -381,7 +381,7 @@ func (w *Workspace) SetOverlay(path string, version int, text []byte) {
 		if int64(len(text)) > w.lim.MaxFileBytes {
 			// Held to the disk limit: skipped, with the line doctor prints for a
 			// file that size, and its disk entry (if any) hidden as for any overlay.
-			e = &entry{path: path, hash: hash, facts: analysis.Bind(OversizeFile(path, w.bigLine(w.relSlash(path), int64(len(text)))))}
+			e = &entry{path: path, hash: hash, facts: analysis.Bind(OversizeFile(path, text, w.bigLine(w.relSlash(path), int64(len(text)))))}
 		} else {
 			e = parseEntry(path, text)
 		}
@@ -463,10 +463,12 @@ func (w *Workspace) diskPath(c string) string {
 }
 
 // OversizeFile is the tree of a document over the size limit: no text, no
-// statements, Skipped set to reason.
-func OversizeFile(path, reason string) *tree.File {
+// statements, Skipped set to reason, and the dialect detection gives path and
+// text (only the first lines of text are read).
+func OversizeFile(path string, text []byte, reason string) *tree.File {
 	f := tree.NewFile(path, nil)
 	f.Skipped = reason
+	f.Dialect = parse.Detect(path, text)
 	return f
 }
 

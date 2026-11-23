@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -220,10 +221,11 @@ func TestArithmeticFollowsScopeRules(t *testing.T) {
 	if r := q.reasonAt("m.sh", "$n", 0, 1); r != ReasonEnvironment {
 		t.Fatalf("reason %q", r)
 	}
-	// declared outside: the subshell write is a write to the outer symbol
+	// declared outside: the subshell write declares a private n, like n=2
+	// there would (review M1), so neither the outer read nor n=1 sees it
 	q = buildMem(t, map[string]string{"m.sh": "n=1\n( (( n++ )) )\necho \"$n\"\n"})
 	wantEq(t, q.def("m.sh", "$n", 0, 1), "m.sh:1")
-	wantEq(t, q.refs("m.sh", "n=1", 0, 0), "m.sh:1", "m.sh:2", "m.sh:3")
+	wantEq(t, q.refs("m.sh", "n=1", 0, 0), "m.sh:1", "m.sh:3")
 	// pipeline stage and command substitution
 	q = buildMem(t, map[string]string{"m.sh": "echo | (( p++ ))\nv=$(( q = 1 ))\nw=$( (( r++ )) )\necho \"$p $q $r\"\n"})
 	wantEq(t, q.def("m.sh", "$p", 0, 1))
@@ -340,6 +342,36 @@ func TestArrayLiteralSubscripts(t *testing.T) {
 	for name, want := range map[string]int{"i": 1, "j": 1, "k": 1, "l": 1, "n": 1, "key": 0, "x": 0, "c": 0} {
 		if got := len(usesOf(t, ff, name)); got != want {
 			t.Errorf("%s: %d uses, want %d", name, got, want)
+		}
+	}
+}
+
+// review M1: an arithmetic write inside a private scope declares a variable
+// private to it, exactly like a plain assignment there: the read inside binds
+// to it, the read after the scope to the outer declaration. For every private
+// scope kind and every arithmetic write form.
+func TestArithmeticWriteInPrivateScopeIsPrivate(t *testing.T) {
+	scopes := map[string]string{
+		"subshell":     "( %s\necho $y )\n",
+		"cmdsubst":     "x=$( %s\necho $y )\n",
+		"pipeline":     "cmd | { %s\necho $y; }\n",
+		"procsubst":    "cat <( %s\necho $y )\n",
+		"coproc":       "coproc { %s\necho $y; }\n",
+		"cmdsubst-arg": "echo \"$( %s\necho $y )\"\n",
+	}
+	forms := []string{"((y=2))", "((y++))", "((--y))", "((y+=1))", "let y=2", "let y++", "echo $((y=2))", "for ((y=0;;)); do :; done"}
+	for kind, shape := range scopes {
+		for _, form := range forms {
+			src := "y=1\n" + fmt.Sprintf(shape, form) + "echo $y\n"
+			q := buildMem(t, map[string]string{"m.sh": src})
+			p := q.abs("m.sh")
+			line3 := strings.Index(src, "\necho $y") + 1 // the scope's read, on line 3
+			if got := q.strs(q.s.Definition(p, line3+6)); strings.Join(got, ",") != "m.sh:2" {
+				t.Errorf("%s, %s: inner read defined at %v, want the write on line 2\n%s", kind, form, got, src)
+			}
+			if got := q.strs(q.s.Definition(p, len(src)-2)); strings.Join(got, ",") != "m.sh:1" {
+				t.Errorf("%s, %s: read after the scope defined at %v, want y=1\n%s", kind, form, got, src)
+			}
 		}
 	}
 }

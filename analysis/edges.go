@@ -343,8 +343,15 @@ func (s *Snapshot) aliasDeclOf(file int, u *Use) *Decl {
 }
 
 // callerOfScope returns the declaration of the innermost named function
-// around scope sc, nil at the file's top level.
+// around scope sc, nil at the file's top level. A scope Bind made knows it
+// (Scope.named); others are walked.
 func (s *Snapshot) callerOfScope(file int, sc *Scope) *Decl {
+	if sc != nil && sc.closed {
+		if sc.named == nil {
+			return nil
+		}
+		return s.funcDeclOf(file, sc.named)
+	}
 	for ; sc != nil; sc = sc.Parent {
 		if sc.Kind == ScopeFunction && sc.Func != "" {
 			return s.funcDeclOf(file, sc.Node)

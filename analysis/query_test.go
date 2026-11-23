@@ -399,3 +399,16 @@ func (s *Snapshot) hitBindings(path string, offset int) []Binding {
 	h, _, _ := s.at(path, offset)
 	return h.binds
 }
+
+// review I1: in a NUL-free file a name holding a line continuation is the name
+// the shell reads, as at b414076, so its uses bind: the call `foo`, the read
+// `$myvar`, and in POSIX sh the read of a `local` (a plain call there).
+func TestContinuationNamesBind(t *testing.T) {
+	q := buildMem(t, map[string]string{
+		"a.sh": "fo\\\no() { echo hi; }\nfoo\nmy\\\nvar=1\necho \"$myvar\"\n",
+		"b.sh": "#!/bin/sh\nlocal fo\\\no=1\necho $foo\n",
+	})
+	wantEq(t, q.def("a.sh", "foo\n", 0, 0), "a.sh:1")
+	wantEq(t, q.def("a.sh", "myvar\"", 0, 0), "a.sh:4") // line 4: the continuation ends line 1 and line 4
+	wantEq(t, q.def("b.sh", "foo\n", 0, 0), "b.sh:2")
+}

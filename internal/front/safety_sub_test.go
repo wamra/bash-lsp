@@ -154,8 +154,14 @@ func nested(pre, open, mid, close, post string, n int) func() string {
 	}
 }
 
-// TestCrashHelper is the child side: it parses one source and walks the
-// result, as analysis does. It does nothing unless crashCaseEnv is set.
+// crashAnalyse binds and builds a parsed file (analysis.Bind and
+// analysis.Build) and describes the result. Package analysis imports this
+// one, so only the external test package can reach it: crash_analysis_test.go
+// sets it from its init, and every child runs it after the walk.
+var crashAnalyse func(f *tree.File) string
+
+// TestCrashHelper is the child side: it parses one source, walks the result,
+// binds and builds it, as analysis does. It does nothing unless crashCaseEnv is set.
 func TestCrashHelper(t *testing.T) {
 	name := os.Getenv(crashCaseEnv)
 	if name == "" {
@@ -190,13 +196,17 @@ func parseAndWalk(src []byte) string {
 	if d := treeDepth(f); d > 3*maxDepth+10 {
 		panic(fmt.Sprintf("tree depth %d over the lowerer's bound", d))
 	}
+	bound := ""
+	if crashAnalyse != nil {
+		bound = "; " + crashAnalyse(f)
+	}
 	if f.Skipped != "" {
 		if f.Skipped != nestingError || len(f.Root.Children) != 0 || !errorWith(f.Errors, nestingError) {
 			panic(fmt.Sprintf("skipped %q with %d statements, errors %v", f.Skipped, len(f.Root.Children), f.Errors))
 		}
-		return "result: skipped: " + f.Skipped
+		return "result: skipped: " + f.Skipped + bound
 	}
-	return fmt.Sprintf("result: parsed: %d statements, %d nodes, %d errors, nesting error: %v", len(f.Root.Children), nodes, len(f.Errors), hasErr(f, nestingError))
+	return fmt.Sprintf("result: parsed: %d statements, %d nodes, %d errors, nesting error: %v", len(f.Root.Children), nodes, len(f.Errors), hasErr(f, nestingError)) + bound
 }
 
 // runChild runs TestCrashHelper in a child process and returns its output.
@@ -237,6 +247,9 @@ func TestNoCrashSubprocess(t *testing.T) {
 			}
 			if !strings.Contains(out, "result: parsed: ") && !strings.Contains(out, "result: skipped: "+nestingError) {
 				t.Fatalf("child printed no result:\n%s", firstLines(out, 12))
+			}
+			if !strings.Contains(out, "; bound: ") {
+				t.Fatalf("child did not bind and build:\n%s", firstLines(out, 12))
 			}
 			// The cases named for it sit at the parser's limit, not past it.
 			if strings.HasPrefix(name, "limit-") && !strings.Contains(out, "nesting error: false") {

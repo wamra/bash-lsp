@@ -1,13 +1,54 @@
 package analysis
 
 import (
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/wamra/bash-lsp/internal/front"
 	"github.com/wamra/bash-lsp/tree"
 )
 
-// FuzzBind parses and binds arbitrary input: no panic, every variable use and
+// fuzzBudget is the time one fuzz input of n bytes may take in Bind or Build:
+// generous (a 64 KiB input takes a few milliseconds), but review C1's
+// quadratic bracket runs took 0.8 s at that size.
+func fuzzBudget(n int) time.Duration {
+	b := 100*time.Millisecond + time.Duration(n)*2*time.Microsecond
+	if raceBuild {
+		b *= 10
+	}
+	return b
+}
+
+// parseBudget is the time Parse may take on n bytes. Parsing is linear but
+// deep nesting costs about 7 µs a level, and after an error resync parses the
+// rest again from several lines (25 µs a byte for 3 KB of `(((`, found by this
+// fuzzer); resync's cost is milestone 3's (docs/m1-deferred.md). The bound
+// catches what grows faster than that.
+func parseBudget(n int) time.Duration {
+	b := time.Second + time.Duration(n)*100*time.Microsecond
+	if raceBuild {
+		b *= 10
+	}
+	return b
+}
+
+// withinBudget runs fn and fails t when it takes longer than budget, the best
+// of three runs (a fuzz worker shares the machine with the others).
+func withinBudget(t *testing.T, what string, budget time.Duration, n int, fn func()) {
+	t.Helper()
+	best := time.Duration(1<<63 - 1)
+	for range 3 {
+		start := time.Now()
+		fn()
+		if best = min(best, time.Since(start)); best <= budget {
+			return
+		}
+	}
+	t.Fatalf("%s took %v on %d bytes, over its budget of %v", what, best, n, budget)
+}
+
+// FuzzBind parses, binds and builds arbitrary input, Parse within parseBudget, Bind and Build each within fuzzBudget: no panic, every variable use and
 // declaration lies inside the file, and a use that came from arithmetic (an
 // arithmetic node, or a subscript or slice inside an expansion or assignment)
 // covers exactly its name's bytes. The name range of a plain `$x` is the
@@ -27,15 +68,24 @@ func FuzzBind(f *testing.F) {
 		"bash -c 'g $((i+1))'; sh -ec \"h ${v:-1}\"\n",
 		"cmd=f\n\"$cmd\" x; ${cmd} y\n",
 		"eval \"x; \\\n  f\"; eval \\f\n",
+		// review C1 at the 64 KiB this fuzzer takes: a bracket run, and names
+		// deep in subshells (TestBracketRunsBindInBoundedTime, deepCases).
+		"let \"" + strings.Repeat("a[", 32000) + "\"\n",
 	} {
+		f.Add([]byte(s))
+	}
+	for _, s := range deepCases(1 << 16) {
 		f.Add([]byte(s))
 	}
 	f.Fuzz(func(t *testing.T, src []byte) {
 		if len(src) > 1<<16 {
 			return
 		}
-		file := front.Parse("/ws/f.sh", src, front.Bash)
-		ff := Bind(file)
+		var file *tree.File
+		var ff *FileFacts
+		withinBudget(t, "Parse", parseBudget(len(src)), len(src), func() { file = front.Parse("/ws/f.sh", src, front.Bash) })
+		withinBudget(t, "Bind", fuzzBudget(len(src)), len(src), func() { ff = Bind(file) })
+		withinBudget(t, "Build", fuzzBudget(len(src)), len(src), func() { Build(map[string]*FileFacts{"/ws/f.sh": ff}, Options{Root: "/ws"}, 1) })
 		check := func(what, name string, s, e int, arith bool) {
 			if s < 0 || e > len(src) || s > e {
 				t.Fatalf("%s %q: range [%d,%d) outside file of %d bytes", what, name, s, e, len(src))

@@ -21,6 +21,19 @@ spec's section 0.7. Every script prints JSON on stdout. Python only through
 
 The `*-m2a` files (`bash-lsp-m2a.json`, `repeat-big-file-m2a.json`, `repeat-workspace-edits-m2a.json`, `repeat-arith-file-m2a.json`, `repro-c1-m2a.json`) are the milestone 2a acceptance measurements at cb830e6, and `resync-cost-m2a-task5.txt` and `fuzz-m2a-task5.txt` the Task 5 resync re-measurement and fuzz runs; `docs/m2a-acceptance.md` cites each. `repro-c1/run_all.py` runs every generator of `repro-c1/` against a binary.
 
+The `*-m2a-final` files are the same measurements after the final review's fix
+wave, on a binary built from 43196e8 (the last commit that changes non-test
+code; c7df9ed after it changes only fuzz budgets in tests):
+`bash-lsp-m2a-final.json` (28 cases), `repeat-big-file-m2a-final.json` and
+`repeat-arith-file-m2a-final.json` (10 runs of `scale.py` each),
+`repeat-workspace-edits-m2a-final.json` (30 runs of `scale_ws.py`),
+`repro-c1-m2a-final.json` (`repro-c1/run_all.py`), `fuzz-m2a-final.txt`
+(5-minute `FuzzBind` and `FuzzParse` with their per-input time budgets) and
+`crash-suite-m2a-final.txt` (`TestNoCrashSubprocess -v`, each case parsed,
+walked, bound and built). `lowerer-depth-m2a-final.txt` is the output of
+`TestLowererLimitPerConstruct`: the first depth at which the lowerer drops a
+statement, per construct. `docs/m2a-acceptance.md` cites each.
+
 Local divergence from the evidence copy of `bench.py`: the server pipes are
 unbuffered. With a buffered reader a notification and a reply arriving in one
 read left the reply invisible to `select()` and a call stalled for its whole

@@ -483,3 +483,25 @@ func TestDynamicScopeReasonIsNoEdgeReason(t *testing.T) {
 	}()
 	reasonCode(ReasonDynamicScope)
 }
+
+// A `"$cmd"` call reads the variable by the variable rules, so a private
+// declaration around the call (rules S1, S2) is the one it reads. Build
+// finds it through privateOf (merge of m2's linear private-scope lookup).
+func TestVariableCallSeesPrivateVariable(t *testing.T) {
+	q := buildMem(t, map[string]string{
+		"m.sh": "f() { :; }\ng() { :; }\ncmd=f\n" +
+			"( cmd=g; \"$cmd\" )\n" + // 4
+			"\"$cmd\"\n" + // 5
+			"x=$( ( cmd=g; ( \"$cmd\" ) ) )\n" + // 6
+			"a | { cmd=g; \"$cmd\"; }\n" + // 7
+			"h() { ( cmd=g; ( \"$cmd\" ) ); \"$cmd\"; }\n", // 8
+	})
+	wantSame(t, q.fileEdges("m.sh"),
+		"m.sh:4 calls candidate/variable-constant «\"$cmd\"» -> g@m.sh:2",
+		"m.sh:5 calls candidate/variable-constant «\"$cmd\"» -> f@m.sh:1",
+		"m.sh:6 calls candidate/variable-constant «\"$cmd\"» -> g@m.sh:2",
+		"m.sh:7 calls candidate/variable-constant «\"$cmd\"» -> g@m.sh:2",
+		"m.sh:8 calls candidate/variable-constant «\"$cmd\"» -> g@m.sh:2",
+		"m.sh:8 calls candidate/variable-constant «\"$cmd\"» -> f@m.sh:1",
+	)
+}

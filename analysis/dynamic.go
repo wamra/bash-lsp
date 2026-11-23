@@ -631,7 +631,10 @@ func (s *Snapshot) prepareDynamic() {
 // is not counted; one that is not a plain literal assignment (`read`, a for
 // loop, `+=`, an array, a nameref or integer, an expansion) makes the value
 // unknown, as does a literal that is no function in view (`cmd=echo`).
-func (s *Snapshot) bindVariableCall(out []Binding, file int, u *Use) []Binding {
+//
+// priv is the private symbol of the variable at the call (privateOf), nil
+// when none.
+func (s *Snapshot) bindVariableCall(out []Binding, file int, u *Use, priv *Symbol) []Binding {
 	unknown := func() []Binding {
 		s.dyn[file] = append(s.dyn[file], dynSite{rng: u.Range, sc: u.Scope, reason: codeVariableUnknown})
 		return out
@@ -639,7 +642,7 @@ func (s *Snapshot) bindVariableCall(out []Binding, file int, u *Use) []Binding {
 	if !identRe.MatchString(u.Name) {
 		return unknown()
 	}
-	vars := s.bindVar(nil, file, &Use{Kind: UseVarRead, Name: u.Name, Range: u.Range, Scope: u.Scope})
+	vars := s.bindVar(nil, file, &Use{Kind: UseVarRead, Name: u.Name, Range: u.Range, Scope: u.Scope}, priv)
 	var targets []*Symbol
 	type lit struct {
 		d    *Decl
