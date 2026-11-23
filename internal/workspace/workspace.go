@@ -100,6 +100,10 @@ type rcInfo struct {
 
 const maxRCBytes = 64 << 10
 
+// maxIgnoreBytes caps a .gitignore read. Real ones are a few KiB; the largest
+// in big monorepos stay well under 100 KiB. A larger one is treated as absent.
+const maxIgnoreBytes = 1 << 20
+
 // Workspace is safe for concurrent use.
 type Workspace struct {
 	root string
@@ -317,6 +321,36 @@ func parseEntry(path string, src []byte) *entry {
 	return &entry{path: path, hash: sha256.Sum256(src), dialect: d.String(), facts: analysis.Bind(f)}
 }
 
+// readConfig reads a small file the walk consults (.gitignore, .shellcheckrc):
+// a regular file, or a symlink that resolves to a regular file inside the
+// root, of at most max bytes. ok is false for anything else. Nothing that is
+// not a regular file is opened: opening a FIFO blocks until a writer appears,
+// and every request waits for the first build.
+func (w *Workspace) readConfig(path string, max int64) (data []byte, ok bool) {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return nil, false
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		rt, err := filepath.EvalSymlinks(path)
+		if err != nil || !w.within(rt) {
+			return nil, false
+		}
+		if fi, err = os.Stat(rt); err != nil {
+			return nil, false
+		}
+		path = rt
+	}
+	if !fi.Mode().IsRegular() || fi.Size() > max {
+		return nil, false
+	}
+	data, big, err := readBounded(path, max)
+	if err != nil || big {
+		return nil, false
+	}
+	return data, true
+}
+
 // readBounded reads at most max bytes; tooBig is true when the file is longer.
 func readBounded(path string, max int64) (data []byte, tooBig bool, err error) {
 	f, err := os.Open(path)
@@ -436,7 +470,7 @@ func (w *Workspace) walk() (cands []candidate) {
 	visited := map[string]bool{key(w.root): true}
 	var rec func(dir, real, rel string, set *ignore.Set)
 	rec = func(dir, real, rel string, set *ignore.Set) {
-		if data, err := os.ReadFile(filepath.Join(dir, ".gitignore")); err == nil {
+		if data, ok := w.readConfig(filepath.Join(dir, ".gitignore"), maxIgnoreBytes); ok {
 			set = set.Clone()
 			set.Add(ignore.Parse(rel, data))
 		}
@@ -639,7 +673,7 @@ func (w *Workspace) accepts(path string) status {
 	set := &ignore.Set{}
 	dir, relDir := w.root, ""
 	for i, part := range parts {
-		if data, err := os.ReadFile(filepath.Join(dir, ".gitignore")); err == nil {
+		if data, ok := w.readConfig(filepath.Join(dir, ".gitignore"), maxIgnoreBytes); ok {
 			set = set.Clone()
 			set.Add(ignore.Parse(relDir, data))
 		}
@@ -698,9 +732,9 @@ func (w *Workspace) searchPaths(path string) []string {
 	return nil
 }
 
-// readRC reads dir/.shellcheckrc. raw is nil when the file is absent, larger
-// than 64 KiB, or a symlink resolving outside the root; non-nil (possibly
-// empty) otherwise.
+// readRC reads dir/.shellcheckrc. raw is nil when the file is absent, not a
+// regular file, larger than 64 KiB, or a symlink resolving outside the root;
+// non-nil (possibly empty) otherwise.
 func (w *Workspace) readRC(dir string) rcInfo {
 	file := filepath.Join(dir, ".shellcheckrc")
 	var info rcInfo
@@ -709,11 +743,8 @@ func (w *Workspace) readRC(dir string) rcInfo {
 		return info
 	}
 	info.stat, info.size, info.mtime = true, fi.Size(), fi.ModTime().UnixNano()
-	if rt, err := filepath.EvalSymlinks(file); err != nil || !w.within(rt) {
-		return info
-	}
-	data, big, err := readBounded(file, maxRCBytes)
-	if err != nil || big {
+	data, ok := w.readConfig(file, maxRCBytes)
+	if !ok {
 		return info
 	}
 	info.raw = []string{}
