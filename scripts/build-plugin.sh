@@ -6,6 +6,25 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${1:?usage: build-plugin.sh OUT [VERSION]}"
 VERSION="${2:-$(git -C "$ROOT" describe --tags --always --dirty 2>/dev/null || echo dev)}"
 P="$ROOT/plugin"
+
+# OUT is deleted and rebuilt, so refuse anything that is not a previous
+# staging: /, ., .., $HOME, the repo root, or an existing non-empty directory
+# without .claude-plugin/ (and any existing non-directory).
+refuse() { echo "build-plugin.sh: refusing to replace $OUT: $1" >&2; exit 2; }
+physical() { (cd "$1" 2>/dev/null && pwd -P); }
+case "$OUT" in
+  / | . | .. | */. | */..) refuse "not a staging directory" ;;
+esac
+if [ -e "$OUT" ] || [ -L "$OUT" ]; then
+  [ -d "$OUT" ] && [ ! -L "$OUT" ] || refuse "not a directory"
+  real="$(physical "$OUT")"
+  for p in / "$(physical "$HOME")" "$(physical "$ROOT")" "$(pwd -P)" "$(physical ..)"; do
+    [ "$real" != "$p" ] || refuse "it is $p"
+  done
+  if [ -n "$(ls -A "$OUT")" ] && [ ! -d "$OUT/.claude-plugin" ]; then
+    refuse "a non-empty directory that is not a previous staging (no .claude-plugin/)"
+  fi
+fi
 rm -rf "$OUT"; mkdir -p "$OUT/.claude-plugin" "$OUT/bin"
 for t in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64 windows/arm64; do
   os="${t%/*}"; arch="${t#*/}"; ext=""; [ "$os" = windows ] && ext=".exe"
