@@ -7,9 +7,11 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -58,7 +60,7 @@ func keyFor(p string, win bool) string {
 func key(p string) string { return keyFor(p, windows) }
 
 type entry struct {
-	path    string // display spelling
+	path    string // display spelling (canonical: resolved root, walk's directory names)
 	size    int64
 	mtime   int64
 	hash    [sha256.Size]byte
@@ -71,6 +73,29 @@ type overlay struct {
 	entry   *entry
 }
 
+type skipKind uint8
+
+const (
+	skipZsh   skipKind = iota + 1 // listed and skipped
+	skipBig                       // over MaxFileBytes
+	skipCount                     // over MaxFiles
+)
+
+type skipInfo struct {
+	kind skipKind
+	line string // LimitsHit line for skipBig
+}
+
+// rcInfo is a cached .shellcheckrc read: raw is nil when no usable file.
+type rcInfo struct {
+	raw   []string
+	stat  bool // file existed when read
+	size  int64
+	mtime int64
+}
+
+const maxRCBytes = 64 << 10
+
 // Workspace is safe for concurrent use.
 type Workspace struct {
 	root string
@@ -80,9 +105,9 @@ type Workspace struct {
 	disk     map[string]*entry
 	overlays map[string]*overlay
 	gen      uint64
-	skipped  int
-	limits   []string
-	rcCache  map[string][]string // dir -> raw source-path entries ("" cache miss is absent)
+	skips    map[string]skipInfo
+	dirName  map[string]string // key(real dir) -> the walk's logical path for it
+	rcCache  map[string]rcInfo
 	snap     atomic.Pointer[analysis.Snapshot]
 }
 
@@ -107,7 +132,8 @@ func Open(root string, lim Limits) (*Workspace, error) {
 	} else if !fi.IsDir() {
 		return nil, fmt.Errorf("%s is not a directory", root)
 	}
-	w := &Workspace{root: real, lim: lim, disk: map[string]*entry{}, overlays: map[string]*overlay{}, rcCache: map[string][]string{}}
+	w := &Workspace{root: real, lim: lim, disk: map[string]*entry{}, overlays: map[string]*overlay{},
+		skips: map[string]skipInfo{}, dirName: map[string]string{}, rcCache: map[string]rcInfo{}}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.reconcileAll()
@@ -121,9 +147,13 @@ func (w *Workspace) Root() string { return w.root }
 // Snapshot is the current immutable snapshot.
 func (w *Workspace) Snapshot() *analysis.Snapshot { return w.snap.Load() }
 
-// SetOverlay installs the unsaved editor buffer for path and rebuilds.
+// SetOverlay installs the unsaved editor buffer for path and rebuilds. The
+// path is canonicalised to the spelling the walk uses, so the overlay replaces
+// the file's disk entry.
 func (w *Workspace) SetOverlay(path string, version int, text []byte) {
-	path = w.abs(path)
+	w.mu.Lock()
+	path = w.canon(path, true)
+	w.mu.Unlock()
 	e := parseEntry(path, text)
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -134,9 +164,9 @@ func (w *Workspace) SetOverlay(path string, version int, text []byte) {
 // CloseOverlay drops the overlay of path: the file reverts to its disk
 // content, or disappears if it is not on disk.
 func (w *Workspace) CloseOverlay(path string) {
-	k := key(w.abs(path))
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	k := key(w.canon(path, true))
 	if _, ok := w.overlays[k]; !ok {
 		return
 	}
@@ -146,17 +176,21 @@ func (w *Workspace) CloseOverlay(path string) {
 
 // Refresh re-reads the given paths from disk (created, changed or deleted).
 // With no paths it reconciles the whole workspace: size and mtime first, then
-// content hash.
+// content hash. A path is accepted exactly when the full walk would list it.
 func (w *Workspace) Refresh(paths ...string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.rcCache = map[string][]string{}
-	changed := false
+	changed := w.rcStale()
+	if changed {
+		w.rcCache = map[string]rcInfo{}
+	}
 	if len(paths) == 0 {
-		changed = w.reconcileAll()
+		if w.reconcileAll() {
+			changed = true
+		}
 	} else {
 		for _, p := range paths {
-			if w.refreshOne(w.abs(p)) {
+			if w.refreshOne(w.canon(p, false)) {
 				changed = true
 			}
 		}
@@ -170,24 +204,93 @@ func (w *Workspace) Refresh(paths ...string) {
 func (w *Workspace) Report() Report {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	r := Report{Files: len(w.disk), Skipped: w.skipped, LimitsHit: append([]string(nil), w.limits...), Dialects: map[string]int{}}
+	r := Report{Files: len(w.disk), Skipped: len(w.skips), Dialects: map[string]int{}}
+	var big []string
+	count := false
+	for _, s := range w.skips {
+		switch s.kind {
+		case skipBig:
+			big = append(big, s.line)
+		case skipCount:
+			count = true
+		}
+	}
+	sort.Strings(big)
+	r.LimitsHit = big
+	if count {
+		r.LimitsHit = append(r.LimitsHit, fmt.Sprintf("file limit of %d reached: further files skipped", w.lim.MaxFiles))
+	}
 	for _, e := range w.disk {
 		r.Dialects[e.dialect]++
 	}
 	return r
 }
 
-func (w *Workspace) abs(p string) string {
+// canon returns the canonical spelling of a client path: parent directories
+// resolved through symlinks, then renamed to the walk's directory names (so a
+// directory alias and its target agree). With followFinal a symlink as the
+// last element is resolved too; without, it is kept (and later rejected).
+// Caller holds w.mu.
+func (w *Workspace) canon(p string, followFinal bool) string {
 	if !filepath.IsAbs(p) {
 		p = filepath.Join(w.root, p)
 	}
-	return filepath.Clean(p)
+	p = filepath.Clean(p)
+	dir, base := filepath.Split(p)
+	rdir := resolveExisting(filepath.Clean(dir))
+	if followFinal {
+		if rt, err := filepath.EvalSymlinks(filepath.Join(rdir, base)); err == nil {
+			rdir, base = filepath.Split(rt)
+			rdir = filepath.Clean(rdir)
+		}
+	}
+	for d := rdir; ; {
+		if name, ok := w.dirName[key(d)]; ok {
+			rest, _ := filepath.Rel(d, rdir)
+			return filepath.Join(name, rest, base)
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			break
+		}
+		d = parent
+	}
+	return filepath.Join(rdir, base)
+}
+
+// resolveExisting resolves symlinks in the longest existing prefix of dir.
+func resolveExisting(dir string) string {
+	if r, err := filepath.EvalSymlinks(dir); err == nil {
+		return r
+	}
+	parent := filepath.Dir(dir)
+	if parent == dir {
+		return dir
+	}
+	return filepath.Join(resolveExisting(parent), filepath.Base(dir))
 }
 
 func parseEntry(path string, src []byte) *entry {
 	d := front.Detect(path, src)
 	f := front.Parse(path, src, d)
 	return &entry{path: path, hash: sha256.Sum256(src), dialect: d.String(), facts: analysis.Bind(f)}
+}
+
+// readBounded reads at most max bytes; tooBig is true when the file is longer.
+func readBounded(path string, max int64) (data []byte, tooBig bool, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, false, err
+	}
+	defer f.Close()
+	data, err = io.ReadAll(io.LimitReader(f, max+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if int64(len(data)) > max {
+		return nil, true, nil
+	}
+	return data, false, nil
 }
 
 // rebuild publishes the next generation. Caller holds w.mu.
@@ -216,19 +319,27 @@ type candidate struct {
 	mtime int64
 }
 
-// classify reports whether path (with the given size) is a shell file by the
-// brief's rules, and whether it is a zsh file that is listed and skipped.
-func classify(path string) (shell, zsh bool) {
+type status uint8
+
+const (
+	notShell status = iota
+	isShell
+	isZsh
+)
+
+func classify(path string) status {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch {
 	case shellExts[ext]:
-		return true, false
+		return isShell
 	case ext == ".zsh":
-		return false, true
+		return isZsh
 	case ext == "":
-		return hasShellShebang(path), false
+		if hasShellShebang(path) {
+			return isShell
+		}
 	}
-	return false, false
+	return notShell
 }
 
 func hasShellShebang(path string) bool {
@@ -267,10 +378,21 @@ func (w *Workspace) within(real string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// walk lists candidate shell files under the root in lexical order.
-func (w *Workspace) walk() (cands []candidate, skipped int, limits []string) {
+func (w *Workspace) relSlash(p string) string {
+	rel, _ := filepath.Rel(w.root, p)
+	return filepath.ToSlash(rel)
+}
+
+func (w *Workspace) bigLine(rel string, size int64) string {
+	return fmt.Sprintf("%s: %d bytes exceeds the %d byte file limit", rel, size, w.lim.MaxFileBytes)
+}
+
+// walk lists candidate shell files under the root in lexical order, filling
+// w.skips and w.dirName. Caller holds w.mu.
+func (w *Workspace) walk() (cands []candidate) {
+	w.skips = map[string]skipInfo{}
+	w.dirName = map[string]string{key(w.root): w.root}
 	visited := map[string]bool{key(w.root): true}
-	countHit := false
 	var rec func(dir, real, rel string, set *ignore.Set)
 	rec = func(dir, real, rel string, set *ignore.Set) {
 		if data, err := os.ReadFile(filepath.Join(dir, ".gitignore")); err == nil {
@@ -306,18 +428,18 @@ func (w *Workspace) walk() (cands []candidate, skipped int, limits []string) {
 					continue
 				}
 				visited[key(target)] = true
+				w.dirName[key(target)] = full
 				rec(full, target, relp, set)
 				continue
 			}
 			if !de.Type().IsRegular() || set.Ignored(relp, false) {
 				continue
 			}
-			shell, zsh := classify(full)
-			if zsh {
-				skipped++
+			switch classify(full) {
+			case isZsh:
+				w.skips[key(full)] = skipInfo{kind: skipZsh}
 				continue
-			}
-			if !shell {
+			case notShell:
 				continue
 			}
 			fi, err := de.Info()
@@ -325,16 +447,11 @@ func (w *Workspace) walk() (cands []candidate, skipped int, limits []string) {
 				continue
 			}
 			if fi.Size() > w.lim.MaxFileBytes {
-				skipped++
-				limits = append(limits, fmt.Sprintf("%s: %d bytes exceeds the %d byte file limit", relp, fi.Size(), w.lim.MaxFileBytes))
+				w.skips[key(full)] = skipInfo{skipBig, w.bigLine(relp, fi.Size())}
 				continue
 			}
 			if len(cands) >= w.lim.MaxFiles {
-				skipped++
-				if !countHit {
-					countHit = true
-					limits = append(limits, fmt.Sprintf("file limit of %d reached: remaining files skipped from %s", w.lim.MaxFiles, relp))
-				}
+				w.skips[key(full)] = skipInfo{kind: skipCount}
 				continue
 			}
 			cands = append(cands, candidate{full, fi.Size(), fi.ModTime().UnixNano()})
@@ -344,11 +461,14 @@ func (w *Workspace) walk() (cands []candidate, skipped int, limits []string) {
 	return
 }
 
+type loadResult struct {
+	e   *entry
+	big bool
+}
+
 // reconcileAll re-walks the root and brings w.disk in line. Caller holds w.mu.
 func (w *Workspace) reconcileAll() (changed bool) {
-	cands, skipped, limits := w.walk()
-	w.skipped, w.limits = skipped, limits
-
+	cands := w.walk()
 	seen := make(map[string]bool, len(cands))
 	var todo []candidate
 	for _, c := range cands {
@@ -365,7 +485,7 @@ func (w *Workspace) reconcileAll() (changed bool) {
 			changed = true
 		}
 	}
-	loaded := make([]*entry, len(todo))
+	loaded := make([]loadResult, len(todo))
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, runtime.NumCPU())
 	for i, c := range todo {
@@ -373,58 +493,91 @@ func (w *Workspace) reconcileAll() (changed bool) {
 		sem <- struct{}{}
 		go func() {
 			defer func() { <-sem; wg.Done() }()
-			src, err := os.ReadFile(c.path)
+			src, big, err := readBounded(c.path, w.lim.MaxFileBytes)
 			if err != nil {
 				return
 			}
+			if big {
+				loaded[i].big = true
+				return
+			}
 			h := sha256.Sum256(src)
-			if e := w.disk[key(c.path)]; e != nil && e.hash == h { // read-only access: map is not written during this phase
-				loaded[i] = &entry{path: e.path, size: c.size, mtime: c.mtime, hash: h, dialect: e.dialect, facts: e.facts}
+			if e := w.disk[key(c.path)]; e != nil && e.hash == h { // map is only read during this phase
+				loaded[i].e = &entry{path: e.path, size: c.size, mtime: c.mtime, hash: h, dialect: e.dialect, facts: e.facts}
 				return
 			}
 			e := parseEntry(c.path, src)
 			e.size, e.mtime = c.size, c.mtime
-			loaded[i] = e
+			loaded[i].e = e
 		}()
 	}
 	wg.Wait()
-	for i, e := range loaded {
+	for i, r := range loaded {
 		k := key(todo[i].path)
-		if e == nil {
+		if r.e == nil {
 			if _, ok := w.disk[k]; ok {
 				delete(w.disk, k)
 				changed = true
 			}
+			if r.big { // grew past the limit after the stat
+				w.skips[k] = skipInfo{skipBig, w.bigLine(w.relSlash(todo[i].path), todo[i].size)}
+			}
 			continue
 		}
-		if old := w.disk[k]; old == nil || old.facts != e.facts {
+		if old := w.disk[k]; old == nil || old.facts != r.e.facts {
 			changed = true
 		}
-		w.disk[k] = e
+		w.disk[k] = r.e
 	}
 	return changed
 }
 
-// refreshOne re-reads one path. Caller holds w.mu.
+// refreshOne re-reads one canonical path, accepting it exactly when the full
+// walk would list it. Caller holds w.mu.
 func (w *Workspace) refreshOne(path string) (changed bool) {
 	k := key(path)
 	drop := func() bool {
+		delete(w.skips, k)
 		if _, ok := w.disk[k]; ok {
 			delete(w.disk, k)
 			return true
 		}
 		return false
 	}
-	fi, err := os.Stat(path)
-	if err != nil || !fi.Mode().IsRegular() || !w.accepts(path) || fi.Size() > w.lim.MaxFileBytes {
+	fi, err := os.Lstat(path) // a symlink is never listed by the walk
+	if err != nil || !fi.Mode().IsRegular() {
 		return drop()
 	}
-	src, err := os.ReadFile(path)
+	switch w.accepts(path) {
+	case notShell:
+		return drop()
+	case isZsh:
+		d := drop()
+		w.skips[k] = skipInfo{kind: skipZsh}
+		return d
+	}
+	if fi.Size() > w.lim.MaxFileBytes {
+		d := drop()
+		w.skips[k] = skipInfo{skipBig, w.bigLine(w.relSlash(path), fi.Size())}
+		return d
+	}
+	old := w.disk[k]
+	if old == nil && len(w.disk) >= w.lim.MaxFiles {
+		w.skips[k] = skipInfo{kind: skipCount}
+		return false
+	}
+	src, big, err := readBounded(path, w.lim.MaxFileBytes)
 	if err != nil {
 		return drop()
 	}
+	if big {
+		d := drop()
+		w.skips[k] = skipInfo{skipBig, w.bigLine(w.relSlash(path), fi.Size())}
+		return d
+	}
+	delete(w.skips, k)
 	h := sha256.Sum256(src)
-	if old := w.disk[k]; old != nil && old.hash == h {
+	if old != nil && old.hash == h {
 		old.size, old.mtime = fi.Size(), fi.ModTime().UnixNano()
 		return false
 	}
@@ -434,12 +587,12 @@ func (w *Workspace) refreshOne(path string) (changed bool) {
 	return true
 }
 
-// accepts applies the discovery rules to one path: inside the root, not under
-// a skipped or git-ignored directory, and a shell file.
-func (w *Workspace) accepts(path string) bool {
+// accepts applies the walk's rules to one canonical path: inside the root,
+// not under a skipped or git-ignored directory, and a shell (or zsh) file.
+func (w *Workspace) accepts(path string) status {
 	rel, err := filepath.Rel(w.root, path)
 	if err != nil || !w.within(path) {
-		return false
+		return notShell
 	}
 	parts := strings.Split(filepath.ToSlash(rel), "/")
 	set := &ignore.Set{}
@@ -455,18 +608,28 @@ func (w *Workspace) accepts(path string) bool {
 		}
 		last := i == len(parts)-1
 		if !last && (skipDirs[part] || set.Ignored(relp, true)) {
-			return false
+			return notShell
 		}
 		if last && set.Ignored(relp, false) {
-			return false
+			return notShell
 		}
 		dir, relDir = filepath.Join(dir, part), relp
 	}
-	shell, _ := classify(path)
-	return shell
+	return classify(path)
 }
 
 // ---- .shellcheckrc ----
+
+// rcStale reports whether any .shellcheckrc read so far changed on disk.
+func (w *Workspace) rcStale() bool {
+	for dir, info := range w.rcCache {
+		fi, err := os.Stat(filepath.Join(dir, ".shellcheckrc"))
+		if (err == nil) != info.stat || err == nil && (fi.Size() != info.size || fi.ModTime().UnixNano() != info.mtime) {
+			return true
+		}
+	}
+	return false
+}
 
 // searchPaths returns the source-path= entries of the nearest .shellcheckrc at
 // or above path's directory, inside the root only. SCRIPTDIR is path's dir.
@@ -474,14 +637,14 @@ func (w *Workspace) accepts(path string) bool {
 func (w *Workspace) searchPaths(path string) []string {
 	dir := filepath.Dir(path)
 	for w.within(dir) {
-		raw, ok := w.rcCache[dir]
+		info, ok := w.rcCache[dir]
 		if !ok {
-			raw = readRC(filepath.Join(dir, ".shellcheckrc"))
-			w.rcCache[dir] = raw
+			info = w.readRC(dir)
+			w.rcCache[dir] = info
 		}
-		if raw != nil {
+		if info.raw != nil {
 			var out []string
-			for _, v := range raw {
+			for _, v := range info.raw {
 				out = append(out, resolveSearch(filepath.Dir(path), v))
 			}
 			return out
@@ -494,27 +657,37 @@ func (w *Workspace) searchPaths(path string) []string {
 	return nil
 }
 
-// readRC returns the source-path values of an rc file; nil when the file is
-// absent, an empty non-nil slice when present without source-path entries.
-func readRC(file string) []string {
-	data, err := os.ReadFile(file)
+// readRC reads dir/.shellcheckrc. raw is nil when the file is absent, larger
+// than 64 KiB, or a symlink resolving outside the root; non-nil (possibly
+// empty) otherwise.
+func (w *Workspace) readRC(dir string) rcInfo {
+	file := filepath.Join(dir, ".shellcheckrc")
+	var info rcInfo
+	fi, err := os.Stat(file)
 	if err != nil {
-		return nil
+		return info
 	}
-	out := []string{}
+	info.stat, info.size, info.mtime = true, fi.Size(), fi.ModTime().UnixNano()
+	if rt, err := filepath.EvalSymlinks(file); err != nil || !w.within(rt) {
+		return info
+	}
+	data, big, err := readBounded(file, maxRCBytes)
+	if err != nil || big {
+		return info
+	}
+	info.raw = []string{}
 	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		v, ok := strings.CutPrefix(line, "source-path=")
+		v, ok := strings.CutPrefix(strings.TrimSpace(line), "source-path=")
 		if !ok {
 			continue
 		}
 		for _, p := range strings.Split(strings.TrimSpace(v), string(os.PathListSeparator)) {
 			if p = strings.TrimSpace(p); p != "" {
-				out = append(out, p)
+				info.raw = append(info.raw, p)
 			}
 		}
 	}
-	return out
+	return info
 }
 
 func resolveSearch(scriptDir, v string) string {

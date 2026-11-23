@@ -286,3 +286,188 @@ func TestConcurrentUse(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func symlink(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+}
+
+func TestSymlinksOutOfRootNeverListed(t *testing.T) {
+	outside := t.TempDir()
+	write(t, filepath.Join(outside, "out.sh"), "outside() { :; }\n")
+	root := t.TempDir()
+	write(t, filepath.Join(root, "real.sh"), "real() { :; }\n")
+	symlink(t, filepath.Join(outside, "out.sh"), filepath.Join(root, "link.sh"))
+	symlink(t, outside, filepath.Join(root, "linkdir"))
+	symlink(t, "real.sh", filepath.Join(root, "dup.sh")) // in-root file link: a duplicate
+	w := open(t, root)
+	want := []string{"real.sh"}
+	if got := rels(w); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Open listed %v", got)
+	}
+	g := w.Snapshot().Generation()
+	for _, p := range []string{"link.sh", "linkdir/out.sh", "dup.sh"} {
+		w.Refresh(filepath.Join(w.Root(), p))
+		if got := rels(w); !reflect.DeepEqual(got, want) {
+			t.Fatalf("Refresh(%s) listed %v", p, got)
+		}
+	}
+	if w.Snapshot().Generation() != g {
+		t.Fatal("rejected refreshes must not rebuild")
+	}
+	w.Refresh() // full reconcile agrees
+	if got := rels(w); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Refresh() listed %v", got)
+	}
+}
+
+func TestOverlayThroughSymlinkedRoot(t *testing.T) {
+	base := t.TempDir()
+	write(t, filepath.Join(base, "real", "lib", "a.sh"), "old() { :; }\n")
+	symlink(t, filepath.Join(base, "real"), filepath.Join(base, "link"))
+	w := open(t, filepath.Join(base, "link"))
+	viaLink := filepath.Join(base, "link", "lib", "a.sh")
+	w.SetOverlay(viaLink, 1, []byte("new() { :; }\n"))
+	s := w.Snapshot()
+	if len(s.Paths()) != 1 || len(s.WorkspaceSymbols("new", 5)) != 1 || len(s.WorkspaceSymbols("old", 5)) != 0 {
+		t.Fatalf("overlay did not replace its disk entry: %v", s.Paths())
+	}
+	w.CloseOverlay(viaLink)
+	if len(w.Snapshot().WorkspaceSymbols("old", 5)) != 1 || len(w.Snapshot().Paths()) != 1 {
+		t.Fatal("close through the unresolved spelling failed")
+	}
+}
+
+func TestOverlayThroughDirectoryAlias(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "real", "a.sh"), "old() { :; }\n")
+	symlink(t, "real", filepath.Join(root, "alias")) // sorts first: the walk names it alias/a.sh
+	w := open(t, root)
+	if got := rels(w); !reflect.DeepEqual(got, []string{"alias/a.sh"}) {
+		t.Fatal(got)
+	}
+	for _, p := range []string{"real/a.sh", "alias/a.sh"} {
+		w.SetOverlay(filepath.Join(w.Root(), p), 1, []byte("new() { :; }\n"))
+		s := w.Snapshot()
+		if len(s.Paths()) != 1 || len(s.WorkspaceSymbols("new", 5)) != 1 || len(s.WorkspaceSymbols("old", 5)) != 0 {
+			t.Fatalf("overlay %s duplicated the file: %v", p, s.Paths())
+		}
+		w.CloseOverlay(filepath.Join(w.Root(), "real", "a.sh"))
+		if len(w.Snapshot().WorkspaceSymbols("old", 5)) != 1 {
+			t.Fatalf("close of %s via real path did not drop overlay", p)
+		}
+	}
+	// Refresh by the real spelling updates the aliased entry.
+	write(t, filepath.Join(root, "real", "a.sh"), "newer() { :; }\n")
+	w.Refresh(filepath.Join(w.Root(), "real", "a.sh"))
+	if len(w.Snapshot().WorkspaceSymbols("newer", 5)) != 1 || len(w.Snapshot().Paths()) != 1 {
+		t.Fatal("Refresh via real path missed the aliased entry")
+	}
+}
+
+func TestShellcheckrcEditTakesEffect(t *testing.T) {
+	for _, mode := range []string{"path", "all"} {
+		t.Run(mode, func(t *testing.T) {
+			root := t.TempDir()
+			write(t, filepath.Join(root, "lib", "util.sh"), "util() { :; }\n")
+			write(t, filepath.Join(root, "bin", "run.sh"), "#!/bin/bash\nsource util.sh\n")
+			w := open(t, root)
+			run := filepath.Join(w.Root(), "bin", "run.sh")
+			st := func() analysis.SourceStatus { return w.Snapshot().SourceEdges(run)[0].Status }
+			if st() != analysis.SourceUnresolved {
+				t.Fatal("should start unresolved")
+			}
+			rc := filepath.Join(w.Root(), ".shellcheckrc")
+			write(t, rc, "source-path=SCRIPTDIR/../lib\n")
+			g := w.Snapshot().Generation()
+			if mode == "path" {
+				w.Refresh(rc)
+			} else {
+				w.Refresh()
+			}
+			if st() != analysis.SourceResolved || w.Snapshot().Generation() != g+1 {
+				t.Fatalf("rc creation ignored (gen %d -> %d)", g, w.Snapshot().Generation())
+			}
+			write(t, rc, "# emptied, different size\n")
+			if mode == "path" {
+				w.Refresh(rc)
+			} else {
+				w.Refresh()
+			}
+			if st() != analysis.SourceUnresolved {
+				t.Fatal("rc edit ignored")
+			}
+		})
+	}
+}
+
+func TestShellcheckrcSafety(t *testing.T) {
+	root := t.TempDir()
+	big := "source-path=/x\n" + strings.Repeat("# pad\n", maxRCBytes/6+1)
+	write(t, filepath.Join(root, ".shellcheckrc"), big)
+	write(t, filepath.Join(root, "a.sh"), "echo\n")
+	w := open(t, root)
+	if got := w.searchPaths(filepath.Join(w.Root(), "a.sh")); len(got) != 0 {
+		t.Fatalf("oversize rc honoured: %v", got)
+	}
+	outside := t.TempDir()
+	write(t, filepath.Join(outside, "rc"), "source-path=/evil\n")
+	root2 := t.TempDir()
+	write(t, filepath.Join(root2, "a.sh"), "echo\n")
+	symlink(t, filepath.Join(outside, "rc"), filepath.Join(root2, ".shellcheckrc"))
+	w2 := open(t, root2)
+	if got := w2.searchPaths(filepath.Join(w2.Root(), "a.sh")); len(got) != 0 {
+		t.Fatalf("rc symlinked outside root honoured: %v", got)
+	}
+}
+
+func TestRefreshPathsEnforceLimits(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "a.sh"), "echo a\n")
+	write(t, filepath.Join(root, "b.sh"), "echo b\n")
+	w, err := Open(root, Limits{MaxFiles: 2, MaxFileBytes: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := filepath.Join(w.Root(), "c.sh")
+	write(t, c, "echo c\n")
+	w.Refresh(c)
+	r := w.Report()
+	if len(w.Snapshot().Paths()) != 2 || r.Skipped != 1 || len(r.LimitsHit) != 1 {
+		t.Fatalf("MaxFiles not enforced by Refresh(path): %v %+v", rels(w), r)
+	}
+	w.Refresh(c) // repeat must not double count
+	if w.Report().Skipped != 1 {
+		t.Fatal("double counted")
+	}
+	os.Remove(c)
+	w.Refresh(c)
+	if r := w.Report(); r.Skipped != 0 || len(r.LimitsHit) != 0 {
+		t.Fatalf("stale skip: %+v", r)
+	}
+	a := filepath.Join(w.Root(), "a.sh")
+	write(t, a, "#!/bin/bash\n"+strings.Repeat("# pad\n", 40))
+	w.Refresh(a)
+	r = w.Report()
+	if len(w.Snapshot().Paths()) != 1 || r.Skipped != 1 || len(r.LimitsHit) != 1 || !strings.Contains(r.LimitsHit[0], "a.sh") {
+		t.Fatalf("oversize not dropped: %v %+v", rels(w), r)
+	}
+	write(t, a, "echo a\n")
+	w.Refresh(a)
+	if r := w.Report(); r.Skipped != 0 || len(w.Snapshot().Paths()) != 2 {
+		t.Fatalf("shrunk file not restored: %+v", r)
+	}
+}
+
+func TestReadBounded(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "f")
+	write(t, p, strings.Repeat("x", 50))
+	if d, big, err := readBounded(p, 50); err != nil || big || len(d) != 50 {
+		t.Fatal(len(d), big, err)
+	}
+	if d, big, err := readBounded(p, 49); err != nil || !big || d != nil {
+		t.Fatal(len(d), big, err)
+	}
+}
