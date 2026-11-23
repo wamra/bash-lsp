@@ -14,7 +14,9 @@ import "mvdan.cc/sh/v3/syntax"
 //     chain: a chain of `f() # c` lines took seconds.
 //
 // visitAll keeps its own stack and never calls End. The cases follow
-// syntax.Walk in mvdan.cc/sh v3.14.1.
+// syntax.Walk in mvdan.cc/sh v3.14.1, with one difference: Walk stops at the
+// first comment that trails a statement or case item and skips any after it
+// (`a) ;; # one` then `# two` before `esac`); visitAll visits them all.
 func visitAll(root syntax.Node, f func(syntax.Node)) {
 	stack := []syntax.Node{root}
 	push := func(n syntax.Node) { stack = append(stack, n) }
