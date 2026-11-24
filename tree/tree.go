@@ -166,9 +166,10 @@ type File struct {
 	Root     *Node   // Kind == KFile
 	Comments []*Node // every KComment, in source order
 	Errors   []SyntaxError
-	Limits   []Limit // work bounds hit while parsing, in source order
-	Skipped  string  // non-empty reason when the file was not parsed (e.g. "zsh is not supported yet")
-	Dialect  Dialect // the dialect the file was parsed as; set by every parse, including a skipped one
+	Limits   []Limit   // work bounds hit while parsing, in source order
+	Features []Feature // syntactic evidence of dialect and version, in source order; none inside an error gap
+	Skipped  string    // non-empty reason when the file was not parsed (e.g. "zsh is not supported yet")
+	Dialect  Dialect   // the dialect the file was parsed as; set by every parse, including a skipped one
 
 	lines []int // byte offset of each line start, built once by NewFile
 }

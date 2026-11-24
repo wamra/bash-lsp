@@ -29,6 +29,10 @@ type lowerer struct {
 
 	depth int // recursion depth of stmt, word, part and ifClause; see maxDepth
 
+	// feats is the syntactic evidence of dialect and version found while
+	// lowering (features.go), in lowering order.
+	feats []tree.Feature
+
 	// nul indexes the NUL bytes of f.Src, nil when it has none. Then every NUL
 	// correction below is skipped and ranges are the parser's.
 	nul nulIndex
@@ -107,8 +111,9 @@ func nextChunk(prev int) int {
 // lowerStmts lowers a statement list parsed from f.Src[base.Offset:]. A
 // statement whose lowering panics is dropped and reported rather than taking
 // the whole file down. Callers use the returned errors to extend File.Errors.
-// nul is newNULIndex(f.Src), built once per file.
-func lowerStmts(f *tree.File, base tree.Pos, stmts []*syntax.Stmt, nul nulIndex) ([]*tree.Node, []tree.SyntaxError) {
+// nul is newNULIndex(f.Src), built once per file. The features are those of
+// the statements that were lowered, in source order.
+func lowerStmts(f *tree.File, base tree.Pos, stmts []*syntax.Stmt, nul nulIndex) ([]*tree.Node, []tree.SyntaxError, []tree.Feature) {
 	l := &lowerer{f: f, base: base, cursor: base.Offset, nul: nul}
 	var out []*tree.Node
 	for _, s := range stmts {
@@ -116,14 +121,17 @@ func lowerStmts(f *tree.File, base tree.Pos, stmts []*syntax.Stmt, nul nulIndex)
 			out = append(out, n)
 		}
 	}
-	return out, l.errs
+	sortFeatures(l.feats)
+	return out, l.errs, l.feats
 }
 
 func (l *lowerer) safeStmt(s *syntax.Stmt) (n *tree.Node) {
+	kept := len(l.feats)
 	defer func() {
 		if r := recover(); r != nil {
 			n = nil
 			l.depth = 0
+			l.feats = l.feats[:kept] // the dropped statement leaves no evidence
 			at := l.f.PosAt(l.cursor)
 			e := tree.SyntaxError{Range: tree.Range{Start: at, End: at}, Msg: "internal error lowering statement", Internal: true}
 			if _, ok := r.(tooDeep); ok {
@@ -301,6 +309,11 @@ func (l *lowerer) command(c syntax.Command) *tree.Node {
 		if n := l.declCall(c); n != nil {
 			return n
 		}
+		if len(c.Args) > 0 {
+			if lit, ok := plainLit(c.Args[0]); ok && lit.Value == "source" {
+				l.featureLen(tree.FeatSourceBuiltin, lit.ValuePos, len("source"))
+			}
+		}
 		var kids []*tree.Node
 		for _, a := range c.Assigns {
 			kids = append(kids, l.assign(a))
@@ -321,6 +334,9 @@ func (l *lowerer) command(c syntax.Command) *tree.Node {
 		n := l.mk(tree.KFuncDecl, c.Position, syntax.Pos{}, l.stmt(c.Body))
 		if c.Name != nil {
 			n.Name, n.NameRange = l.name(c.Name.Value, c.Name.ValuePos, c.Name.ValueEnd)
+			if c.RsrvWord {
+				l.featureFrom(tree.FeatFunctionKeyword, c.Position, c.Name.ValueEnd)
+			}
 		}
 		return n
 	case *syntax.TestDecl: // bats: @test "description" { ... }
@@ -342,6 +358,9 @@ func (l *lowerer) command(c syntax.Command) *tree.Node {
 	case *syntax.CaseClause:
 		kids := []*tree.Node{l.word(c.Word)}
 		for _, it := range c.Items {
+			if it.Op == syntax.Fallthrough || it.Op == syntax.Resume {
+				l.featureLen(tree.FeatCaseFallthrough, it.OpPos, len(it.Op.String()))
+			}
 			var ik []*tree.Node
 			for _, p := range it.Patterns {
 				ik = append(ik, l.word(p))
@@ -369,13 +388,13 @@ func (l *lowerer) command(c syntax.Command) *tree.Node {
 		switch c.Op {
 		case syntax.Pipe, syntax.PipeAll:
 			var kids []*tree.Node
-			for _, s := range chain(c, isPipe) {
+			for _, s := range chain(c, isPipe, l.pipeOp) {
 				kids = append(kids, l.stmt(s))
 			}
 			return l.mk(tree.KPipeline, syntax.Pos{}, syntax.Pos{}, kids...)
 		default: // && and ||: one node over the whole chain, statements in source order
 			var kids []*tree.Node
-			for _, s := range chain(c, isAndOr) {
+			for _, s := range chain(c, isAndOr, nil) {
 				kids = append(kids, l.stmt(s))
 			}
 			return l.mk(tree.KAndOr, syntax.Pos{}, syntax.Pos{}, kids...)
@@ -385,6 +404,7 @@ func (l *lowerer) command(c syntax.Command) *tree.Node {
 		l.missing(n, c.Right, "))")
 		return n
 	case *syntax.TestClause:
+		l.featureLen(tree.FeatDoubleBracket, c.Left, 2)
 		n := l.mk(tree.KTest, c.Left, c.End(), l.test(c.X)...)
 		l.missing(n, c.Right, "]]")
 		return n
@@ -400,6 +420,7 @@ func (l *lowerer) command(c syntax.Command) *tree.Node {
 		}
 		return l.mk(tree.KTime, c.Time, syntax.Pos{}, l.stmt(c.Stmt)) // c.End() would recurse; see stmtEnd
 	case *syntax.CoprocClause:
+		l.featureLen(tree.FeatCoproc, c.Coproc, len("coproc"))
 		var kids []*tree.Node
 		if c.Name != nil {
 			kids = append(kids, l.word(c.Name))
@@ -418,14 +439,21 @@ func isAndOr(op syntax.BinCmdOperator) bool { return op == syntax.AndStmt || op 
 // chain flattens an unparenthesised `a | b | c` (or `a && b || c`) into its
 // statements in source order. It keeps its own stack: the parser nests a long
 // chain one BinaryCmd per operator, and recursing over it would overflow.
-// Linear in the chain length.
-func chain(c *syntax.BinaryCmd, same func(syntax.BinCmdOperator) bool) []*syntax.Stmt {
+// Linear in the chain length. op, when not nil, sees c and every operator
+// node the flattening passes through.
+func chain(c *syntax.BinaryCmd, same func(syntax.BinCmdOperator) bool, op func(*syntax.BinaryCmd)) []*syntax.Stmt {
 	var out []*syntax.Stmt
+	if op != nil {
+		op(c)
+	}
 	stack := []*syntax.Stmt{c.Y, c.X}
 	for len(stack) > 0 {
 		s := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
 		if b, ok := s.Cmd.(*syntax.BinaryCmd); ok && same(b.Op) && len(s.Redirs) == 0 && !s.Negated && !s.Background {
+			if op != nil {
+				op(b)
+			}
 			stack = append(stack, b.Y, b.X)
 		} else {
 			out = append(out, s)
@@ -518,10 +546,24 @@ func (l *lowerer) assign(a *syntax.Assign) *tree.Node {
 		n.Name, n.NameRange = l.name(a.Name.Value, a.Name.ValuePos, a.Name.ValueEnd)
 	}
 	l.missing(n, rparen, ")")
+	if a.Array != nil {
+		l.featureNode(tree.FeatArrayAssign, n)
+	}
+	if negativeIndex(a.Index) {
+		l.featureNode(tree.FeatNegativeSubscript, n)
+	}
 	return n
 }
 
 func (l *lowerer) redirect(r *syntax.Redirect) *tree.Node {
+	switch r.Op {
+	case syntax.WordHdoc:
+		l.featureLen(tree.FeatHerestring, r.OpPos, 3)
+	case syntax.RdrAll:
+		l.featureLen(tree.FeatRedirectAll, r.OpPos, 2)
+	case syntax.AppAll:
+		l.featureLen(tree.FeatAppendAll, r.OpPos, 3)
+	}
 	var kids []*tree.Node
 	if r.Word != nil {
 		kids = append(kids, l.word(r.Word))
@@ -650,6 +692,9 @@ func (l *lowerer) part1(p syntax.WordPart) *tree.Node {
 		n := l.mk(tree.KSglQuoted, p.Left, p.End())
 		n.Value = p.Value
 		l.missing(n, p.Right, "'")
+		if p.Dollar {
+			l.featureNode(tree.FeatAnsiCQuote, n)
+		}
 		return n
 	case *syntax.DblQuoted:
 		var kids []*tree.Node
@@ -684,6 +729,7 @@ func (l *lowerer) part1(p syntax.WordPart) *tree.Node {
 		if !p.Short {
 			l.missing(n, p.Rbrace, "}")
 		}
+		l.paramFeatures(p, n)
 		return n
 	case *syntax.CmdSubst:
 		n := l.mk(tree.KCmdSubst, p.Left, p.End(), l.stmts(p.Stmts)...)
@@ -694,6 +740,7 @@ func (l *lowerer) part1(p syntax.WordPart) *tree.Node {
 		l.missing(n, p.Right, "))")
 		return n
 	case *syntax.ProcSubst:
+		l.featureLen(tree.FeatProcessSubst, p.OpPos, 2)
 		n := l.mk(tree.KProcSubst, p.OpPos, p.End(), l.stmts(p.Stmts)...)
 		l.missing(n, p.Rparen, ")")
 		return n

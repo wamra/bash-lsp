@@ -9,7 +9,10 @@ import (
 func variant(d Dialect) syntax.LangVariant {
 	switch d {
 	case POSIX:
-		return syntax.LangPOSIX
+		// An sh file is read with the bash grammar: its bash-only forms
+		// become evidence for the dialect rules (features.go) instead of
+		// parse errors that stop the file.
+		return syntax.LangBash
 	case Mksh:
 		return syntax.LangMirBSDKorn
 	case Bats:
@@ -41,9 +44,10 @@ func Parse(path string, src []byte, d Dialect) *tree.File {
 		f.Skipped = "zsh is not supported yet"
 		return f
 	}
-	stmts, errs, comments, limits := parseFile(f, d)
+	stmts, errs, comments, feats, limits := parseFile(f, d)
 	f.Errors = errs
 	f.Limits = limits
+	f.Features = feats
 	if nothingBut(stmts, tree.KErrorGap) && errorWith(errs, nestingError) {
 		f.Skipped = nestingError
 		return f

@@ -43,6 +43,7 @@ type resyncer struct {
 type attempt struct {
 	stmts    []*tree.Node
 	errs     []tree.SyntaxError // lowering errors; excludes the failure itself
+	feats    []tree.Feature     // features of the statements lowered, in source order
 	comments []*tree.Node
 	failOff  int // absolute offset of the failure, -1 when the run was clean
 	failErr  tree.SyntaxError
@@ -50,7 +51,7 @@ type attempt struct {
 
 // parseFile parses all of f.Src and returns its statements, errors, comments
 // and the work bounds resync hit.
-func parseFile(f *tree.File, d Dialect) (stmts []*tree.Node, errs []tree.SyntaxError, comments []*tree.Node, limits []tree.Limit) {
+func parseFile(f *tree.File, d Dialect) (stmts []*tree.Node, errs []tree.SyntaxError, comments []*tree.Node, feats []tree.Feature, limits []tree.Limit) {
 	return newResyncer(f, d).run()
 }
 
@@ -60,10 +61,10 @@ func newResyncer(f *tree.File, d Dialect) *resyncer {
 
 // run parses the whole file (not charged to the byte budget) and resyncs
 // after a failure.
-func (r *resyncer) run() ([]*tree.Node, []tree.SyntaxError, []*tree.Node, []tree.Limit) {
+func (r *resyncer) run() ([]*tree.Node, []tree.SyntaxError, []*tree.Node, []tree.Feature, []tree.Limit) {
 	a, _ := r.raw(0)
-	stmts, errs, comments := r.resolve(a)
-	return stmts, errs, comments, r.limits
+	stmts, errs, comments, feats := r.resolve(a)
+	return stmts, errs, comments, feats, r.limits
 }
 
 // raw runs the parser once over f.Src[off:] and returns the run and the
@@ -76,7 +77,7 @@ func (r *resyncer) raw(off int) (attempt, int) {
 	}
 	base := f.PosAt(off)
 	a := attempt{failOff: -1}
-	a.stmts, a.errs = lowerStmts(f, base, af.Stmts, r.nul)
+	a.stmts, a.errs, a.feats = lowerStmts(f, base, af.Stmts, r.nul)
 	var cmtPanic bool
 	a.comments, cmtPanic = lowerComments(f, base, af)
 	switch {
@@ -190,10 +191,10 @@ func (a attempt) cut(f *tree.File) (gapStart int, kept []*tree.Node) {
 }
 
 // resolve turns a run into final statements, resyncing after a failure.
-func (r *resyncer) resolve(a attempt) ([]*tree.Node, []tree.SyntaxError, []*tree.Node) {
+func (r *resyncer) resolve(a attempt) ([]*tree.Node, []tree.SyntaxError, []*tree.Node, []tree.Feature) {
 	f := r.f
 	if a.failOff < 0 {
-		return a.stmts, a.errs, a.comments
+		return a.stmts, a.errs, a.comments, a.feats
 	}
 	gapStart, kept := a.cut(f)
 	var errs []tree.SyntaxError
@@ -207,6 +208,13 @@ func (r *resyncer) resolve(a attempt) ([]*tree.Node, []tree.SyntaxError, []*tree
 	for _, c := range a.comments {
 		if c.Range.Start.Offset < gapStart {
 			comments = append(comments, c)
+		}
+	}
+
+	var feats []tree.Feature
+	for _, ft := range a.feats {
+		if ft.Range.Start.Offset < gapStart {
+			feats = append(feats, ft)
 		}
 	}
 
@@ -237,9 +245,9 @@ func (r *resyncer) resolve(a attempt) ([]*tree.Node, []tree.SyntaxError, []*tree
 			continue
 		}
 		gap := r.gap(gapStart, pos, true)
-		tStmts, tErrs, tComments := r.resolve(t)
+		tStmts, tErrs, tComments, tFeats := r.resolve(t)
 		kept = append(kept, gap)
-		return append(kept, tStmts...), append(errs, tErrs...), append(comments, tComments...)
+		return append(kept, tStmts...), append(errs, tErrs...), append(comments, tComments...), append(feats, tFeats...)
 	}
 	gap := r.gap(gapStart, len(src), false)
 	switch stop {
@@ -250,7 +258,7 @@ func (r *resyncer) resolve(a attempt) ([]*tree.Node, []tree.SyntaxError, []*tree
 		r.limits = append(r.limits, tree.Limit{Name: stop, Range: gap.Range,
 			Detail: fmt.Sprintf("resync stopped after re-parsing %d bytes (budget %d for a %d-byte file)", r.parsed, resyncByteBudget(len(src)), len(src))})
 	}
-	return append(kept, gap), errs, comments
+	return append(kept, gap), errs, comments, feats
 }
 
 func (r *resyncer) gap(from, to int, recovered bool) *tree.Node {

@@ -27,7 +27,10 @@ func dumpNodes(sb *strings.Builder, f *tree.File) {
 // differed from the lexer's value, so in a NUL-free file a name holding a line
 // continuation became `fo\<newline>o` (a function), `my\<newline>v` (an
 // assignment) or `fo\` (a POSIX `local`). On NUL-free sources every node must
-// be what b414076 produced: testdata/continuation/b414076.txt is the output of
+// be what b414076 produced, with one line changed on purpose since sh files
+// are read with the bash grammar (line 328: the bare name `ba\<newline>r` of a
+// POSIX `export` now takes the range of the bash path, the whole name):
+// testdata/continuation/b414076.txt is the output of
 // this dump at b414076 (git archive b414076, the same dump code) for
 // inputs.txt, which covers function declarations, assignments, the five
 // declaration builtins in each dialect, for and select variables, arithmetic,

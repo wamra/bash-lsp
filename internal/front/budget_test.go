@@ -13,7 +13,7 @@ import (
 func runResync(src string) (*resyncer, []*tree.Node, []tree.Limit) {
 	f := tree.NewFile("x.sh", []byte(src))
 	r := newResyncer(f, Bash)
-	stmts, _, _, limits := r.run()
+	stmts, _, _, _, limits := r.run()
 	return r, stmts, limits
 }
 
