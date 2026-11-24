@@ -497,3 +497,20 @@ func TestDoctorWarnsOnUserRCExternalSources(t *testing.T) {
 		t.Errorf("ShellCheck is disabled, yet a warning:\n%s", out)
 	}
 }
+
+// One "not analysed" line per file, however the file was reached (a repeated
+// argument, a directory and the file in it), and the reason does not repeat
+// the path the line starts with.
+func TestCheckNotAnalysedLineOncePerFile(t *testing.T) {
+	emptyPath(t)
+	root := t.TempDir()
+	putFile(t, root, ".git/HEAD", "x")
+	putFile(t, root, "big.sh", "#!/bin/bash\n# "+strings.Repeat("x", 2<<20)+"\n")
+	t.Chdir(root)
+	for _, args := range [][]string{{"check", "big.sh", "big.sh"}, {"check", ".", "big.sh"}, {"check", "big.sh", "."}} {
+		code, _, errs := runCode(t, args...)
+		if n := strings.Count(errs, "not analysed: big.sh: "); code != 0 || n != 1 || strings.Contains(errs, "big.sh: big.sh") {
+			t.Errorf("%v: exit %d, %d lines, stderr %q", args, code, n, errs)
+		}
+	}
+}

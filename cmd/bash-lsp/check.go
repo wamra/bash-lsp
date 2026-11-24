@@ -195,7 +195,7 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 	}
 	for _, t := range targets {
 		if ff := snap.Facts(t.path); ff != nil && ff.File != nil && ff.File.Skipped != "" {
-			msgs = append(msgs, fmt.Sprintf("not analysed: %s: %s", t.display, ff.File.Skipped))
+			msgs = notAnalysed(msgs, t.display, ff.File.Skipped)
 		}
 	}
 
@@ -305,6 +305,19 @@ func toCheckDiag(path string, conv *tree.Converter, d analysis.Diagnostic) check
 		Rule: d.Rule, Origin: d.Origin, Message: d.Message, Fixes: fixes, sev: d.Severity}
 }
 
+// notAnalysed adds the "not analysed" line of display to msgs unless the file
+// has one already (a repeated argument, a directory and the file in it); a
+// reason that starts with the path does not repeat it.
+func notAnalysed(msgs []string, display, reason string) []string {
+	prefix := "not analysed: " + display + ": "
+	for _, m := range msgs {
+		if strings.HasPrefix(m, prefix) {
+			return msgs
+		}
+	}
+	return append(msgs, prefix+strings.TrimPrefix(reason, display+": "))
+}
+
 // checkWalked takes the targets from the workspace: a directory gives the
 // files the workspace loaded below it; a file the workspace did not load (an
 // ignored or excluded one, or one outside the root) is added to it as an open
@@ -378,7 +391,7 @@ func checkWalked(ws *workspace.Workspace, paths []string, disp func(string) stri
 		}
 		for _, sk := range ws.Skipped() {
 			if under(dir, sk.Path) {
-				*msgs = append(*msgs, fmt.Sprintf("not analysed: %s: %s", disp(sk.Path), sk.Reason))
+				*msgs = notAnalysed(*msgs, disp(sk.Path), sk.Reason)
 			}
 		}
 		if n == 0 {
