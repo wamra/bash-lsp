@@ -38,6 +38,7 @@ type folder struct {
 	ws     *workspace.Workspace
 	st     config.Settings      // the folder's settings (see reloadSettings)
 	diag   analysis.DiagOptions // their diagnostic part
+	tool   *scTool              // ShellCheck of the folder; nil until needed (lint.go)
 }
 
 // declaredFolder is a folder the client named, served or not.

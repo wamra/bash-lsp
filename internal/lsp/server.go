@@ -3,6 +3,7 @@
 package lsp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/wamra/bash-lsp/analysis"
 	"github.com/wamra/bash-lsp/internal/config"
@@ -112,6 +114,11 @@ type server struct {
 	logged       map[string]bool      // internal parser errors logged this session (logInternal)
 	looseSt      config.Settings      // settings of documents outside every folder
 	looseDiag    analysis.DiagOptions // its diagnostic part
+	looseTool    *scTool              // ShellCheck for documents outside every folder (lint.go)
+	debounce     time.Duration        // quiet time before ShellCheck runs on an edited document
+	baseCtx      context.Context      // ends when Serve returns; every ShellCheck run derives from it
+	baseCancel   context.CancelFunc
+	loggedMsg    map[string]bool // window/logMessage texts sent once (logMessageOnce)
 	profileOnce  sync.Once
 	profile      *extool.Profile // the PATH profile, read once per session (pathProfile)
 
@@ -167,7 +174,9 @@ func newServer(in io.Reader, out io.Writer, logw io.Writer, version string) *ser
 	if logw == nil {
 		logw = io.Discard
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	return &server{
+		debounce: checkDebounce, baseCtx: ctx, baseCancel: cancel,
 		c:       newConn(in, out),
 		log:     log.New(logw, "bash-lsp: ", log.LstdFlags),
 		version: version,
@@ -452,6 +461,7 @@ func (s *server) didClose(raw json.RawMessage) *rpcError {
 		return nil
 	}
 	delete(s.docs, d.path)
+	s.resetCheck(d)
 	// Every URI that led to it: the closing one, the one it was opened (and
 	// its diagnostics published) under, and any other spelling it was opened
 	// under (case variants).
@@ -477,9 +487,12 @@ func (s *server) didClose(raw json.RawMessage) *rpcError {
 	return nil
 }
 
-// publish sends the findings of an open document (see publishDoc).
+// publish sends the native findings of an open document that was opened,
+// changed or moved (see publishDoc) and schedules ShellCheck for it.
 func (s *server) publish(be backend, d *document, path string) {
+	s.resetCheck(d)
 	s.publishDoc(d, true)
+	s.scheduleCheck(d)
 }
 
 // diagnosticTagUnnecessary is LSP DiagnosticTag 1, Unnecessary.

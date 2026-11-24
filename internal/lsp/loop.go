@@ -349,6 +349,7 @@ func valueEnd(b []byte, i int) int {
 func (s *server) serve() error {
 	go s.readLoop()
 	defer close(s.done)
+	defer s.baseCancel() // kills the ShellCheck runs still going
 	for !s.exit {
 		select {
 		case it := <-s.inbound:
@@ -547,6 +548,7 @@ func (s *server) runFolderJob(declared []declaredFolder, existing []*folder) (ou
 func (s *server) applyFolders(res []*folder) {
 	old := s.folders
 	s.folders = res
+	s.dropTools() // the roots the ShellCheck programs are checked against changed
 	dropped := map[backend]bool{}
 	same := len(old) == len(res)
 	for i, f := range old {

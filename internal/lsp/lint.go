@@ -1,13 +1,20 @@
 package lsp
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
 	"sort"
+	"sync"
+	"time"
 
 	"github.com/wamra/bash-lsp/analysis"
+	"github.com/wamra/bash-lsp/internal/extool"
+	"github.com/wamra/bash-lsp/internal/shellcheck"
 	"github.com/wamra/bash-lsp/tree"
 )
 
@@ -44,6 +51,18 @@ type docLint struct {
 	pub     []pubDiag // the findings as last sent
 	sent    bool
 	sentVer int // the document version they were sent for
+
+	// ShellCheck (see scheduleCheck): the findings of the run for scVer, once
+	// scDone; scSeq numbers the runs scheduled; timer and cancel belong to the
+	// latest; run keeps a run of this document from starting before the one it
+	// replaced has ended.
+	sc     []analysis.Diagnostic
+	scDone bool
+	scVer  int
+	scSeq  int
+	timer  *time.Timer
+	cancel context.CancelFunc
+	run    sync.Mutex
 }
 
 // findings returns the findings of d as they stand now, in LSP form. With
@@ -61,7 +80,16 @@ func (s *server) findings(d *document, cached bool) []pubDiag {
 			s.logInternal(d.path, l.file)
 		}
 	}
-	return pubDiags(l.file, l.native)
+	return pubDiags(l.file, l.merged(d))
+}
+
+// merged is the native findings, with the ShellCheck findings for the current
+// version merged in (analysis.Merge drops the native ones they duplicate).
+func (l *docLint) merged(d *document) []analysis.Diagnostic {
+	if l.scDone && l.scVer == d.version {
+		return analysis.Merge(l.native, l.sc)
+	}
+	return l.native
 }
 
 // pubDiags converts findings of f to LSP positions.
@@ -169,6 +197,9 @@ func (s *server) diagnostic(raw json.RawMessage) (any, *rpcError) {
 		pub = pubDiags(fileOf(snap, path), snap.Diagnostics(path, s.diagOptions(be)))
 	}
 	id := fmt.Sprintf("%d.%d", gen, version)
+	if d != nil && d.lint.scDone && d.lint.scVer == d.version {
+		id += fmt.Sprintf(".%d", d.lint.scSeq) // ShellCheck findings are merged in: the set moved without a new generation or version
+	}
 	if p.PreviousResultID == id {
 		return unchangedDiagnosticReport{Kind: "unchanged", ResultID: id}, nil
 	}
@@ -235,4 +266,225 @@ func asked(d Diagnostic, ctx []Diagnostic, r Range) bool {
 
 func before(a, b Position) bool {
 	return a.Line < b.Line || a.Line == b.Line && a.Character < b.Character
+}
+
+// ---- ShellCheck ----
+//
+// ShellCheck never runs on the message loop. An edit publishes the native
+// findings at once, then (scheduleCheck) starts a timer; when it fires, a
+// goroutine runs the Task 6 runner on the document's parsed file, which was
+// captured on the loop, and hands the result back with s.post. finishCheck
+// takes it only if the document is still open at the same version and the run
+// is still the latest scheduled; it then publishes the merge. A newer edit, a
+// close or the end of the session cancels the run, which kills the child.
+
+// checkDebounce is the quiet time after the last change before ShellCheck
+// runs on a document.
+var checkDebounce = 300 * time.Millisecond
+
+// scTool is the ShellCheck program of one folder (or of the loose documents),
+// found on first use, off the loop, by extool.Find: the program, the path
+// profile and the workspace roots decide, never the analysed code. The tool is
+// dropped when the settings or the folders change.
+type scTool struct {
+	path    string // shellcheck.path as configured ("" for the PATH profile)
+	timeout time.Duration
+	roots   []string
+
+	once   sync.Once
+	runner *shellcheck.Runner // nil when the program was not found or was refused
+}
+
+// workspaceRoots lists every workspace folder as the client spells it and as resolved:
+// the program must be outside all of them, and the runner's PATH loses entries
+// inside them.
+func (s *server) workspaceRoots() []string {
+	out := make([]string, 0, 2*len(s.folders))
+	for _, f := range s.folders {
+		out = append(out, f.client, f.ws.Root())
+	}
+	return out
+}
+
+// toolFor returns the ShellCheck tool for the documents of be, nil when the
+// settings turn ShellCheck off. Loop only.
+func (s *server) toolFor(be backend) *scTool {
+	st := s.settingsOf(be)
+	if !st.ShellCheck.Enabled {
+		return nil
+	}
+	slot := &s.looseTool
+	for _, f := range s.folders {
+		if backend(f.ws) == be {
+			slot = &f.tool
+		}
+	}
+	if *slot == nil {
+		*slot = &scTool{path: st.ShellCheck.Path, timeout: st.ShellCheck.Timeout, roots: s.workspaceRoots()}
+	}
+	return *slot
+}
+
+// dropTools forgets the tools, so the next run builds them from the current
+// settings and folders. Loop only.
+func (s *server) dropTools() {
+	s.looseTool = nil
+	for _, f := range s.folders {
+		f.tool = nil
+	}
+}
+
+// get finds the program on first use. Not found is logged quietly; a refusal
+// goes to the user (window/logMessage), once per session.
+func (t *scTool) get(s *server) *shellcheck.Runner {
+	t.once.Do(func() {
+		tool, ref, ok := extool.Find("shellcheck", t.path, s.pathProfile(), t.roots)
+		switch {
+		case ref != nil:
+			s.logMessageOnce(messageTypeWarning, fmt.Sprintf("shellcheck: %s refused: %s; only native findings are shown", ref.Path, ref.Reason))
+		case !ok:
+			s.log.Printf("shellcheck: not found; only native findings are shown")
+		default:
+			t.runner = shellcheck.New(tool, shellcheck.Options{Timeout: t.timeout, Roots: t.roots})
+		}
+	})
+	return t.runner
+}
+
+// resetCheck drops the ShellCheck state of d: a run in flight is cancelled, a
+// timer not yet fired is stopped and the findings kept for an older version
+// are forgotten. Loop only.
+func (s *server) resetCheck(d *document) {
+	l := &d.lint
+	if l.timer != nil {
+		l.timer.Stop()
+		l.timer = nil
+	}
+	if l.cancel != nil {
+		l.cancel()
+		l.cancel = nil
+	}
+	l.sc, l.scDone = nil, false
+	l.scSeq++ // a result already on its way back is stale
+}
+
+// scheduleCheck arranges a ShellCheck run for d at its current version, after
+// the quiet time. The native findings of that version were just published, so
+// l.file is the parsed file ShellCheck will read. Loop only.
+func (s *server) scheduleCheck(d *document) {
+	l := &d.lint
+	tool := s.toolFor(d.be)
+	if tool == nil || l.file == nil || l.file.Skipped != "" {
+		return
+	}
+	seq, ver, file := l.scSeq, d.version, l.file
+	ctx, cancel := context.WithCancel(s.baseCtx)
+	l.cancel = cancel
+	l.timer = time.AfterFunc(s.debounce, func() { s.runCheck(ctx, d, tool, file, ver, seq) })
+}
+
+// runCheck runs on its own goroutine: it touches no server state but the
+// document's lint.run mutex (a field it only locks) and posts its result.
+func (s *server) runCheck(ctx context.Context, d *document, tool *scTool, f *tree.File, ver, seq int) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.log.Printf("panic running shellcheck: %v", r)
+		}
+	}()
+	d.lint.run.Lock() // one run of a file at a time: the run it replaced was cancelled and is ending
+	defer d.lint.run.Unlock()
+	if ctx.Err() != nil {
+		return
+	}
+	r := tool.get(s)
+	if r == nil {
+		return
+	}
+	ds, notes, err := r.CheckNotes(ctx, f)
+	if ctx.Err() != nil {
+		return
+	}
+	s.post(func() { s.finishCheck(d, ver, seq, ds, notes, err, tool.timeout) })
+}
+
+// finishCheck takes a ShellCheck result on the loop. A result for a document
+// that was closed, changed since, or rescheduled is dropped.
+func (s *server) finishCheck(d *document, ver, seq int, ds []analysis.Diagnostic, notes []string, err error, timeout time.Duration) {
+	l := &d.lint
+	if s.docs[d.path] != d || d.version != ver || l.scSeq != seq {
+		return
+	}
+	for _, n := range notes {
+		s.logMessageOnce(messageTypeWarning, "shellcheck: "+n)
+	}
+	switch {
+	case err == nil:
+	case errors.Is(err, extool.ErrTimeout), errors.Is(err, extool.ErrOutputCap):
+		ds = nil
+		if w, ok := s.unfinished(d, err, timeout); ok {
+			ds = []analysis.Diagnostic{w}
+		}
+	default:
+		s.logMessageOnce(messageTypeError, err.Error())
+		return
+	}
+	l.sc, l.scDone, l.scVer = ds, true, ver
+	s.publishDoc(d, false)
+}
+
+// unfinished is the WB1004 finding for a run that did not finish, under the
+// folder's severity setting; ok is false when the rule is disabled. The rule
+// is built here, not in analysis: it is a fact about the run, not the code.
+func (s *server) unfinished(d *document, err error, timeout time.Duration) (analysis.Diagnostic, bool) {
+	const rule = "WB1004"
+	opt := s.diagOptions(d.be)
+	f := d.lint.file
+	if f == nil || opt.Disabled[rule] {
+		return analysis.Diagnostic{}, false
+	}
+	why := "it wrote more output than allowed"
+	if errors.Is(err, extool.ErrTimeout) {
+		why = "it ran past its time limit"
+		if timeout > 0 {
+			why = fmt.Sprintf("it ran past its time limit of %s", timeout)
+		}
+	}
+	end := len(f.Src)
+	if i := bytes.IndexByte(f.Src, '\n'); i >= 0 {
+		end = i
+	}
+	w := analysis.Diagnostic{Rule: rule, Severity: analysis.SevInfo, Origin: analysis.OriginNative,
+		Range:   tree.Range{Start: f.PosAt(0), End: f.PosAt(end)},
+		Message: "ShellCheck did not finish: " + why + "; only bash-lsp findings are shown"}
+	if sev, ok := opt.Severity[rule]; ok {
+		w.Severity = sev
+	}
+	return w, true
+}
+
+// ---- messages to the client ----
+
+// messageTypeError, messageTypeInfo are LSP MessageType 1 and 3.
+const (
+	messageTypeError = 1
+	messageTypeInfo  = 3
+)
+
+// logMessage sends window/logMessage. Safe from any goroutine.
+func (s *server) logMessage(typ int, msg string) {
+	s.c.notify("window/logMessage", logMessageParams{Type: typ, Message: msg})
+}
+
+// logMessageOnce is logMessage, once per distinct text per session.
+func (s *server) logMessageOnce(typ int, msg string) {
+	s.shownMu.Lock()
+	if s.loggedMsg == nil {
+		s.loggedMsg = map[string]bool{}
+	}
+	seen := s.loggedMsg[msg]
+	s.loggedMsg[msg] = true
+	s.shownMu.Unlock()
+	if !seen {
+		s.logMessage(typ, msg)
+	}
 }

@@ -1,14 +1,20 @@
 package lsp
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/wamra/bash-lsp/analysis"
 	"github.com/wamra/bash-lsp/internal/workspace"
 )
 
@@ -376,5 +382,353 @@ func TestDiskChangeRepublishesOpenDependent(t *testing.T) {
 	c.notify("textDocument/didSave", map[string]any{"textDocument": map[string]any{"uri": c.uri("lib.sh")}})
 	if _, ds := c.waitPush("main.sh"); hasCode(ds, "WB1102") {
 		t.Fatalf("after the save: %v", ds)
+	}
+}
+
+// ---- ShellCheck ----
+
+// setDebounce lowers the quiet time before ShellCheck runs; servers started
+// after the call use it.
+func setDebounce(t *testing.T, d time.Duration) {
+	t.Helper()
+	old := checkDebounce
+	checkDebounce = d
+	t.Cleanup(func() { checkDebounce = old })
+}
+
+func scInit(path string, timeoutSeconds int) map[string]any {
+	o := map[string]any{"path": path}
+	if timeoutSeconds > 0 {
+		o["timeout_seconds"] = timeoutSeconds
+	}
+	return map[string]any{"shellcheck": o}
+}
+
+func messages(ds []Diagnostic) []string {
+	out := []string{}
+	for _, d := range ds {
+		out = append(out, d.Message)
+	}
+	return out
+}
+
+func anyMessage(ds []Diagnostic, sub string) bool {
+	return slices.ContainsFunc(messages(ds), func(m string) bool { return strings.Contains(m, sub) })
+}
+
+func (c *testClient) changeTo(rel string, version int, text string) {
+	c.notify("textDocument/didChange", map[string]any{
+		"textDocument":   map[string]any{"uri": c.uri(rel), "version": version},
+		"contentChanges": []any{fullText(text)}})
+}
+
+// logsContaining returns the window/logMessage texts that contain sub.
+func (c *testClient) logsContaining(sub string) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []string
+	for _, m := range c.logMsgs {
+		if strings.Contains(m, sub) {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+func (c *testClient) waitLog(sub string) string {
+	c.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if l := c.logsContaining(sub); len(l) > 0 {
+			return l[0]
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	c.t.Fatalf("no window/logMessage containing %q; got %q", sub, c.logMsgs)
+	return ""
+}
+
+func TestStaleShellCheckDropped(t *testing.T) {
+	setDebounce(t, 20*time.Millisecond)
+	root := t.TempDir()
+	put(t, filepath.Join(root, "a.sh"), "")
+	c := clientInit(t, root, false, scInit(fakeShellCheck(t, "mark"), 0))
+	c.openText("a.sh", "#!/bin/bash\n# MARK v1 SLOW\nrm $f\n")
+	if v, ds := c.waitPush("a.sh"); v != 1 || !hasCode(ds, "WB1401") || hasSource(ds, "shellcheck") {
+		t.Fatalf("v1 native push: %d %v", v, ds)
+	}
+	time.Sleep(150 * time.Millisecond) // the v1 run has started and sleeps
+	c.changeTo("a.sh", 2, "#!/bin/bash\n# MARK v2\nrm $f\n")
+	v, ds := c.waitPush("a.sh")
+	if v != 2 || !hasCode(ds, "WB1401") || hasSource(ds, "shellcheck") {
+		t.Fatalf("v2 must be published natively first: %d %v", v, ds)
+	}
+	v, ds = c.waitPush("a.sh")
+	if v != 2 || !anyMessage(ds, "mark:# MARK v2") || anyMessage(ds, "v1") || !hasCode(ds, "WB1401") {
+		t.Fatalf("v2 with ShellCheck: %d %v", v, messages(ds))
+	}
+	time.Sleep(700 * time.Millisecond) // long enough for the v1 run to have answered
+	if n := c.pending("a.sh"); n != 0 {
+		_, late := c.waitPush("a.sh")
+		t.Fatalf("a push after the v2 result: %v", messages(late))
+	}
+}
+
+func TestFinishCheckDropsStaleResults(t *testing.T) {
+	var out bytes.Buffer
+	s := newServer(strings.NewReader(""), &out, nil, "test")
+	d := &document{uri: "file:///x/a.sh", path: "/x/a.sh", version: 3}
+	s.docs[d.path] = d
+	d.lint.scSeq = 2
+	ds := []analysis.Diagnostic{{Rule: "SC1", Message: "late"}}
+	for name, c := range map[string]struct{ ver, seq int }{"old version": {2, 2}, "old run": {3, 1}} {
+		s.finishCheck(d, c.ver, c.seq, ds, []string{"a note"}, nil, 0)
+		if out.Len() != 0 || d.lint.scDone {
+			t.Errorf("%s: a stale result was accepted (output %q)", name, out.String())
+		}
+	}
+	delete(s.docs, d.path)
+	s.finishCheck(d, 3, 2, ds, nil, nil, 0)
+	if out.Len() != 0 || d.lint.scDone {
+		t.Errorf("closed document: a result was accepted (output %q)", out.String())
+	}
+}
+
+func TestShellCheckTimeoutReported(t *testing.T) {
+	setDebounce(t, 10*time.Millisecond)
+	root := t.TempDir()
+	put(t, filepath.Join(root, "a.sh"), "")
+	c := clientInit(t, root, false, scInit(fakeShellCheck(t, "sleep"), 1))
+	c.openText("a.sh", "#!/bin/bash\nrm $f\n")
+	c.waitPush("a.sh") // native
+	v, ds := c.waitPush("a.sh")
+	if v != 1 || !hasCode(ds, "WB1004") || !hasCode(ds, "WB1401") {
+		t.Fatalf("after the timeout: %d %v", v, codes(ds))
+	}
+	for _, d := range ds {
+		if d.Code == "WB1004" && (d.Severity != 3 || d.Source != "bash-lsp" || !strings.Contains(d.Message, "did not finish")) {
+			t.Fatalf("WB1004: %+v", d)
+		}
+	}
+}
+
+func TestShellCheckOutputCapReported(t *testing.T) {
+	setDebounce(t, 10*time.Millisecond)
+	root := t.TempDir()
+	put(t, filepath.Join(root, "a.sh"), "")
+	c := clientInit(t, root, false, scInit(fakeShellCheck(t, "flood"), 5))
+	c.openText("a.sh", "#!/bin/bash\nrm $f\n")
+	c.waitPush("a.sh")
+	if _, ds := c.waitPush("a.sh"); !hasCode(ds, "WB1004") || !hasCode(ds, "WB1401") {
+		t.Fatalf("after the flood: %v", codes(ds))
+	}
+}
+
+func TestWB1004HonoursSettings(t *testing.T) {
+	setDebounce(t, 10*time.Millisecond)
+	root := t.TempDir()
+	put(t, filepath.Join(root, "a.sh"), "")
+	opts := scInit(fakeShellCheck(t, "sleep"), 1)
+	opts["diagnostics"] = map[string]any{"disable": []string{"WB1004"}}
+	c := clientInit(t, root, false, opts)
+	c.openText("a.sh", "#!/bin/bash\nrm $f\n")
+	c.waitPush("a.sh")
+	time.Sleep(1600 * time.Millisecond)
+	if n := c.pending("a.sh"); n != 0 {
+		_, ds := c.waitPush("a.sh")
+		if hasCode(ds, "WB1004") {
+			t.Fatalf("a disabled WB1004 was published: %v", codes(ds))
+		}
+	}
+	opts = scInit(fakeShellCheck(t, "sleep"), 1)
+	opts["severity"] = map[string]any{"WB1004": "warning"}
+	c2 := clientInit(t, root, false, opts)
+	c2.openText("a.sh", "#!/bin/bash\nrm $f\n")
+	c2.waitPush("a.sh")
+	_, ds := c2.waitPush("a.sh")
+	for _, d := range ds {
+		if d.Code == "WB1004" && d.Severity != 2 {
+			t.Fatalf("severity override not applied: %+v", d)
+		}
+	}
+	if !hasCode(ds, "WB1004") {
+		t.Fatalf("no WB1004: %v", codes(ds))
+	}
+}
+
+func TestServerResponsiveWhileShellCheckHangs(t *testing.T) {
+	setDebounce(t, 10*time.Millisecond)
+	root := t.TempDir()
+	put(t, filepath.Join(root, "a.sh"), "f() { :; }\nf\n")
+	c := clientInit(t, root, false, scInit(fakeShellCheck(t, "sleep"), 30))
+	c.openText("a.sh", "f() { :; }\nf\nrm $x\n")
+	c.waitPush("a.sh")
+	time.Sleep(100 * time.Millisecond) // the hung run is going
+	for i := 2; i < 30; i++ {
+		start := time.Now()
+		c.changeTo("a.sh", i, fmt.Sprintf("f() { :; }\nf\nrm $x%d\n", i))
+		c.waitPush("a.sh") // the native push of this edit
+		c.symbols("")
+		if d := time.Since(start); d > time.Second {
+			t.Fatalf("edit %d took %v while ShellCheck hung", i, d)
+		}
+	}
+}
+
+func TestShellCheckBurstRunsOnce(t *testing.T) {
+	setDebounce(t, 200*time.Millisecond)
+	root := t.TempDir()
+	put(t, filepath.Join(root, "a.sh"), "")
+	runlog := filepath.Join(t.TempDir(), "runs")
+	c := clientInit(t, root, false, scInit(fakeShellCheck(t, "mark", "WB_RUNLOG="+runlog), 0))
+	c.openText("a.sh", "#!/bin/bash\n# MARK 0\n")
+	for i := 2; i <= 12; i++ {
+		c.changeTo("a.sh", i, fmt.Sprintf("#!/bin/bash\n# MARK %d\n", i))
+	}
+	_, ds := c.waitPushWhere("a.sh", func(v int, ds []Diagnostic) bool { return anyMessage(ds, "mark:") })
+	if !anyMessage(ds, "mark:# MARK 12") {
+		t.Fatalf("the result is not for the last edit: %v", messages(ds))
+	}
+	time.Sleep(400 * time.Millisecond)
+	b, _ := os.ReadFile(runlog)
+	if n := strings.Count(string(b), "run"); n != 1 {
+		t.Fatalf("ShellCheck ran %d times for one burst of edits", n)
+	}
+}
+
+func TestShellCheckCancelledOnClose(t *testing.T) {
+	setDebounce(t, 10*time.Millisecond)
+	root := t.TempDir()
+	put(t, filepath.Join(root, "a.sh"), "")
+	c := clientInit(t, root, false, scInit(fakeShellCheck(t, "mark"), 0))
+	c.openText("a.sh", "#!/bin/bash\n# MARK SLOW\n")
+	c.waitPush("a.sh")
+	time.Sleep(100 * time.Millisecond) // the run is going
+	c.notify("textDocument/didClose", map[string]any{"textDocument": map[string]any{"uri": c.uri("a.sh")}})
+	if v, ds := c.waitPush("a.sh"); v != -1 || len(ds) != 0 {
+		t.Fatalf("close: %d %v", v, ds)
+	}
+	time.Sleep(700 * time.Millisecond)
+	if n := c.pending("a.sh"); n != 0 {
+		_, ds := c.waitPush("a.sh")
+		t.Fatalf("a push for a closed document: %v", messages(ds))
+	}
+}
+
+func TestShellCheckRefusalAndFailureLogged(t *testing.T) {
+	setDebounce(t, 10*time.Millisecond)
+	root := t.TempDir()
+	put(t, filepath.Join(root, "a.sh"), "")
+	put(t, filepath.Join(root, "b.sh"), "")
+	// A program inside the workspace is refused, once, with the reason.
+	inside := filepath.Join(root, "bin", "shellcheck")
+	put(t, inside, "#!/bin/sh\n")
+	if err := os.Chmod(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c := clientInit(t, root, false, scInit(inside, 0))
+	c.openText("a.sh", "#!/bin/bash\nrm $f\n")
+	c.openText("b.sh", "#!/bin/bash\nrm $f\n")
+	msg := c.waitLog("inside the workspace folder")
+	if !strings.Contains(msg, "shellcheck") {
+		t.Fatalf("refusal text: %q", msg)
+	}
+	c.symbols("")
+	if n := len(c.logsContaining("inside the workspace folder")); n != 1 {
+		t.Fatalf("the refusal was logged %d times", n)
+	}
+	c.waitPush("a.sh")
+	c.waitPush("b.sh")
+	if c.pending("a.sh") != 0 || c.pending("b.sh") != 0 {
+		t.Fatalf("a refused ShellCheck pushed again")
+	}
+
+	// A run that fails (exit status 2) is logged once and leaves the findings alone.
+	root2 := t.TempDir()
+	put(t, filepath.Join(root2, "a.sh"), "")
+	put(t, filepath.Join(root2, "b.sh"), "")
+	c2 := clientInit(t, root2, false, scInit(fakeShellCheck(t, "exit2"), 0))
+	c2.openText("a.sh", "#!/bin/bash\nrm $f\n")
+	c2.openText("b.sh", "#!/bin/bash\nrm $f\n")
+	c2.waitLog("fake failure: first line")
+	time.Sleep(300 * time.Millisecond)
+	if n := len(c2.logsContaining("fake failure: first line")); n != 1 {
+		t.Fatalf("the failure was logged %d times (want once per distinct text)", n)
+	}
+}
+
+func TestShellCheckNoticesLoggedOnce(t *testing.T) {
+	setDebounce(t, 10*time.Millisecond)
+	root := t.TempDir()
+	put(t, filepath.Join(root, "a.sh"), "")
+	put(t, filepath.Join(root, ".shellcheckrc"), "this line is not a setting\n")
+	c := clientInit(t, root, false, scInit(fakeShellCheck(t, "mark"), 0))
+	c.openText("a.sh", "#!/bin/bash\n# MARK 1\n")
+	note := c.waitLog(".shellcheckrc:1")
+	if !strings.Contains(note, "ShellCheck ignores such a file") {
+		t.Fatalf("notice: %q", note)
+	}
+	c.changeTo("a.sh", 2, "#!/bin/bash\n# MARK 2\n")
+	c.waitPushWhere("a.sh", func(v int, ds []Diagnostic) bool { return anyMessage(ds, "mark:# MARK 2") })
+	if n := len(c.logsContaining(".shellcheckrc:1")); n != 1 {
+		t.Fatalf("the notice was logged %d times", n)
+	}
+}
+
+// With the real program: its findings replace the native findings they
+// duplicate, and its fixes are offered.
+func TestRealShellCheckMergedAndFixed(t *testing.T) {
+	sc, err := exec.LookPath("shellcheck")
+	if err != nil {
+		t.Skip("ShellCheck is not installed")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", home)
+	setDebounce(t, 10*time.Millisecond)
+	root := t.TempDir()
+	put(t, filepath.Join(root, "a.sh"), "")
+	c := clientInit(t, root, false, scInit(sc, 0))
+	c.openText("a.sh", "#!/bin/bash\nrm $f\necho `date`\n")
+	c.waitPush("a.sh") // native: WB1401
+	_, ds := c.waitPushWhere("a.sh", func(v int, ds []Diagnostic) bool { return hasSource(ds, "shellcheck") })
+	if !hasCode(ds, "SC2086") || !hasCode(ds, "SC2006") || hasCode(ds, "WB1401") {
+		t.Fatalf("merged findings: %v", codes(ds))
+	}
+	var d Diagnostic
+	for _, x := range ds {
+		if x.Code == "SC2086" {
+			d = x
+		}
+	}
+	acts := c.actions("a.sh", d.Range.toMap(), []Diagnostic{d})
+	if len(acts) != 1 || acts[0].Title != "ShellCheck: apply fix" || len(acts[0].Edit.Changes[c.uri("a.sh")]) == 0 {
+		t.Fatalf("ShellCheck fix: %+v", acts)
+	}
+	// Pull answers with the same merged set and a result id that moved with it.
+	r := c.pull("a.sh", "")
+	if !hasCode(r.Items, "SC2086") {
+		t.Fatalf("pull: %v", codes(r.Items))
+	}
+}
+
+func TestPullFollowsShellCheckResult(t *testing.T) {
+	setDebounce(t, 10*time.Millisecond)
+	root := t.TempDir()
+	put(t, filepath.Join(root, "a.sh"), "")
+	c := clientInit(t, root, false, scInit(fakeShellCheck(t, "mark", "WB_X=1"), 0))
+	c.openText("a.sh", "#!/bin/bash\n# MARK SLOW\n")
+	c.waitPush("a.sh")
+	before := c.pull("a.sh", "")
+	if anyMessage(before.Items, "mark:") {
+		t.Fatalf("pull before ShellCheck answered: %v", messages(before.Items))
+	}
+	c.waitPushWhere("a.sh", func(v int, ds []Diagnostic) bool { return hasSource(ds, "shellcheck") })
+	after := c.pull("a.sh", before.ResultID)
+	if after.Kind != "full" || after.ResultID == before.ResultID || !anyMessage(after.Items, "mark:") {
+		t.Fatalf("pull after ShellCheck: %+v (before %+v)", after, before)
+	}
+	if again := c.pull("a.sh", after.ResultID); again.Kind != "unchanged" {
+		t.Fatalf("pull again: %+v", again)
 	}
 }
