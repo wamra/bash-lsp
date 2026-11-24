@@ -139,3 +139,37 @@ func TestWriterConcurrent(t *testing.T) {
 		t.Fatal("leak")
 	}
 }
+
+func TestStringKeepsClosingQuote(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{`no function matches "password=hunter2"`, `no function matches "password=[redacted]"`},
+		{`x 'token=abc' y`, `x 'token=[redacted]' y`},
+		{`password="p\"a\\ss=word"`, `password=[redacted]"`},
+		{`secret=abc`, `secret=[redacted]`},
+	} {
+		if got := String(c.in); got != c.want {
+			t.Errorf("String(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// A token that straddles the cut of a long line with no blank never leaks,
+// whichever half the writer holds.
+func TestWriterLongRunWithTokenAtTheCut(t *testing.T) {
+	token := "ghp_" + strings.Repeat("Z", 36)
+	for _, pad := range []int{MaxLine - 20, MaxLine - 4, MaxLine - 40, MaxLine, MaxLine + 5, 3*MaxLine - 30} {
+		var out bytes.Buffer
+		w := Writer(&out)
+		line := strings.Repeat("a", pad) + token + strings.Repeat("b", 10) + " after\nnext\n"
+		for i := 0; i < len(line); i += 7777 { // arbitrary write sizes
+			w.Write([]byte(line[i:min(i+7777, len(line))]))
+		}
+		got := out.String()
+		if strings.Contains(got, "ZZZZ") || strings.Contains(got, "ghp_") {
+			t.Fatalf("pad %d: token (or a piece of it) leaked", pad)
+		}
+		if !strings.HasSuffix(got, "after\nnext\n") {
+			t.Errorf("pad %d: text after the long run was lost: %q", pad, got[max(0, len(got)-40):])
+		}
+	}
+}

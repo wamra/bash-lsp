@@ -33,7 +33,15 @@ var (
 // String replaces every credential-looking match in s with "[redacted]".
 func String(s string) string {
 	s = whole.ReplaceAllLiteralString(s, Mark)
-	return assign.ReplaceAllString(s, "${1}="+Mark)
+	return assign.ReplaceAllStringFunc(s, func(m string) string {
+		name, value, _ := strings.Cut(m, "=")
+		// closing quotes after the value are text around it, not part of it
+		core := strings.TrimRight(value, `"'`)
+		if core == "" { // no value, only quotes
+			return m
+		}
+		return name + "=" + Mark + value[len(core):]
+	})
 }
 
 // hints are bytes a JSON string literal must hold, raw, to be worth decoding:
@@ -102,15 +110,18 @@ func worth(lit []byte) bool {
 }
 
 type writer struct {
-	mu  sync.Mutex
-	w   io.Writer
-	buf []byte
+	mu       sync.Mutex
+	w        io.Writer
+	buf      []byte
+	skipping bool // inside a run with no blank that overflowed: dropped up to the next blank
 }
 
 // Writer returns a writer that redacts what it passes to w one line at a
 // time: a line is held until its newline arrives, so a secret split across
 // two Write calls is still seen whole. A line longer than MaxLine is passed
-// on in pieces, cut at the last blank when there is one. Flush (the returned
+// on in pieces cut at the last blank; a run of MaxLine bytes with no blank
+// at all is replaced by one "[redacted]" and dropped up to the next blank or
+// newline, because a secret could straddle any cut inside it. Flush (the returned
 // writer has it) writes out a partial line. Safe for concurrent use. A Write
 // always reports all of p as written; the error is the first one w gave.
 func Writer(w io.Writer) io.Writer { return &writer{w: w} }
@@ -141,6 +152,14 @@ func (x *writer) drain() error {
 		}
 	}
 	for {
+		if x.skipping {
+			i := bytes.IndexAny(x.buf, " \t\n")
+			if i < 0 {
+				x.buf = nil
+				return first
+			}
+			x.buf, x.skipping = x.buf[i:], false
+		}
 		i := bytes.IndexByte(x.buf, '\n')
 		if i < 0 {
 			break
@@ -149,12 +168,13 @@ func (x *writer) drain() error {
 		x.buf = x.buf[i+1:]
 	}
 	if len(x.buf) >= MaxLine {
-		cut := strings.LastIndexAny(string(x.buf), " \t")
-		if cut <= 0 {
-			cut = len(x.buf)
+		if cut := strings.LastIndexAny(string(x.buf), " \t"); cut > 0 {
+			put(String(string(x.buf[:cut])))
+			x.buf = x.buf[cut:]
+		} else {
+			put(Mark)
+			x.buf, x.skipping = nil, true
 		}
-		put(String(string(x.buf[:cut])))
-		x.buf = x.buf[cut:]
 	}
 	if len(x.buf) == 0 {
 		x.buf = nil
