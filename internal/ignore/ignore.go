@@ -10,6 +10,8 @@
 package ignore
 
 import (
+	"bytes"
+	"fmt"
 	"regexp"
 	"strings"
 	"unicode/utf8"
@@ -37,11 +39,72 @@ func Parse(base string, data []byte) *Matcher { return ParseFold(base, data, fal
 // apart: with fold every pattern compiles case-insensitively and Base is
 // compared with strings.EqualFold.
 func ParseFold(base string, data []byte, fold bool) *Matcher {
+	return (*Budget)(nil).ParseFold(base, data, fold)
+}
+
+// Budget bounds the work of the ignore files of one walk, in counts: the
+// rules compiled and the rule evaluations made. A repository controls its
+// .gitignore files, and the cost is rules times paths times nesting. When a
+// count runs out the walk stops applying rules from there: rules beyond the
+// rule budget are not compiled, and once the evaluation budget is spent
+// nothing is reported ignored. Files are then included rather than hidden,
+// which is the conservative answer for an analyser: nothing is skipped
+// silently, and the file limits still bound what is read. A nil Budget is
+// unlimited.
+type Budget struct {
+	rulesLeft, evalsLeft int
+	rulesHit, evalsHit   bool
+	maxRules, maxEvals   int
+	evals                int
+}
+
+// NewBudget returns a Budget of maxRules compiled rules and maxEvals
+// evaluations.
+func NewBudget(maxRules, maxEvals int) *Budget {
+	return &Budget{rulesLeft: maxRules, evalsLeft: maxEvals, maxRules: maxRules, maxEvals: maxEvals}
+}
+
+// Evals is how many rule evaluations have been charged.
+func (b *Budget) Evals() int { return b.evals }
+
+// Hit returns a line for every count that ran out, for the limits report.
+func (b *Budget) Hit() []string {
+	if b == nil {
+		return nil
+	}
+	var out []string
+	if b.rulesHit {
+		out = append(out, fmt.Sprintf("ignore rule limit of %d reached: later .gitignore rules not applied, files they would hide are included", b.maxRules))
+	}
+	if b.evalsHit {
+		out = append(out, fmt.Sprintf("ignore evaluation limit of %d reached: .gitignore rules not applied to later paths, files they would hide are included", b.maxEvals))
+	}
+	return out
+}
+
+// ParseFold is ParseFold that charges each compiled rule to b.
+func (b *Budget) ParseFold(base string, data []byte, fold bool) *Matcher {
 	m := &Matcher{Base: strings.Trim(base, "/"), fold: fold}
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimRight(line, "\r")
-		if r, ok := parseLine(line, fold); ok {
+	for len(data) > 0 {
+		var line []byte
+		if i := bytes.IndexByte(data, '\n'); i >= 0 {
+			line, data = data[:i], data[i+1:]
+		} else {
+			line, data = data, nil
+		}
+		if b != nil && b.rulesLeft <= 0 {
+			// A blank line or a comment would not have been a rule.
+			if t := bytes.TrimSpace(line); len(t) > 0 && t[0] != '#' {
+				b.rulesHit = true
+				return m
+			}
+			continue
+		}
+		if r, ok := parseLine(strings.TrimRight(string(line), "\r"), fold); ok {
 			m.rules = append(m.rules, r)
+			if b != nil {
+				b.rulesLeft--
+			}
 		}
 	}
 	return m
@@ -162,48 +225,74 @@ func (m *Matcher) inBase(rel string) bool {
 // Match evaluates rel (slash-separated, relative to the workspace root) and
 // returns the verdict of the last rule that matches, or None.
 func (m *Matcher) Match(rel string, isDir bool) Result {
+	res, _ := m.match(rel, isDir, nil)
+	return res
+}
+
+// match is Match that charges each rule it evaluates to b and stops when b
+// runs out (ok false). It looks from the last rule back and stops at the
+// first that matches, which is the last match.
+func (m *Matcher) match(rel string, isDir bool, b *Budget) (res Result, ok bool) {
 	if m.Base != "" {
 		if !m.inBase(rel) {
-			return None
+			return None, true
 		}
 		rel = rel[len(m.Base)+1:]
 	}
-	res := None
-	for _, r := range m.rules {
+	for i := len(m.rules) - 1; i >= 0; i-- {
+		r := &m.rules[i]
 		if r.dirOnly && !isDir {
 			continue
 		}
+		if b != nil {
+			if b.evalsLeft <= 0 {
+				b.evalsHit = true
+				return None, false
+			}
+			b.evalsLeft--
+			b.evals++
+		}
 		if r.re.MatchString(rel) {
 			if r.negate {
-				res = Included
-			} else {
-				res = Ignored
+				return Included, true
 			}
+			return Ignored, true
 		}
 	}
-	return res
+	return None, true
 }
 
 // Set is an ordered list of matchers: outer directories first. Later (deeper)
 // matchers override earlier ones, as git does.
-type Set struct{ ms []*Matcher }
+type Set struct {
+	ms     []*Matcher
+	budget *Budget
+}
 
 // Add appends m (call with shallower directories first).
 func (s *Set) Add(m *Matcher) { s.ms = append(s.ms, m) }
 
-// Clone returns a copy that can be extended independently.
-func (s *Set) Clone() *Set { return &Set{ms: append([]*Matcher(nil), s.ms...)} }
+// WithBudget makes the set charge its evaluations to b, and returns s.
+// Clones share it.
+func (s *Set) WithBudget(b *Budget) *Set { s.budget = b; return s }
 
-// Ignored reports whether rel is ignored by the set.
+// Clone returns a copy that can be extended independently.
+func (s *Set) Clone() *Set { return &Set{ms: append([]*Matcher(nil), s.ms...), budget: s.budget} }
+
+// Ignored reports whether rel is ignored by the set: the verdict of the
+// deepest matcher that has one. Matchers above it are not evaluated.
 func (s *Set) Ignored(rel string, isDir bool) bool {
-	ign := false
-	for _, m := range s.ms {
-		switch m.Match(rel, isDir) {
+	for i := len(s.ms) - 1; i >= 0; i-- {
+		res, ok := s.ms[i].match(rel, isDir, s.budget)
+		if !ok {
+			return false
+		}
+		switch res {
 		case Ignored:
-			ign = true
+			return true
 		case Included:
-			ign = false
+			return false
 		}
 	}
-	return ign
+	return false
 }

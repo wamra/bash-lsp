@@ -256,26 +256,35 @@ const maxRCBytes = 64 << 10
 // in big monorepos stay well under 100 KiB. A larger one is treated as absent.
 const maxIgnoreBytes = 1 << 20
 
+// The work the ignore files of one walk may cause, in counts (see
+// ignore.Budget): rules compiled over all the .gitignore files, and rule
+// evaluations over all the paths. Real trees use a small fraction of both.
+const (
+	maxIgnoreRules = 20000
+	maxIgnoreEvals = 1000000
+)
+
 // Workspace is safe for concurrent use.
 type Workspace struct {
 	root string
 	lim  Limits
 	fold bool // keys fold case: Windows, or a case-insensitive volume
 
-	mu       sync.Mutex // guards everything below except snap
-	disk     map[string]*entry
-	overlays map[string]*overlay
-	gen      uint64
-	skips    map[string]skipInfo
-	dirName  map[string]string // key(real dir) -> the walk's logical path for it
-	rcCache  map[string]rcInfo
-	rcReal   map[string]bool    // search directory -> inside the root after links; cleared with rcCache
-	excl     map[string]bool    // keys of directories whose subtrees another workspace owns
-	listings map[string]listing // directory listings for spelling on a folding volume, by key
-	unlisted map[string]string  // keys of directories too large to list for spelling -> their LimitsHit line; cleared by a full walk
-	depthHit map[string]string  // root-relative directories the walk did not enter for depth -> LimitsHit line; reset by a walk
-	rcNotes  map[string]string  // dropped .shellcheckrc entries, by rc directory and entry; cleared with rcCache
-	snap     atomic.Pointer[analysis.Snapshot]
+	mu        sync.Mutex // guards everything below except snap
+	disk      map[string]*entry
+	overlays  map[string]*overlay
+	gen       uint64
+	skips     map[string]skipInfo
+	dirName   map[string]string // key(real dir) -> the walk's logical path for it
+	rcCache   map[string]rcInfo
+	rcReal    map[string]bool    // search directory -> inside the root after links; cleared with rcCache
+	excl      map[string]bool    // keys of directories whose subtrees another workspace owns
+	listings  map[string]listing // directory listings for spelling on a folding volume, by key
+	unlisted  map[string]string  // keys of directories too large to list for spelling -> their LimitsHit line; cleared by a full walk
+	ignBudget *ignore.Budget     // the ignore work of the last walk
+	depthHit  map[string]string  // root-relative directories the walk did not enter for depth -> LimitsHit line; reset by a walk
+	rcNotes   map[string]string  // dropped .shellcheckrc entries, by rc directory and entry; cleared with rcCache
+	snap      atomic.Pointer[analysis.Snapshot]
 
 	// Fixed at Open (Config).
 	commands func(name string) (string, bool)
@@ -777,6 +786,7 @@ func (w *Workspace) Report() Report {
 	}
 	sort.Strings(dirs)
 	r.LimitsHit = append(r.LimitsHit, dirs...)
+	r.LimitsHit = append(r.LimitsHit, w.ignBudget.Hit()...)
 	for _, e := range w.disk {
 		r.Dialects[e.dialect]++
 	}
@@ -1031,11 +1041,12 @@ func (w *Workspace) walk() (cands []candidate) {
 	w.depthHit = map[string]string{}
 	w.unlisted = map[string]string{} // a full walk lists large directories again
 	visited := map[string]bool{w.key(w.root): true}
+	w.ignBudget = ignore.NewBudget(maxIgnoreRules, maxIgnoreEvals)
 	var rec func(dir, real, rel string, set *ignore.Set, depth int)
 	rec = func(dir, real, rel string, set *ignore.Set, depth int) {
 		if data, ok := w.readConfig(filepath.Join(dir, ".gitignore"), maxIgnoreBytes); ok {
 			set = set.Clone()
-			set.Add(ignore.ParseFold(rel, data, w.fold))
+			set.Add(w.ignBudget.ParseFold(rel, data, w.fold))
 		}
 		ents, err := os.ReadDir(dir) // sorted by name
 		if err != nil {
@@ -1102,7 +1113,7 @@ func (w *Workspace) walk() (cands []candidate) {
 			cands = append(cands, candidate{full, fi.Size(), fi.ModTime().UnixNano()})
 		}
 	}
-	rec(w.root, w.root, "", &ignore.Set{}, 0)
+	rec(w.root, w.root, "", (&ignore.Set{}).WithBudget(w.ignBudget), 0)
 	return
 }
 
@@ -1264,12 +1275,13 @@ func (w *Workspace) ignoredPath(rel string, dir bool) bool {
 	if n := len(parts) - 1; dir && n+1 > w.lim.MaxDirDepth || n > w.lim.MaxDirDepth {
 		return true // the walk does not enter a directory this deep
 	}
-	set := &ignore.Set{}
+	b := ignore.NewBudget(maxIgnoreRules, maxIgnoreEvals)
+	set := (&ignore.Set{}).WithBudget(b)
 	d, relDir := w.root, ""
 	for i, part := range parts {
 		if data, ok := w.readConfig(filepath.Join(d, ".gitignore"), maxIgnoreBytes); ok {
 			set = set.Clone()
-			set.Add(ignore.ParseFold(relDir, data, w.fold))
+			set.Add(b.ParseFold(relDir, data, w.fold))
 		}
 		relp := part
 		if relDir != "" {

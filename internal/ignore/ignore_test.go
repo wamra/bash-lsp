@@ -1,6 +1,10 @@
 package ignore
 
-import "testing"
+import (
+	"fmt"
+	"strings"
+	"testing"
+)
 
 func TestGitignore(t *testing.T) {
 	m := Parse("", []byte("# comment\n*.log\n/build\nnode_modules/\ndocs/**/*.tmp\n!keep.log\nsrc/gen?.go\n"))
@@ -96,5 +100,58 @@ func TestNonASCIIPatterns(t *testing.T) {
 		if got := s.Ignored(c.rel, false); got != c.want {
 			t.Errorf("%s: pattern %q on %q (fold %v) = %v, want %v", c.name, c.pat, c.rel, c.fold, got, c.want)
 		}
+	}
+}
+
+// The deepest matcher with a verdict decides, and the matchers above it are
+// not evaluated: the work does not multiply with the nesting.
+func TestSetDoesNotReEvaluateAncestors(t *testing.T) {
+	b := NewBudget(1<<20, 1<<20)
+	var rules strings.Builder
+	for i := 0; i < 1000; i++ {
+		fmt.Fprintf(&rules, "never%d\n", i)
+	}
+	set := (&Set{}).WithBudget(b)
+	set.Add(b.ParseFold("", []byte(rules.String()), false))
+	set.Add(b.ParseFold("a", []byte(rules.String()), false))
+	set.Add(b.ParseFold("a/b", []byte(rules.String()+"*.log\n"), false))
+	if !set.Ignored("a/b/x.log", false) {
+		t.Fatal("x.log is not ignored")
+	}
+	if b.Evals() != 1 {
+		t.Fatalf("%d evaluations for a path the deepest matcher decides, want 1", b.Evals())
+	}
+	// A path nothing matches is looked at once per rule, in each matcher.
+	before := b.Evals()
+	if set.Ignored("a/b/y.txt", false) || b.Evals()-before != 3001 {
+		t.Fatalf("%d evaluations", b.Evals()-before)
+	}
+}
+
+func TestBudgetStopsApplyingRules(t *testing.T) {
+	b := NewBudget(3, 5)
+	m := b.ParseFold("", []byte("a\nb\n# c\nc\nd\ne\n"), false)
+	if len(m.rules) != 3 {
+		t.Fatalf("%d rules compiled, want 3", len(m.rules))
+	}
+	if h := b.Hit(); len(h) != 1 || !strings.Contains(h[0], "rule limit of 3") {
+		t.Fatalf("hit %q", h)
+	}
+	set := (&Set{}).WithBudget(b)
+	set.Add(m)
+	for i := 0; i < 5; i++ { // 3 rules per path: the budget of 5 runs out in the second
+		set.Ignored("zzz", false)
+	}
+	if set.Ignored("a", false) {
+		t.Fatal("a rule was applied after the budget ran out")
+	}
+	if b.Evals() > 5 {
+		t.Fatalf("%d evaluations over the budget of 5", b.Evals())
+	}
+	if h := b.Hit(); len(h) != 2 || !strings.Contains(h[1], "evaluation limit of 5") {
+		t.Fatalf("hit %q", h)
+	}
+	if (*Budget)(nil).Hit() != nil {
+		t.Fatal("nil budget hit")
 	}
 }
