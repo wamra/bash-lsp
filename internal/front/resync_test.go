@@ -248,9 +248,13 @@ func FuzzParse(f *testing.F) {
 		f.Add([]byte(seed))
 	}
 	f.Fuzz(func(t *testing.T, src []byte) {
-		var file *tree.File
-		parseWithinBudget(t, len(src), func() { file = Parse("f.sh", src, Bash) })
-		checkInvariants(t, file)
+		// Every input is parsed as bash and as sh (the POSIX grammar first,
+		// the bash grammar after it when that has errors), each within the budget.
+		for _, d := range []Dialect{Bash, POSIX} {
+			var file *tree.File
+			parseWithinBudget(t, len(src), func() { file = Parse("f.sh", src, d) })
+			checkInvariants(t, file)
+		}
 	})
 }
 

@@ -187,9 +187,27 @@ func TestCrashHelper(t *testing.T) {
 	fmt.Println(parseAndWalk(src))
 }
 
+// walkPOSIX does the same for the sh path: the POSIX grammar first, the bash
+// grammar after it when that has errors. Nothing is printed; it panics where
+// parseAndWalk does.
+func walkPOSIX(src []byte) {
+	f := Parse("x.sh", src, POSIX)
+	f.Root.Walk(func(*tree.Node) bool { return true })
+	if d := treeDepth(f); d > 3*maxDepth+10 {
+		panic(fmt.Sprintf("sh: tree depth %d over the lowerer's bound", d))
+	}
+	if crashAnalyse != nil {
+		crashAnalyse(f)
+	}
+	if f.Skipped != "" && (f.Skipped != nestingError || len(f.Root.Children) != 0 || !errorWith(f.Errors, nestingError)) {
+		panic(fmt.Sprintf("sh: skipped %q with %d statements, errors %v", f.Skipped, len(f.Root.Children), f.Errors))
+	}
+}
+
 // parseAndWalk parses src and walks the tree recursively, the way every
 // consumer does. It panics when the tree breaks the depth the lowerer promises.
 func parseAndWalk(src []byte) string {
+	walkPOSIX(src)
 	f := Parse("x.sh", src, Bash)
 	nodes := 0
 	f.Root.Walk(func(*tree.Node) bool { nodes++; return true })
