@@ -475,7 +475,10 @@ func TestInitializeCapabilities(t *testing.T) {
 		`"diagnosticProvider":{"interFileDependencies":true,"workspaceDiagnostics":false},"documentFormattingProvider":true,` +
 		`"documentHighlightProvider":true,"documentLinkProvider":{"resolveProvider":false},` +
 		`"documentRangeFormattingProvider":true,"documentSymbolProvider":true,"foldingRangeProvider":true,"hoverProvider":true,"implementationProvider":true,` +
-		`"positionEncoding":"utf-16","referencesProvider":true,"selectionRangeProvider":true,"signatureHelpProvider":{"retriggerCharacters":[" "],"triggerCharacters":[" "]},"textDocumentSync":{"change":2,"openClose":true,"save":{"includeText":false}},` +
+		`"positionEncoding":"utf-16","referencesProvider":true,"selectionRangeProvider":true,` +
+		`"semanticTokensProvider":{"full":{"delta":true},"legend":{"tokenModifiers":["declaration","readonly","modification","defaultLibrary","local","exported","array","associative","integer","nameref","environment","external","unresolved"],"tokenTypes":["function","variable","parameter","macro"]},"range":true},` +
+		`"signatureHelpProvider":{"retriggerCharacters":[" "],"triggerCharacters":[" "]},` +
+		`"textDocumentSync":{"change":2,"openClose":true,"save":{"includeText":false}},` +
 		`"workspace":{"workspaceFolders":{"changeNotifications":"workspace/didChangeWorkspaceFolders","supported":true}},"workspaceSymbolProvider":true}`
 	have, _ := json.Marshal(resp.Result.Capabilities) // map keys marshal sorted
 	if string(have) != want {

@@ -235,6 +235,7 @@ func capabilities() map[string]any {
 		"selectionRangeProvider":          true,
 		"documentHighlightProvider":       true,
 		"documentLinkProvider":            map[string]any{"resolveProvider": false},
+		"semanticTokensProvider":          semanticTokensProvider(),
 	}
 }
 

@@ -179,6 +179,7 @@ func (s *server) refreshOthers(be backend, except *document) {
 	for _, d := range docs {
 		s.publishDoc(d, false)
 	}
+	s.refreshSemanticTokens(docs...)
 }
 
 // ---- pull ----

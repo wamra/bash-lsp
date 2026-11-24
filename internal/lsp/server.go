@@ -99,6 +99,8 @@ type document struct {
 	version int
 	text    []byte
 	lint    docLint // what was published for it (lint.go)
+
+	semtok semtokDoc // semantic-tokens ids and the base of the next delta (semtok.go)
 }
 
 type server struct {
@@ -130,6 +132,7 @@ type server struct {
 	profile      *extool.Profile             // the PATH profile, read once per session (pathProfile)
 	helpRun      helpdoc.Runner              // starts help and man (helpdoc.go); extool.Run, a fake in tests
 	helpTools    map[backend]*helpdoc.Lookup // per folder, built on first hover (loop only)
+	semtok       semtokState                 // semantic-tokens bookkeeping (semtok.go)
 
 	started bool
 	ready   chan struct{} // closed when folders is set
@@ -290,6 +293,12 @@ func (s *server) handle(m message) (any, *rpcError) {
 		return s.documentHighlight(m.Params)
 	case "textDocument/documentLink":
 		return s.documentLink(m.Params)
+	case "textDocument/semanticTokens/full":
+		return s.semanticTokensFull(m.Params)
+	case "textDocument/semanticTokens/full/delta":
+		return s.semanticTokensDelta(m.Params)
+	case "textDocument/semanticTokens/range":
+		return s.semanticTokensRange(m.Params)
 	}
 	if len(m.ID) > 0 {
 		return nil, &rpcError{codeMethodNotFound, "method not found: " + m.Method}
