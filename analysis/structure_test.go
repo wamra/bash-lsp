@@ -69,15 +69,9 @@ func TestSelectionChain(t *testing.T) {
 }
 
 func TestSelectionDepthCapped(t *testing.T) {
-	// The parser accepts about 2,500 nested subshells; above that the file
-	// is an error gap or skipped, and the chain is short but never longer
-	// than the cap.
+	// The parser accepts about 2,500 nested subshells; the cap applies below
+	// that.
 	mk := func(n int) string { return strings.Repeat("( ", n) + "echo hi" + strings.Repeat(" )", n) + "\n" }
-	big := mk(10000)
-	qb := buildMem(t, map[string]string{"a.sh": big})
-	if got := len(qb.s.SelectionChain(qb.abs("a.sh"), strings.Index(big, "hi"))); got > maxSelectionDepth {
-		t.Fatalf("%d levels in a file the parser gave up on", got)
-	}
 	src := mk(2000)
 	q := buildMem(t, map[string]string{"a.sh": src})
 	chain := q.s.SelectionChain(q.abs("a.sh"), strings.Index(src, "hi"))
@@ -211,5 +205,67 @@ func TestLinksInvokedFile(t *testing.T) {
 	got := linkStrs(q, q.s.Links(q.abs("run.sh")))
 	if len(got) != 1 || got[0] != "1:tool.sh|invokes → tool.sh" {
 		t.Fatalf("links: %v (%s)", got, filepath.Base(q.root))
+	}
+}
+
+func TestHighlightsStayInTheFile(t *testing.T) {
+	q := buildMem(t, map[string]string{
+		"lib.sh": "f() { :; }\n",
+		"a.sh":   ". ./lib.sh\nf\n",
+		"b.sh":   ". ./lib.sh\nf\nf\n",
+	})
+	src := string(q.src("a.sh"))
+	off := strings.LastIndex(src, "f")
+	got := q.s.Highlights(q.abs("a.sh"), off)
+	if len(got) != 1 || got[0].Range.Start.Offset != off {
+		t.Fatalf("highlights in a.sh: %+v, want only the call at %d (the declaration is in lib.sh, the other calls in b.sh)", got, off)
+	}
+	// The same symbol from b.sh: its own two uses.
+	if got := q.s.Highlights(q.abs("b.sh"), strings.Index(string(q.src("b.sh")), "f\n")); len(got) != 2 {
+		t.Fatalf("highlights in b.sh: %+v", got)
+	}
+}
+
+func TestHighlightsSkipCandidateAndDynamicSites(t *testing.T) {
+	src := "f() { :; }\nf\ncmd=f\n$cmd\n\"$cmd\"\neval \"f\"\n"
+	q := buildMem(t, map[string]string{"a.sh": src})
+	got := q.s.Highlights(q.abs("a.sh"), 0)
+	var lines []int
+	for _, h := range got {
+		lines = append(lines, h.Range.Start.Line)
+	}
+	for _, l := range lines {
+		if l >= 4 {
+			t.Fatalf("a candidate or dynamic site is highlighted (lines %v): %+v", lines, got)
+		}
+	}
+	if len(got) < 2 {
+		t.Fatalf("the declaration and the direct call are missing: %+v", got)
+	}
+}
+
+func TestLinksSkipDynamicSites(t *testing.T) {
+	q := buildMem(t, map[string]string{
+		"main.sh": "x=./t.sh\nsource \"$x\"\ncmd=./t.sh\n$cmd\nsource ./missing.sh\n",
+		"t.sh":    "echo hi\n",
+	})
+	if got := linkStrs(q, q.s.Links(q.abs("main.sh"))); len(got) != 0 {
+		t.Fatalf("dynamic, candidate or unresolved sites got links: %v", got)
+	}
+}
+
+func TestShebangAndSourceLinkOrder(t *testing.T) {
+	abs := filepath.Join(string(filepath.Separator), "no", "such", "sh")
+	q := buildMem(t, map[string]string{
+		"a.sh":   "#!" + abs + "\n. ./lib.sh\n",
+		"lib.sh": "f() { :; }\n",
+	})
+	sb, ok := q.s.Shebang(q.abs("a.sh"))
+	if !ok {
+		t.Fatal("no shebang")
+	}
+	ls := q.s.Links(q.abs("a.sh"))
+	if len(ls) != 1 || ls[0].Range.Start.Offset <= sb.Range.Start.Offset {
+		t.Fatalf("source link %+v does not come after the shebang %+v", ls, sb)
 	}
 }

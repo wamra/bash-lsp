@@ -275,3 +275,26 @@ func TestFoldingRangeRequestCaps(t *testing.T) {
 		}
 	}
 }
+
+// A file with a shebang and a source: the shebang link comes first.
+func TestDocumentLinkShebangFirst(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shebang paths are Unix paths")
+	}
+	ws := t.TempDir()
+	tools := t.TempDir()
+	interp := filepath.Join(tools, "myinterp")
+	writeFile(t, tools, "myinterp", "")
+	writeFile(t, ws, "a.sh", "#!"+interp+"\n. ./lib.sh\n")
+	writeFile(t, ws, "lib.sh", "f() { :; }\n")
+	c := client(t, ws)
+	c.open("a.sh")
+	raw := c.call("textDocument/documentLink", map[string]any{"textDocument": map[string]any{"uri": c.uri("a.sh")}})
+	var ls []documentLink
+	if err := json.Unmarshal(raw, &ls); err != nil {
+		t.Fatalf("%v: %s", err, raw)
+	}
+	if len(ls) != 2 || !strings.HasSuffix(ls[0].Target, "/myinterp") || ls[0].Range.Start.Line != 0 || ls[1].Range.Start.Line != 1 {
+		t.Fatalf("links %s, want the shebang first, then the source", raw)
+	}
+}
