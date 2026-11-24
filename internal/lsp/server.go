@@ -98,6 +98,8 @@ type document struct {
 	version int
 	text    []byte
 	lint    docLint // what was published for it (lint.go)
+
+	semtok semtokDoc // semantic-tokens ids and the base of the next delta (semtok.go)
 }
 
 type server struct {
@@ -127,6 +129,7 @@ type server struct {
 	reloadMsg    map[string]string // per folder root: the "not reloaded" message sent for its last failed reload (loop only)
 	profileOnce  sync.Once
 	profile      *extool.Profile // the PATH profile, read once per session (pathProfile)
+	semtok       semtokState     // semantic-tokens bookkeeping (semtok.go)
 
 	started bool
 	ready   chan struct{} // closed when folders is set
@@ -276,6 +279,12 @@ func (s *server) handle(m message) (any, *rpcError) {
 		return s.incomingCalls(m.Params)
 	case "callHierarchy/outgoingCalls":
 		return s.outgoingCalls(m.Params)
+	case "textDocument/semanticTokens/full":
+		return s.semanticTokensFull(m.Params)
+	case "textDocument/semanticTokens/full/delta":
+		return s.semanticTokensDelta(m.Params)
+	case "textDocument/semanticTokens/range":
+		return s.semanticTokensRange(m.Params)
 	}
 	if len(m.ID) > 0 {
 		return nil, &rpcError{codeMethodNotFound, "method not found: " + m.Method}
@@ -510,6 +519,7 @@ func (s *server) didClose(raw json.RawMessage) *rpcError {
 		return nil
 	}
 	delete(s.docs, d.path)
+	d.resetTokens()
 	s.resetCheck(d)
 	// Every URI that led to it: the closing one, the one it was opened (and
 	// its diagnostics published) under, and any other spelling it was opened

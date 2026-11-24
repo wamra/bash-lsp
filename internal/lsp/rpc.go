@@ -48,7 +48,7 @@ type request struct {
 	JSONRPC string `json:"jsonrpc"`
 	ID      string `json:"id"`
 	Method  string `json:"method"`
-	Params  any    `json:"params"`
+	Params  any    `json:"params,omitempty"`
 }
 
 type notification struct {

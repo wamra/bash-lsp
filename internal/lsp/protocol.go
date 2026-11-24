@@ -230,6 +230,7 @@ func capabilities() map[string]any {
 		"codeActionProvider":              map[string]any{"codeActionKinds": []string{"quickfix"}},
 		"documentFormattingProvider":      true,
 		"documentRangeFormattingProvider": true,
+		"semanticTokensProvider":          semanticTokensProvider(),
 	}
 }
 
