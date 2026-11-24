@@ -617,6 +617,7 @@ func scanFile(ff *FileFacts) *fileScan {
 			sc.command(u, words, src)
 		}
 	}
+	sc.version.finish(ff.Uses)
 	if sc.topReturn || dualUse(src) {
 		sc.topCommand = false
 	}

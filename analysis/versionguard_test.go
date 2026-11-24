@@ -17,14 +17,6 @@ func TestWB1301ToleratedAndGuarded(t *testing.T) {
 		{"stderr to null", "shopt -s globstar 2>/dev/null\n"},
 		{"stderr to null with space", "declare -A m 2> /dev/null\n"},
 		{"both streams to null", "shopt -s lastpipe &>/dev/null\n"},
-		{"right of && after [", "[ -n \"$x\" ] && shopt -s globstar\n"},
-		{"right of && after [[", "[[ -n $x ]] && declare -A m\n"},
-		{"right of && after test", "test -n \"$x\" && declare -A m\n"},
-		{"right of && after ((", "(( n > 1 )) && declare -A m\n"},
-		{"right of && after test and &&", "[ -n \"$x\" ] && [ -n \"$y\" ] && declare -A m\n"},
-		{"if body", "if [ -n \"$x\" ]; then declare -A m; fi\n"},
-		{"if [[ body", "if [[ -n $x ]]; then shopt -s globstar; fi\n"},
-		{"elif body", "if false; then :; elif [ -n \"$x\" ]; then declare -A m; fi\n"},
 		{"EPOCHSECONDS in [[", "[[ -z $EPOCHSECONDS ]] && x=1\n"},
 		{"EPOCHSECONDS in [", "[ \"$EPOCHSECONDS\" -gt 5 ]\n"},
 		{"EPOCHSECONDS in test", "test -n \"$EPOCHREALTIME\" || x=1\n"},
@@ -38,6 +30,18 @@ func TestWB1301ToleratedAndGuarded(t *testing.T) {
 		})
 	}
 	reported := []struct{ name, src string }{
+		{"unrelated test and &&", "[ -n \"$x\" ] && shopt -s globstar\n"},
+		{"$# test and &&", "[ $# -gt 0 ] && declare -A m\n"},
+		{"[[ and &&", "[[ -n $HOME ]] && shopt -s globstar\n"},
+		{"test -d and &&", "test -d /tmp && declare -A m\n"},
+		{"(( and &&", "(( n > 1 )) && declare -A m\n"},
+		{"two tests and &&", "[ -f a ] && [ -f b ] && declare -A m\n"},
+		{"negated test and &&", "! [ -f a ] && declare -A m\n"},
+		{"if body on a test", "if [ -f x ]; then declare -A m; fi\n"},
+		{"if [[ body", "if [[ $x == y ]]; then\n  readarray -t a < f\n  declare -A m\n  echo ${a[-1]} ${x,,}\nfi\n"},
+		{"elif body", "if false; then :; elif [ -f a ]; then declare -A m; fi\n"},
+		{"if (( body", "if (( $# > 1 )); then declare -n r=x; fi\n"},
+		{"case arm with test", "case $1 in a) [ -f x ] && declare -A m;; esac\n"},
 		{"plain", "declare -A m\n"},
 		{"after ;", "true; declare -A m\n"},
 		{"after && of a command", "true && declare -A m\n"},
@@ -56,8 +60,8 @@ func TestWB1301ToleratedAndGuarded(t *testing.T) {
 	}
 	for _, c := range reported {
 		t.Run("reported "+c.name, func(t *testing.T) {
-			if n := wb1301(t, c.src); n != 1 {
-				t.Fatalf("%d findings for %q, want 1", n, c.src)
+			if n := wb1301(t, c.src); n < 1 {
+				t.Fatalf("%d findings for %q, want at least 1", n, c.src)
 			}
 		})
 	}
@@ -81,7 +85,7 @@ func TestWB1301VersionReads(t *testing.T) {
 		{"early exit", "[[ ${BASH_VERSION%%.*} -ge 4 ]] || exit 1\ndeclare -A m\n", 0},
 		{"early exit with [", "[ \"${BASH_VERSINFO[0]}\" -ge 4 ] || exit 1\ndeclare -A m\n", 0},
 		{"case", "case $BASH_VERSION in 3.*) :;; *) shopt -s globstar;; esac\n", 0},
-		{"assigned then used", "v=${BASH_VERSION%%.*}\ndeclare -A m\n", 0},
+		{"assigned, never tested", "v=${BASH_VERSION%%.*}\ndeclare -A m\n", 1},
 		{"arith expansion", "echo $((BASH_VERSINFO[0]))\ndeclare -A m\n", 0},
 		{"two features, guard between", "declare -A a\n[[ ${BASH_VERSION%%.*} -ge 4 ]] || exit 1\ndeclare -A b\n", 1},
 	}
@@ -117,5 +121,43 @@ func TestVersionRulesTrailingDirective(t *testing.T) {
 	src = "#!/bin/bash\necho start\n# bash-lsp disable=WB1301\ndeclare -A m\n"
 	if got := ofRule(diagsWith(t, oneFile(src), "x.sh", "3.2-5.3"), "WB1301"); len(got) != 0 {
 		t.Fatalf("leading directive:\n%s", describe(src, got))
+	}
+}
+
+// A guard read at the top level of a file covers every function body in it,
+// wherever defined, and the top-level code after it; code before it is still
+// reported. An assignment from a version variable guards only when the
+// variable is later tested; a piped print that decides an `||`, `&&` or `if`
+// is a check.
+func TestWB1301GuardScope(t *testing.T) {
+	cases := []struct {
+		name, src string
+		want      int
+	}{
+		{"function above the guard", "f() { declare -A m; }\n((BASH_VERSINFO[0]>=4)) || exit 1\nf\n", 0},
+		{"function called from an if", "main() {\n  declare -A m\n}\nif ((BASH_VERSINFO[0] >= 4)); then main; fi\n", 0},
+		{"function below the guard", "((BASH_VERSINFO[0]>=4)) || exit 1\nf() { declare -A m; }\n", 0},
+		{"top level before the guard", "declare -A m\nif ((BASH_VERSINFO[0] < 4)); then exit 1; fi\n", 1},
+		{"top level before, function above", "declare -A a\nf() { declare -A b; }\n[[ ${BASH_VERSION%%.*} -ge 4 ]] || exit 1\n", 1},
+		{"guard inside a function only covers after it", "f() { declare -A a; }\ng() { [[ ${BASH_VERSINFO[0]} -ge 4 ]] || exit 1; }\ng\ndeclare -A b\n", 1},
+		{"assignment, never tested", "v=$BASH_VERSION\ndeclare -A m\n", 1},
+		{"assignment, tested in [", "ver=${BASH_VERSION%%.*}\n[ \"$ver\" -ge 4 ] || exit 1\ndeclare -A m\n", 0},
+		{"assignment, tested in [[", "v=$BASH_VERSION\n[[ $v == 4* ]] || exit 1\ndeclare -A m\n", 0},
+		{"assignment, tested in case", "v=$BASH_VERSION\ncase $v in 4*) declare -A m;; esac\n", 0},
+		{"assignment, tested in arithmetic", "v=${BASH_VERSINFO[0]}\nif ((v >= 4)); then declare -A m; fi\n", 0},
+		{"assignment, only printed later", "v=$BASH_VERSION\necho \"$v\"\ndeclare -A m\n", 1},
+		{"assignment, tested before it", "[ -n \"$v\" ]\nv=$BASH_VERSION\ndeclare -A m\n", 1},
+		{"piped check on ||", "echo \"$BASH_VERSION\" | grep -q ^4 || exit 1\ndeclare -A m\n", 0},
+		{"piped check on &&", "echo \"$BASH_VERSION\" | grep -q ^4 && declare -A m\n", 0},
+		{"piped check in if", "if echo \"$BASH_VERSION\" | grep -q ^4; then declare -A m; fi\n", 0},
+		{"piped print, no check", "printf \"%s\\n\" \"$BASH_VERSION\" | tee log\ndeclare -A m\n", 1},
+		{"standalone print left of ||", "echo \"$BASH_VERSION\" || true\ndeclare -A m\n", 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if n := wb1301(t, c.src); n != c.want {
+				t.Fatalf("%d findings for %q, want %d", n, c.src, c.want)
+			}
+		})
 	}
 }
