@@ -81,7 +81,7 @@ func FuzzBind(f *testing.F) {
 		f.Add([]byte(s))
 	}
 	// The shapes whose edges or bindings multiply (bench/gen_product_shapes.py),
-	// at the sizes the plan names for the 64 KiB this fuzzer takes: each must
+	// at sizes that fit the 64 KiB this fuzzer takes: each must
 	// build inside fuzzBudget once a site lists at most maxSiteTargets targets.
 	for _, s := range []string{
 		defsCalls(3600, 16000), // 64,400 bytes
@@ -165,8 +165,8 @@ func FuzzEdges(f *testing.F) {
 	for _, s := range dynamicShapes(n) {
 		f.Add([]byte(s))
 	}
-	// The product shapes (bench/gen_product_shapes.py) at the sizes the plan
-	// names for these 16 KiB.
+	// The product shapes (bench/gen_product_shapes.py) at sizes that fit
+	// these 16 KiB.
 	for _, s := range []string{
 		defsCalls(800, 3500), // 14,200 bytes
 		cmdShape(400),        // about 13 KB

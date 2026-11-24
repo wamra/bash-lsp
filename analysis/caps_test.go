@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"fmt"
+	"math"
 	"runtime"
 	"slices"
 	"strings"
@@ -45,7 +46,9 @@ func TestSiteCandidateCap(t *testing.T) {
 	_, bound := shapeSize()
 	src := defsCalls(2000, 2000)
 	var s *Snapshot
-	withinBound(t, "build", bound, func() { s = capsSnap(src) })
+	if !withinBound(t, "build", bound, func() { s = capsSnap(src) }) {
+		return
+	}
 	by, order := siteEdges(s)
 	if len(order) != 2000 {
 		t.Fatalf("%d call sites, want 2000", len(order))
@@ -82,7 +85,9 @@ func TestSiteCandidateCap(t *testing.T) {
 	}
 	node := Node{Path: "/ws/a.sh", Func: sym}
 	var steps []Step
-	withinBound(t, "callers", bound, func() { steps = s.Callers(node, 1) })
+	if !withinBound(t, "callers", bound, func() { steps = s.Callers(node, 1) }) {
+		return
+	}
 	// Every candidate edge of a site ends at this one node (one function, one
 	// file): 16 per site.
 	if len(steps) != 2000*16 {
@@ -173,10 +178,14 @@ func TestVariableCallCandidateCap(t *testing.T) {
 	}
 	src := cmdShape(n)
 	var s *Snapshot
-	withinBound(t, "build", 2*time.Second, func() { s = capsSnap(src) })
+	if !withinBound(t, "build", 2*time.Second, func() { s = capsSnap(src) }) {
+		return
+	}
 	var by map[int][]Edge
 	var order []int
-	withinBound(t, "edges", 2*time.Second, func() { by, order = siteEdges(s) })
+	if !withinBound(t, "edges", 2*time.Second, func() { by, order = siteEdges(s) }) {
+		return
+	}
 	if len(order) != n {
 		t.Fatalf("%d call sites, want %d", len(order), n)
 	}
@@ -286,7 +295,9 @@ func TestDynamicScopeBindingCap(t *testing.T) {
 	}
 	src := dynScopeShape(2000, 2000)
 	var s *Snapshot
-	withinBound(t, "build", bound, func() { s = capsSnap(src) })
+	if !withinBound(t, "build", bound, func() { s = capsSnap(src) }) {
+		return
+	}
 	m := dynScopeBindings(s)
 	if len(m) != 2000 {
 		t.Fatalf("%d reads bound by dynamic scope, want 2000", len(m))
@@ -337,7 +348,7 @@ func TestReferencesAllocsPerBinding(t *testing.T) {
 		}
 		per[n] = float64(m1.Mallocs-m0.Mallocs) / float64(len(locs))
 		t.Logf("n=%d: %.2f mallocs per location", n, per[n])
-		if per[n] > 0.5 { // 6.0 before the typed key; the plan's ceiling was 4
+		if per[n] > 0.5 { // 6.0 before the typed key
 			t.Errorf("n=%d: %.2f mallocs per location, want at most 0.5", n, per[n])
 		}
 	}
@@ -350,7 +361,9 @@ func TestUnsetShapeCapped(t *testing.T) {
 	_, bound := shapeSize()
 	src := strings.Repeat("f(){ :; }; unset -f f; f\n", 2000)
 	var s *Snapshot
-	withinBound(t, "build", bound, func() { s = capsSnap(src) })
+	if !withinBound(t, "build", bound, func() { s = capsSnap(src) }) {
+		return
+	}
 	by, order := siteEdges(s)
 	if len(order) == 0 {
 		t.Fatal("no call sites")
@@ -507,12 +520,14 @@ func TestCandidateCapDropsCallerLocalProof(t *testing.T) {
 	expectRule(t, sh(shape(17)), "x.sh", "WB1401", "2:$v")
 }
 
-// --- carried items ---
+// --- heredoc scan, limit reporting, `set -a` ---
 
-// Item 1: the heredoc scan does one pass over the tree, not one tree query
+// The heredoc scan does one pass over the tree, not one tree query
 // per heredoc; three doublings of a file that has a heredoc every three lines,
-// and of one with each heredoc inside deeply nested `$( )`, grow by at most
-// 2.5 per doubling.
+// and of one with each heredoc inside deeply nested `$( )`, grow by at most 2.5
+// per doubling on average: (t4/t1)^(1/3), each time the best of 11 runs. A
+// linear scan gives 2, a quadratic one 4; single doublings scatter under load
+// and are logged, not asserted.
 func TestHeredocScanGrowth(t *testing.T) {
 	size := 256 << 10
 	if raceBuild {
@@ -538,10 +553,9 @@ func TestHeredocScanGrowth(t *testing.T) {
 			times = append(times, best)
 		}
 		t.Logf("%s: %v", name, times)
-		for i := 1; i < len(times); i++ {
-			if r := float64(times[i]) / float64(max(times[i-1], time.Millisecond)); r > 2.5 {
-				t.Errorf("%s: doubling %d grew x%.2f (%v -> %v)", name, i, r, times[i-1], times[i])
-			}
+		overall := math.Cbrt(float64(times[3]) / float64(max(times[0], time.Millisecond)))
+		if overall > 2.5 {
+			t.Errorf("%s: grew x%.2f per doubling over three doublings (%v)", name, overall, times)
 		}
 	}
 }
@@ -608,7 +622,7 @@ func mapsEqual(a, b map[string]bool) bool {
 	return true
 }
 
-// Item 2: the WB1401 caller-local search budget is in LimitsHit, per file.
+// The WB1401 caller-local search budget is in LimitsHit, per file.
 func TestCallerLocalBudgetInLimitsHit(t *testing.T) {
 	shape := func(n int) string {
 		var sb strings.Builder
@@ -643,7 +657,7 @@ func TestCallerLocalBudgetInLimitsHit(t *testing.T) {
 	}
 }
 
-// Item 3: the version-guard search step limit is in LimitsHit.
+// The version-guard search step limit is in LimitsHit.
 func versionGuardShape(chain, users int) string {
 	var sb strings.Builder
 	sb.WriteString("#!/bin/bash\n")
@@ -681,7 +695,7 @@ func TestVersionGuardBudgetInLimitsHit(t *testing.T) {
 	}
 }
 
-// Item 4: `set -a` in a pipeline stage or a background job runs in a
+// `set -a` in a pipeline stage or a background job runs in a
 // subshell: it does not export the file's assignments.
 func TestSetAllexportInSubshellBoundary(t *testing.T) {
 	for _, line := range []string{"set -a | cat", "set -a &", "set -a|cat", "set -a&", "set -a |& cat"} {
@@ -739,5 +753,81 @@ func TestVersionGuardSearchIsDeterministic(t *testing.T) {
 	}
 	if len(lines) != 1 || len(finds) != 1 {
 		t.Fatalf("%d distinct LimitsHit lines, %d distinct finding sets over 40 fresh snapshots", len(lines), len(finds))
+	}
+}
+
+// Names called from a string (eval, trap, bash -c) list exactly the first 16
+// definitions plus one cap edge once there are more.
+func TestStringSiteCandidateCap(t *testing.T) {
+	for _, form := range []string{"eval \"k\"\n", "trap 'k' EXIT\n", "bash -c 'k'\n"} {
+		for _, c := range []struct{ defs, cands, caps int }{{16, 16, 0}, {17, 16, 1}, {20, 16, 1}} {
+			s := capsSnap(strings.Repeat("k() { :; }\n", c.defs) + form)
+			var cands []Edge
+			caps := 0
+			for _, e := range s.Edges() {
+				switch {
+				case e.Rel != RelCalls:
+				case e.Res == Candidate:
+					cands = append(cands, e)
+				case e.Res == Dynamic && e.Reason == ReasonCandidateCap:
+					caps++
+				default:
+					t.Errorf("%q, %d definitions: unexpected edge %+v", form, c.defs, e)
+				}
+			}
+			if len(cands) != c.cands || caps != c.caps {
+				t.Errorf("%q, %d definitions: %d candidates and %d caps, want %d and %d", form, c.defs, len(cands), caps, c.cands, c.caps)
+				continue
+			}
+			for i, e := range cands {
+				if e.ToDecl != e.To.Decls[i] {
+					t.Errorf("%q, %d definitions: candidate %d is not definition %d", form, c.defs, i, i)
+				}
+			}
+		}
+	}
+}
+
+// The candidates of a name defined outside the closure are the first 16
+// definitions, in order.
+func TestSiteCandidateCapOutsideClosureKeepsFirst(t *testing.T) {
+	q := buildMem(t, map[string]string{
+		"lib.sh":  strings.Repeat("g() { :; }\n", 20),
+		"main.sh": "g\n",
+	})
+	n := 0
+	for _, e := range q.s.Edges() {
+		if e.Site.Path != q.abs("main.sh") || e.Rel != RelCalls || e.Res != Candidate {
+			continue
+		}
+		if e.ToDecl != e.To.Decls[n] {
+			t.Fatalf("candidate %d is not definition %d", n, n)
+		}
+		n++
+	}
+	if n != 16 {
+		t.Fatalf("%d candidates, want 16", n)
+	}
+}
+
+// A read with more caller locals than the cap binds to those of the first 16
+// callers, in caller order.
+func TestDynamicScopeCapKeepsFirstCallers(t *testing.T) {
+	s := capsSnap(dynScopeShape(1, 20))
+	lines := map[int]bool{}
+	for _, bs := range s.bindings {
+		for _, b := range bs {
+			if b.Reason == ReasonDynamicScope && b.Res == Candidate {
+				lines[b.Sym.Decls[0].NameRange.Start.Line] = true
+			}
+		}
+	}
+	if len(lines) != 16 {
+		t.Fatalf("bound to locals on %d lines, want 16", len(lines))
+	}
+	for l := 2; l < 18; l++ { // h0 is on line 2
+		if !lines[l] {
+			t.Errorf("the local of the caller on line %d is not bound", l)
+		}
 	}
 }

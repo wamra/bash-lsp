@@ -363,8 +363,8 @@ func TestStatus(t *testing.T) {
 	wantLines(t, out, "generation: ", "cache: none\n", "bash: ")
 }
 
-// `unresolved` lists the sites past the per-site candidate cap. (`status`
-// prints Snapshot.LimitsHit, which has the `candidate cap` line, from task 10 on.)
+// `unresolved` lists the sites past the per-site candidate cap. (The `candidate cap`
+// line of Snapshot.LimitsHit is checked where `status` prints it.)
 func TestUnresolvedListsCandidateCap(t *testing.T) {
 	root := writeRoot(t, map[string]string{"a.sh": strings.Repeat("f(){ :; }\n", 17) + "f\nf\n"})
 	var un gEdges
