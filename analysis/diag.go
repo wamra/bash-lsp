@@ -70,7 +70,10 @@ func (s *Snapshot) Diagnostics(path string, opt DiagOptions) []Diagnostic {
 	if ff == nil || ff.File == nil {
 		return out
 	}
-	c := &diagCtx{s: s, file: file, ff: ff, f: ff.File}
+	c := &diagCtx{s: s, file: file, ff: ff, f: ff.File, target: opt.Target}
+	if c.target == (VersionRange{}) {
+		c.target = DefaultTarget // no target given: the default range (D-8)
+	}
 	c.run()
 	for _, d := range suppress(ff.File, c.out) {
 		if opt.Disabled[d.Rule] {
@@ -149,6 +152,8 @@ type diagCtx struct {
 	scan *fileScan
 	out  []Diagnostic
 
+	target VersionRange // the bash versions the file must run on (WB1301)
+
 	union *nameUnion // what the file's visibility reads or names, built on first need
 }
 
@@ -175,6 +180,7 @@ func (c *diagCtx) run() {
 	c.unusedFunctions()
 	c.unusedVariables()
 	c.quoting()
+	c.versions()
 }
 
 // --- the per-file scan: one walk of the tree collects every rule's candidates ---
@@ -194,6 +200,7 @@ type fileScan struct {
 	indirect   bool         // `${!` appears: a variable may be read through another's value
 	nameref    bool         // some declaration is a nameref
 	lastpipe   bool         // `lastpipe` appears (shopt -s lastpipe): the last pipeline stage may run in the shell
+	version    versionScan  // evidence for the version rules (versionrules.go)
 }
 
 // fileMentions is what a file names without a binding: words that may name
@@ -334,6 +341,7 @@ func scanFile(ff *FileFacts) *fileScan {
 	sc.shebang = len(src) >= 2 && src[0] == '#' && src[1] == '!'
 	sc.indirect = bytes.Contains(src, []byte("${!"))
 	sc.lastpipe = bytes.Contains(src, []byte("lastpipe"))
+	sc.version.text(src)
 	for _, st := range f.Root.Children {
 		if st.Kind == tree.KErrorGap {
 			sc.hasGap = true
@@ -351,7 +359,11 @@ func scanFile(ff *FileFacts) *fileScan {
 		}
 	}
 	var lastLocal *tree.Node
+	var lastVersionDecl [3]*tree.Node
 	for _, d := range ff.Decls {
+		if d.Kind == DeclVariable && (d.Attrs.Assoc || d.Attrs.Global || d.Attrs.Nameref) {
+			sc.version.decl(d, &lastVersionDecl)
+		}
 		switch {
 		case d.Kind == DeclFunction && d.Node != nil:
 			sc.funcs = append(sc.funcs, d.Node)
@@ -367,6 +379,9 @@ func scanFile(ff *FileFacts) *fileScan {
 	}
 	var words []*tree.Node
 	for _, u := range ff.Uses {
+		if u.Kind == UseVarRead && (u.Name == "EPOCHSECONDS" || u.Name == "EPOCHREALTIME") {
+			sc.version.epoch = append(sc.version.epoch, u)
+		}
 		if u.Kind != UseCall || u.Via != ViaNone || u.ViaAlias || u.Node == nil || u.Node.Kind != tree.KCall {
 			continue
 		}
@@ -395,7 +410,7 @@ func scanFile(ff *FileFacts) *fileScan {
 // inspected are the command names scanFile looks into: the file-changing
 // commands and the prefixes before them, and builtin wrappers.
 var inspected = func() map[string]bool {
-	m := map[string]bool{"sudo": true, "command": true, "builtin": true}
+	m := map[string]bool{"sudo": true, "command": true, "builtin": true, "shopt": true, "wait": true}
 	for k := range mutating {
 		m[k] = true
 	}
@@ -406,6 +421,10 @@ var inspected = func() map[string]bool {
 // of a builtin (`cd() { builtin cd "$@"; }`).
 func (sc *fileScan) command(u *Use, words []*tree.Node, src []byte) {
 	name := u.Name
+	if name == "shopt" || name == "wait" {
+		sc.version.command(name, words)
+		return
+	}
 	if name == "builtin" || name == "command" {
 		if fn := namedFunc(u.Scope); fn != nil && len(words) > 1 {
 			if arg, ok := wordName(words[1]); ok && arg == fn.Name {

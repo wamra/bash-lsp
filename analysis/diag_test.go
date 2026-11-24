@@ -192,6 +192,21 @@ var ruleTable = []struct {
 			one("f(){ local u=1; \"$handler\"; }\nhandler=$1\nf\n", ""), // a dynamic call may read it
 			one("#!/bin/bash\necho hi\n# shellcheck disable=SC2034\nY=2\n", ""),
 		}},
+	{"WB1301",
+		[]ruleCase{one("declare -A m\n", "declare -A"), one("echo \"${v,,}\"\n", "${v,,}")},
+		[]ruleCase{
+			one("if ((BASH_VERSINFO[0] >= 4)); then declare -A m; fi\n", ""),
+			one("#!/bin/sh\ndeclare -A m\n", ""),
+			one("echo 'declare -A m'\n", ""),
+			{files: map[string]string{"x.sh": "declare -A m\n", "m.sh": "#!/bin/bash\nsource ./x.sh\n"}},
+		}},
+	{"WB1302",
+		[]ruleCase{one("#!/bin/sh\n[[ -n $x ]]\n", "[["), one("#!/bin/sh\nfunction f { :; }\n", "function f")},
+		[]ruleCase{
+			one("#!/bin/bash\n[[ -n $x ]]\n", ""),
+			one("#!/bin/sh\n[ -n \"$x\" ]\n", ""),
+			one("#!/bin/sh\necho '[[ x ]]'\n", ""),
+		}},
 	{"WB1401",
 		[]ruleCase{one("rm $f\n", "$f"), one("rm \"$a\"$b\n", "$b"), one("sudo rm $f\n", "$f"), one("command mv ${f} /tmp\n", "${f}"), one("rm $d/*.log\n", "$d")},
 		[]ruleCase{
@@ -251,6 +266,7 @@ func TestRulesRegistry(t *testing.T) {
 		"WB1101": {SevWarning, nil}, "WB1103": {SevInfo, nil}, "WB1104": {SevInfo, nil},
 		"WB1105": {SevError, []string{"SC2168"}}, "WB1106": {SevWarning, []string{"SC2030", "SC2031"}},
 		"WB1201": {SevHint, []string{"SC2329"}}, "WB1202": {SevHint, []string{"SC2034"}},
+		"WB1301": {SevWarning, nil}, "WB1302": {SevWarning, []string{"SC3*", "SC2113"}},
 		"WB1401": {SevWarning, []string{"SC2086"}},
 	}
 	rules := Rules()
@@ -557,6 +573,16 @@ func TestDiagnosticsInBoundedTime(t *testing.T) {
 		"many unquoted arguments":            fillTo(size, "rm", " $f", "\n"),
 		"reads inside strings":               fillTo(size, "f() { local u=1; ", "eval 'echo $u';", " }\nf\n"),
 		"many distinct unread locals":        locals.String(),
+		// The version rules: one finding per feature, a lookup per negative subscript.
+		"many case modifications":         fillTo(size, "echo", " ${v,,}", "\n"),
+		"many associative declarations":   fillTo(size, "#!/bin/bash\n", "declare -A m\n", ""),
+		"one declaration with many names": fillTo(size, "declare -A", " m", "\n"),
+		"many negative subscripts":        fillTo(size, "declare -a a\n", "echo \"${a[-1]}\"\n", ""),
+		"many negative assoc subscripts":  fillTo(size, "declare -A a\n", "echo \"${a[-1]}\"\n", ""),
+		"many epoch reads":                fillTo(size, "echo", " $EPOCHSECONDS", "\n"),
+		"many shopt and wait calls":       fillTo(size, "", "shopt -s globstar; sleep 0 & wait -n -p v\n", ""),
+		"many bash-only forms in sh":      fillTo(size, "#!/bin/sh\n", "[[ -n $x ]] && cat <<< hi <(a) $'x'\n", ""),
+		"many guarded features":           fillTo(size, "(( BASH_VERSINFO[0] >= 4 ))\n", "declare -A m\n", ""),
 	}
 	for name, src := range cases {
 		f := parse.File("/ws/a.sh", []byte(src))

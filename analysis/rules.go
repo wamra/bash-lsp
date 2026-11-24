@@ -25,6 +25,8 @@ var rules = []RuleInfo{
 	{"WB1106", "lost-assignment", SevWarning, []string{"SC2030", "SC2031"}, "a variable set in a subshell, pipeline stage or substitution, read after it"},
 	{"WB1201", "unused-function", SevHint, []string{"SC2329"}, "a function nothing calls, in a script nothing sources"},
 	{"WB1202", "unused-variable", SevHint, []string{"SC2034"}, "a variable that is assigned but never read"},
+	{"WB1301", "bash-version", SevWarning, nil, "a feature newer than the oldest bash version the target range names"},
+	{"WB1302", "bash-only-in-sh", SevWarning, []string{"SC3*", "SC2113"}, "a bash-only feature in a file that is an sh script"},
 	{"WB1401", "unquoted-file-argument", SevWarning, []string{"SC2086"}, "an unquoted expansion in an argument of a command that changes files"},
 }
 

@@ -1040,3 +1040,41 @@ func TestDiagnosticSettingsWire(t *testing.T) {
 		t.Fatalf("unknown rule not logged:\n%s", c.logs.String())
 	}
 }
+
+// WB1301 follows bash.target: the default range flags `declare -A`, a repo
+// file that starts the range at 4.0 does not, and an sh script gets the
+// dialect finding instead.
+func TestVersionRulesWire(t *testing.T) {
+	root := t.TempDir()
+	for name, src := range map[string]string{
+		"a.sh": "#!/bin/bash\ndeclare -A m\n",
+		"s.sh": "#!/bin/sh\n[[ -n $x ]]\n",
+	} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := client(t, root)
+	c.open("a.sh")
+	if d := c.waitDiag("a.sh"); len(d) != 1 || d[0].Code != "WB1301" || d[0].Severity != 2 ||
+		d[0].Range != (Range{Position{1, 0}, Position{1, 10}}) || !strings.Contains(d[0].Message, "bash 4.0") {
+		t.Fatalf("default target: %+v", d)
+	}
+	c.open("s.sh")
+	if d := c.waitDiag("s.sh"); len(d) != 1 || d[0].Code != "WB1302" || d[0].Severity != 2 || d[0].Range != (Range{Position{1, 0}, Position{1, 2}}) {
+		t.Fatalf("sh file: %+v", d)
+	}
+
+	narrow := t.TempDir()
+	if err := os.WriteFile(filepath.Join(narrow, "a.sh"), []byte("#!/bin/bash\ndeclare -A m\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(narrow, ".bash-lsp.toml"), []byte("[bash]\ntarget = \"4.0-5.3\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c = client(t, narrow)
+	c.open("a.sh")
+	if d := c.waitDiag("a.sh"); len(d) != 0 {
+		t.Fatalf("target 4.0-5.3: %+v", d)
+	}
+}
