@@ -477,16 +477,14 @@ func TestLimitReasonsRegistered(t *testing.T) {
 	}
 }
 
-// A capped file's functions stay "incomplete" for the call-graph checks: the
-// cap sites are dynamic sites (rules.go reads s.dyn), as a call of an unknown
-// name is.
-func TestCandidateCapSiteIsDynamicForDiagnostics(t *testing.T) {
+// The cap sites are dynamic sites in s.dyn, which Build's edge table makes
+// again on every run without doubling them.
+func TestCandidateCapSiteIsADynamicSite(t *testing.T) {
 	src := strings.Repeat("g() { :; }\n", 17) + "h() { g; }\n"
 	s := capsSnap(src)
 	if len(s.dyn[0]) != 1 || s.dyn[0][0].reason != codeCandidateCap {
 		t.Fatalf("dynamic sites %+v", s.dyn[0])
 	}
-	// buildEdges is repeatable: no second cap site.
 	s.buildEdges(len(s.recs))
 	if len(s.dyn[0]) != 1 {
 		t.Fatalf("buildEdges twice: %d dynamic sites", len(s.dyn[0]))
@@ -494,6 +492,19 @@ func TestCandidateCapSiteIsDynamicForDiagnostics(t *testing.T) {
 	if by, _ := siteEdges(s); len(by) != 1 {
 		t.Fatalf("edges after a second buildEdges: %d sites", len(by))
 	}
+}
+
+// A function that calls a name with more candidates than the cap lists may
+// call any of them: for the caller-local check of WB1401 it is a function
+// with calls that are not all known (rules.go reads the dynamic sites), so the
+// proof that a local cannot reach the reader is dropped. With 16 definitions
+// the calls are all known and the proof stands.
+func TestCandidateCapDropsCallerLocalProof(t *testing.T) {
+	shape := func(defs int) string {
+		return "v=755\nk() { chmod $v a; }\nh() { local v=$1; g; }\n" + strings.Repeat("g() { :; }\n", defs)
+	}
+	expectRule(t, sh(shape(16)), "x.sh", "WB1401")
+	expectRule(t, sh(shape(17)), "x.sh", "WB1401", "2:$v")
 }
 
 // --- carried items ---
