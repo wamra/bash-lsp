@@ -566,6 +566,7 @@ func (b *binder) call(n *tree.Node, sc *Scope) {
 	}
 	if len(words) > 0 {
 		if name, ok, escaped := commandName(words[0]); ok && name != "" {
+			b.wrappedUnset(name, words[1:])
 			if b.builtin(n, name, words, sc) {
 				b.callChildren(n, sc, len(words) > 0)
 				return
@@ -583,6 +584,31 @@ func (b *binder) call(n *tree.Node, sc *Scope) {
 		}
 	}
 	b.callChildren(n, sc, len(words) > 0)
+}
+
+// wrappedUnset records the names of `builtin unset -f NAME` and `command
+// [-p] unset -f NAME`, which remove functions as plain `unset` does. The word
+// after builtin or command is read as a command name (commandName, quotes and
+// backslashes removed); `command -v` and `command -V` run no command. Nothing
+// else about builtin and command is read.
+func (b *binder) wrappedUnset(name string, args []*tree.Node) {
+	if name != "builtin" && name != "command" {
+		return
+	}
+	if name == "command" {
+		for len(args) > 0 {
+			if t, ok := literalText(args[0]); !ok || t != "-p" {
+				break
+			}
+			args = args[1:]
+		}
+	}
+	if len(args) == 0 {
+		return
+	}
+	if cmd, ok, _ := commandName(args[0]); ok && cmd == "unset" {
+		b.unsetArgs(args[1:])
+	}
 }
 
 // callChildren visits a call's children; env-prefix assignments are Temp when a command follows.

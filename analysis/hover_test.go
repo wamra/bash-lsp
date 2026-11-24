@@ -247,6 +247,29 @@ func TestHoverDynamicScopeRead(t *testing.T) {
 	wantLines(t, md, "8 candidate caller locals", "and 3 more")
 }
 
+// A read capped at maxDynScopeLocals caller locals says that more exist than
+// are bound, and still lists at most maxCallSites of them; one under the cap
+// reads as before (TestHoverDynamicScopeRead).
+func TestHoverDynamicScopeCapped(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < maxDynScopeLocals+4; i++ {
+		b.WriteString(fmt.Sprintf("c%d() { local w=%d; g; }\n", i, i))
+	}
+	b.WriteString("g() { echo \"$w\"; }\n")
+	q := buildMem(t, map[string]string{"n.sh": b.String()})
+	md, ok := q.hover("n.sh", "$w", 0, 1)
+	if !ok {
+		t.Fatal("no hover")
+	}
+	if got := strings.Count(md, "`local w="); got != maxCallSites {
+		t.Fatalf("%d caller locals shown, want %d:\n%s", got, maxCallSites, md)
+	}
+	wantLines(t, md, "20 caller locals exist, more than the 16 bound", "dynamic-scope-cap", fmt.Sprintf("and %d more", maxDynScopeLocals-maxCallSites))
+	if strings.Contains(md, "candidate caller locals:") {
+		t.Fatalf("the uncapped count line is on a capped read:\n%s", md)
+	}
+}
+
 // Decision 33: hover on the path word of an unresolved `source` names the
 // reason; a resolved one and the `source` keyword have no hover.
 func TestHoverUnresolvedSource(t *testing.T) {

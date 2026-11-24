@@ -183,6 +183,9 @@ type Snapshot struct {
 	valueUse  map[*Decl]*Use              // during Build: the literal-value use of an assignment
 	varVals   map[varValuesKey]*varValues // during Build: per variable symbol and file, what "$cmd" calls may run
 	unsetBy   map[string][]int            // function name -> files with `unset -f` of it
+	varCap    map[*Use]bool               // variable calls with more than maxSiteTargets targets (dynamic.go)
+	dynBase   []int                       // per file, how many dynamic sites Build made before the edge table (edges.go)
+	confined  map[*Symbol][]*Decl         // per symbol, the definitions inside a subshell or like scope, on first need (edges.go)
 
 	diagState // per-file rule scans, made on demand (diag.go)
 

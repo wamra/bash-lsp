@@ -313,10 +313,15 @@ func TestDynamicScopeBinding(t *testing.T) {
 }
 
 func TestDynamicEdgeReasonsRegistered(t *testing.T) {
-	for _, r := range []string{ReasonVariableConstant, ReasonStringEval, ReasonStringTrap, ReasonStringShellC, ReasonVariableUnknown, ReasonExpansion} {
+	for _, r := range []string{ReasonVariableConstant, ReasonStringEval, ReasonStringTrap, ReasonStringShellC, ReasonVariableUnknown, ReasonExpansion,
+		ReasonCandidateCap, ReasonStringBudget} {
 		if !slices.Contains(reasonNames, r) {
 			t.Fatalf("reason %q not registered", r)
 		}
+		_ = reasonCode(r) // does not panic
+	}
+	if len(reasonNames) != 17 {
+		t.Fatalf("%d reason names, want 17", len(reasonNames))
 	}
 }
 

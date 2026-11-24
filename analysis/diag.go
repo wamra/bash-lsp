@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 
@@ -95,6 +96,7 @@ func (s *Snapshot) Diagnostics(path string, opt DiagOptions) []Diagnostic {
 	}
 	out, cut := capFindings(c.f, out, opt.Disabled["WB1007"])
 	s.noteCapped(file, cut)
+	s.noteRunLimits(file, c.runLim)
 	sortDiagnostics(out)
 	return out
 }
@@ -139,6 +141,26 @@ func (s *Snapshot) noteCapped(file, cut int) {
 		s.capped = map[int]int{}
 	}
 	s.capped[file] = cut
+}
+
+// runLimits are the search budgets one Diagnostics run of a file passed: the
+// caller-local reachability search of WB1401 and the version-guard search of
+// WB1301, each with the line of the first check it left undecided.
+type runLimits struct{ reach, guard limCount }
+
+// noteRunLimits records what the last Diagnostics run of file passed; a run
+// that passed none clears the file's entry.
+func (s *Snapshot) noteRunLimits(file int, r runLimits) {
+	s.capMu.Lock()
+	defer s.capMu.Unlock()
+	if r == (runLimits{}) {
+		delete(s.runLim, file)
+		return
+	}
+	if s.runLim == nil {
+		s.runLim = map[int]runLimits{}
+	}
+	s.runLim[file] = r
 }
 
 func sortDiagnostics(ds []Diagnostic) {
@@ -218,6 +240,8 @@ type diagCtx struct {
 	lreach        *localReach         // which functions a name's locals may reach by calls, on first need
 	unresolvedFns map[*tree.Node]bool // functions of the file that call a name resolving to nothing in view, on first need
 
+	runLim runLimits // search budgets this run passed (noteRunLimits)
+
 	union     *nameUnion      // what the file's visibility reads or names, built on first need
 	wantReads map[string]bool // the names WB1202 asks readByName about (nil: all)
 }
@@ -259,6 +283,7 @@ func (c *diagCtx) run() {
 		fn  func()
 	}{
 		{[]string{"WB1001", "WB1003", "WB1005"}, c.syntax},
+		{[]string{"WB1006"}, c.stringBudget},
 		{[]string{"WB1008"}, c.directiveIDs},
 		{[]string{"WB1101"}, c.sources},
 		{[]string{"WB1102"}, c.commands},
@@ -320,7 +345,8 @@ type fileMentions struct {
 // those files over (carryDiag), so an edit rescans only the edited file.
 type diagState struct {
 	capMu  sync.Mutex
-	capped map[int]int // file -> findings Diagnostics cut past maxFindings (LimitsHit)
+	capped map[int]int       // file -> findings Diagnostics cut past maxFindings (LimitsHit)
+	runLim map[int]runLimits // file -> search budgets the last Diagnostics run passed (LimitsHit)
 
 	pathOnce  sync.Once
 	pathFiles bitset // files that assign PATH (WB1102)
@@ -518,7 +544,7 @@ func mentionWalkNeeded(src []byte) bool {
 			for j < len(src) && optionLetter[src[j]] {
 				j++
 			}
-			end := j == len(src) || clusterEnd[src[j]]
+			end := j == len(src) || clusterEnds(src, j)
 			if run := src[i+1 : j]; len(run) > 0 && end && (bytes.ContainsAny(run, "vpa") || arithOps[string(src[i:j])]) {
 				return true
 			}
@@ -555,6 +581,64 @@ var clusterStart, clusterEnd = func() (s, e [256]bool) {
 	}
 	return s, e
 }()
+
+// clusterEnds reports whether the option cluster that stops at src[j] ends
+// there, as a word of `set` or a declaration does. A pipe or a background
+// `&` after it (`set -a | cat`, `set -a &`, with blanks or without) is no
+// end: the command runs in a subshell, so its options reach no later
+// command. `||`, `&&` and `&>` (a redirect) end it as before.
+func clusterEnds(src []byte, j int) bool {
+	if !clusterEnd[src[j]] {
+		return false
+	}
+	for j < len(src) && (src[j] == ' ' || src[j] == '\t') {
+		j++
+	}
+	if j >= len(src) {
+		return true
+	}
+	next := byte(0)
+	if j+1 < len(src) {
+		next = src[j+1]
+	}
+	switch src[j] {
+	case '|':
+		return next == '|'
+	case '&':
+		return next == '&' || next == '>'
+	}
+	return true
+}
+
+// runsInSubshell reports whether the command n runs in a subshell of the
+// shell that reads the file: a stage of a pipeline, a subshell, a command or
+// process substitution, a coprocess, or a statement followed by `&`. The
+// options it sets (`set -a`) reach no later command.
+func runsInSubshell(n *tree.Node, src []byte) bool {
+	var stmt *tree.Node
+walk:
+	for p := n.Parent; p != nil; p = p.Parent {
+		switch p.Kind {
+		case tree.KSubshell, tree.KPipeline, tree.KCmdSubst, tree.KProcSubst, tree.KCoproc:
+			return true
+		case tree.KStmt:
+			if stmt == nil {
+				stmt = p
+			}
+		case tree.KFuncDecl, tree.KFile:
+			break walk
+		}
+	}
+	if stmt == nil {
+		return false
+	}
+	// `&` after the statement: the parser's range ends before it
+	i := stmt.Range.End.Offset
+	for i >= 0 && i < len(src) && (src[i] == ' ' || src[i] == '\t') {
+		i++
+	}
+	return i >= 0 && i < len(src) && src[i] == '&' && (i+1 >= len(src) || src[i+1] != '&' && src[i+1] != '>')
+}
 
 // wordsOf returns the words of file (fileMentions describes them), made on
 // first use by their own walk: only WB1201 needs them.
@@ -949,7 +1033,7 @@ func (w *scanWalker) mention(n *tree.Node, isCall bool) {
 			}
 		}
 	}
-	if isCall {
+	if isCall && !runsInSubshell(n, w.src) {
 		if name, ok := wordName(words[0]); ok && name == "set" {
 			for _, wd := range words[1:] {
 				l, _ := literalText(wd)
@@ -1061,6 +1145,85 @@ var evalCommands = map[string]bool{"eval": true, "trap": true, "bash": true, "sh
 // (`echo '$x is literal'`, not `trap 'rm "$tmp"' EXIT` or `x='$y'`), and in
 // the body of a heredoc whose tag is quoted.
 func codeDollarNames(m map[string]bool, f *tree.File, want map[string]bool) {
+	codeDollarNamesWith(m, f, want, (&heredocIndex{f: f}).op)
+}
+
+// heredocIndex answers, for the `<<` the text scan reads as a heredoc
+// operator, whether the tree agrees: it is the operator of a redirect that
+// holds a heredoc, and not a shift in arithmetic (`$((1<<2))`, `(( y = 1 << n
+// ))`, `${a[1<<2]}`). It is built by one walk of the tree on the first `<<`
+// and answers each one by lookup, so a file with a heredoc every three lines
+// costs no more per heredoc than one with few. With no tree, or in code the
+// parser left in an error gap, the text decides: it says yes.
+type heredocIndex struct {
+	f     *tree.File
+	built bool
+	ops   map[int]bool // offsets of the `<<` of redirects that hold a heredoc
+	gaps  [][2]int     // error gaps, sorted and disjoint: start, end offsets
+}
+
+func (h *heredocIndex) op(i int) bool {
+	if h.f.Root == nil {
+		return true
+	}
+	if !h.built {
+		h.build()
+	}
+	if h.ops[i] {
+		return true
+	}
+	k := sort.Search(len(h.gaps), func(k int) bool { return h.gaps[k][1] > i })
+	return k < len(h.gaps) && h.gaps[k][0] <= i
+}
+
+func (h *heredocIndex) build() {
+	h.built = true
+	h.ops = map[int]bool{}
+	src := h.f.Src
+	h.f.Root.Walk(func(n *tree.Node) bool {
+		switch n.Kind {
+		case tree.KErrorGap:
+			h.gaps = append(h.gaps, [2]int{n.Range.Start.Offset, n.Range.End.Offset})
+			return false
+		case tree.KRedirect:
+			if !slices.ContainsFunc(n.Children, func(k *tree.Node) bool { return k.Kind == tree.KHeredoc }) {
+				return true
+			}
+			// the operator follows the redirect's fd (`3<<`, `{fd}<<`), if any
+			j := n.Range.Start.Offset
+			if j >= 0 && j < len(src) && src[j] == '{' {
+				k := j + 1
+				for k < len(src) && isIdentChar(src[k]) {
+					k++
+				}
+				if k > j+1 && k < len(src) && src[k] == '}' {
+					j = k + 1
+				}
+			} else {
+				for j >= 0 && j < len(src) && src[j] >= '0' && src[j] <= '9' {
+					j++
+				}
+			}
+			if j >= 0 && j+1 < len(src) && src[j] == '<' && src[j+1] == '<' {
+				h.ops[j] = true
+			}
+		}
+		return true
+	})
+	slices.SortFunc(h.gaps, func(a, b [2]int) int { return a[0] - b[0] })
+	merged := h.gaps[:0]
+	for _, g := range h.gaps {
+		if k := len(merged) - 1; k >= 0 && g[0] < merged[k][1] {
+			merged[k][1] = max(merged[k][1], g[1])
+			continue
+		}
+		merged = append(merged, g)
+	}
+	h.gaps = merged
+}
+
+// codeDollarNamesWith is codeDollarNames with the heredoc test given.
+func codeDollarNamesWith(m map[string]bool, f *tree.File, want map[string]bool, heredocOp func(i int) bool) {
 	src := f.Src
 	cmts := f.Comments
 	var loc *tree.Locator
@@ -1072,34 +1235,6 @@ func codeDollarNames(m map[string]bool, f *tree.File, want map[string]bool) {
 			loc = f.NewLocator()
 		}
 		return inertText(loc.At(i), src)
-	}
-	// heredocOp: the tree decides whether the `<<` at i, which reads as a
-	// heredoc operator, is one (a redirect holding a heredoc) or a shift in
-	// arithmetic (`$((1<<2))`, `(( y = 1 << n ))`, `${a[1<<2]}`). With no
-	// tree, or in code the parser skipped, the text decides.
-	heredocOp := func(i int) bool {
-		if f.Root == nil {
-			return true
-		}
-		if loc == nil {
-			loc = f.NewLocator()
-		}
-		n := loc.At(i)
-		if n == nil || n.Kind == tree.KErrorGap || n.Enclosing(tree.KErrorGap) != nil {
-			return true
-		}
-		// The redirect must start at i, or at its fd just before (`3<<`,
-		// `{fd}<<`): redirects hang off the statement, so the deepest node
-		// at a shift in a later argument can be the redirect too.
-		if a := n.Range.Start.Offset; n.Kind != tree.KRedirect || a > i || !fdPrefix(src[a:i]) {
-			return false
-		}
-		for _, k := range n.Children {
-			if k.Kind == tree.KHeredoc {
-				return true
-			}
-		}
-		return false
 	}
 	// name reads the name after the `$` at i; k is past it, 0 for none.
 	name := func(i int) (j, k int) {

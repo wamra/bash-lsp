@@ -263,7 +263,7 @@ func TestRulesRegistry(t *testing.T) {
 		sc  []string
 	}{
 		"WB1001": {SevError, nil}, "WB1002": {SevInfo, nil}, "WB1003": {SevInfo, nil}, "WB1005": {SevInfo, nil},
-		"WB1007": {SevInfo, nil}, "WB1008": {SevInfo, nil},
+		"WB1006": {SevInfo, nil}, "WB1007": {SevInfo, nil}, "WB1008": {SevInfo, nil},
 		"WB1101": {SevWarning, []string{"SC1090", "SC1091"}}, "WB1102": {SevInfo, nil}, "WB1103": {SevInfo, nil}, "WB1104": {SevInfo, nil},
 		"WB1105": {SevError, []string{"SC2168"}}, "WB1106": {SevWarning, []string{"SC2030", "SC2031"}},
 		"WB1201": {SevHint, []string{"SC2329"}}, "WB1202": {SevHint, []string{"SC2034"}},
@@ -541,7 +541,7 @@ func TestDiagTestdata(t *testing.T) {
 		}
 	}
 	for _, r := range Rules() {
-		if !seen[r.ID] && r.ID != "WB1002" && r.ID != "WB1007" { // a 3 MiB file, 2,000 findings: generated in TestRuleTable, TestFindingsCap
+		if !seen[r.ID] && r.ID != "WB1002" && r.ID != "WB1006" && r.ID != "WB1007" { // a 3 MiB file, a 2 MiB string, 2,000 findings: generated in TestRuleTable, TestStringBudgetReason, TestFindingsCap
 			t.Errorf("no testdata/diag file for %s", r.ID)
 		}
 	}

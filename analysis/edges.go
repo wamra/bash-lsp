@@ -105,7 +105,7 @@ type edgeRec struct {
 // reasonNames are the reasons an edge can carry, by edgeRec.reason.
 var reasonNames = []string{"", ReasonDirect, ReasonAlias, ReasonOutsideClosure, ReasonNotFound, ReasonConditional,
 	ReasonVariableConstant, ReasonStringEval, ReasonStringTrap, ReasonStringShellC, ReasonVariableUnknown, ReasonExpansion, ReasonUnsetInView,
-	ReasonSkippedForSize, ReasonPathLookup}
+	ReasonSkippedForSize, ReasonPathLookup, ReasonCandidateCap, ReasonStringBudget}
 
 func reasonCode(r string) uint8 {
 	for i, n := range reasonNames {
@@ -138,7 +138,14 @@ func (s *Snapshot) buildEdges(hint int) {
 	n := len(s.paths)
 	s.recAt = make([]int, n+1)
 	recs := make([]edgeRec, 0, hint)
+	if s.dynBase == nil { // the dynamic sites the edge table adds (candidate caps) are made again on a second run
+		s.dynBase = make([]int, n)
+		for i := range s.dyn {
+			s.dynBase[i] = len(s.dyn[i])
+		}
+	}
 	for i := 0; i < n; i++ {
+		s.dyn[i] = s.dyn[i][:s.dynBase[i]]
 		s.recAt[i] = len(recs)
 		recs = s.fileEdges(recs, i)
 	}
@@ -261,6 +268,13 @@ func (s *Snapshot) edgeOf(file int, r *edgeRec) Edge {
 // commands, which have no binding.
 func (s *Snapshot) appendCallEdges(out []edgeRec, file int) []edgeRec {
 	bs := s.bindings[file]
+	var capUse *Use // the last use given a candidate-cap site: its bindings are next to each other
+	noteCap := func(u *Use) {
+		if capUse != u {
+			capUse = u
+			s.dyn[file] = append(s.dyn[file], dynSite{rng: u.Range, sc: u.Scope, reason: codeCandidateCap})
+		}
+	}
 	for k := range bs {
 		b := &bs[k]
 		u := b.Use
@@ -268,8 +282,12 @@ func (s *Snapshot) appendCallEdges(out []edgeRec, file int) []edgeRec {
 			continue
 		}
 		r := edgeRec{at: int32(k), rel: RelCalls}
+		var capped bool
 		if u.Via != ViaNone && b.Reason != ReasonOutsideClosure {
-			out = s.appendViaTargets(out, file, r, b)
+			out, capped = s.appendViaTargets(out, file, r, b)
+			if capped || s.varCap[u] {
+				noteCap(u)
+			}
 			continue
 		}
 		if u.ViaAlias {
@@ -278,12 +296,15 @@ func (s *Snapshot) appendCallEdges(out []edgeRec, file int) []edgeRec {
 			}
 			r.rel = RelAliases
 		}
-		out = s.appendTargets(out, file, r, b)
+		if out, capped = s.appendTargets(out, file, r, b); capped {
+			noteCap(u)
+		}
 	}
 	return out
 }
 
-// appendTargets appends one copy of r per definition b's call goes to.
+// appendTargets appends one copy of r per definition b's call goes to, at
+// most maxSiteTargets; capped reports that it left some out.
 //   - name-match-outside-closure: every definition of the symbol, with that label.
 //   - one definition in view: resolved, with the binding's reason (direct or alias).
 //   - several: candidate/conditional-definition, one edge each.
@@ -293,18 +314,27 @@ func (s *Snapshot) appendCallEdges(out []edgeRec, file int) []edgeRec {
 // outside that scope: a lone such definition is still a
 // candidate/conditional-definition target there. For a call inside it, the
 // definitions of the innermost such scope around the call shadow all others.
-func (s *Snapshot) appendTargets(out []edgeRec, file int, r edgeRec, b *Binding) []edgeRec {
+//
+// The scan stops once it has one definition more than it lists (the proof
+// that the list is cut), after looking at the symbol's confined definitions,
+// which alone can shadow the others: a name defined thousands of times and
+// called thousands of times is not a product of the two.
+func (s *Snapshot) appendTargets(out []edgeRec, file int, r edgeRec, b *Binding) (_ []edgeRec, capped bool) {
 	reason := codeDirect
 	if b.Reason != ReasonDirect {
 		reason = reasonCode(b.Reason)
 	}
 	if b.Res == Candidate {
 		r.res, r.reason = Candidate, reason
-		for _, d := range b.Sym.Decls {
+		ds := b.Sym.Decls
+		if len(ds) > maxSiteTargets {
+			ds, capped = ds[:maxSiteTargets], true
+		}
+		for _, d := range ds {
 			r.to = d
 			out = append(out, r)
 		}
-		return out
+		return out, capped
 	}
 	off := b.Use.Range.Start.Offset
 	if len(b.Sym.Decls) == 1 { // the common case, without allocating
@@ -316,42 +346,70 @@ func (s *Snapshot) appendTargets(out []edgeRec, file int, r edgeRec, b *Binding)
 			r.res, r.reason = Candidate, codeConditional
 		}
 		out = append(out, r)
-		return out
+		return out, false
 	}
-	var inView, inner []*Decl
+	// The innermost confining scope around the call that holds a definition.
+	var inner []*Decl
 	var innerNode *tree.Node
-	for _, d := range b.Sym.Decls {
-		if !s.visible[file].has(s.declFile[d]) {
-			continue
-		}
-		inView = append(inView, d)
-		if d.Confined == nil || !s.encloses(d, file, off) {
+	for _, d := range s.confinedOf(b.Sym) {
+		if !s.visible[file].has(s.declFile[d]) || !s.encloses(d, file, off) {
 			continue
 		}
 		pn := d.Confined.Node
 		switch {
 		case innerNode == pn:
-			inner = append(inner, d)
+			if len(inner) <= maxSiteTargets {
+				inner = append(inner, d)
+			}
 		case innerNode == nil || pn.Range.Start.Offset > innerNode.Range.Start.Offset ||
 			(pn.Range.Start.Offset == innerNode.Range.Start.Offset && pn.Range.End.Offset < innerNode.Range.End.Offset):
 			innerNode, inner = pn, []*Decl{d}
 		}
 	}
-	defs := inView
-	if innerNode != nil {
-		defs = inner
+	defs := inner
+	if innerNode == nil { // no confined definition shadows: the definitions in view
+		for _, d := range b.Sym.Decls {
+			if s.visible[file].has(s.declFile[d]) {
+				defs = append(defs, d)
+				if len(defs) > maxSiteTargets {
+					break
+				}
+			}
+		}
 	}
 	if len(defs) == 1 && (innerNode != nil || defs[0].Confined == nil) {
 		r.to, r.res, r.reason = defs[0], Resolved, reason
 		out = append(out, r)
-		return out
+		return out, false
+	}
+	if len(defs) > maxSiteTargets {
+		defs, capped = defs[:maxSiteTargets], true
 	}
 	r.res, r.reason = Candidate, codeConditional
 	for _, d := range defs {
 		r.to = d
 		out = append(out, r)
 	}
-	return out
+	return out, capped
+}
+
+// confinedOf returns the definitions of sym that lie inside a confining scope
+// (Decl.Confined), in declaration order; made once per symbol.
+func (s *Snapshot) confinedOf(sym *Symbol) []*Decl {
+	if c, ok := s.confined[sym]; ok {
+		return c
+	}
+	var c []*Decl
+	for _, d := range sym.Decls {
+		if d.Confined != nil {
+			c = append(c, d)
+		}
+	}
+	if s.confined == nil {
+		s.confined = map[*Symbol][]*Decl{}
+	}
+	s.confined[sym] = c
+	return c
 }
 
 // encloses reports whether the scope that confines declaration d contains

@@ -81,14 +81,14 @@ func (s *Snapshot) declLoc(d *Decl) Location {
 
 // locSet collects locations without duplicates and sorts them.
 type locSet struct {
-	seen map[[2]interface{}]bool
+	seen map[refKey]bool
 	out  []Location
 }
 
 func (l *locSet) add(loc Location) {
-	k := [2]interface{}{loc.Path, loc.Range.Start.Offset}
+	k := refKey{loc.Path, loc.Range.Start.Offset}
 	if l.seen == nil {
-		l.seen = map[[2]interface{}]bool{}
+		l.seen = map[refKey]bool{}
 	}
 	if !l.seen[k] {
 		l.seen[k] = true
@@ -151,6 +151,13 @@ func (s *Snapshot) ResolvedReferences(path string, offset int, includeDecl bool)
 	return s.references(path, offset, includeDecl, true)
 }
 
+// refKey is a declaration's place, for references to tell a declaration's own
+// name from a use of it.
+type refKey struct {
+	path string
+	off  int
+}
+
 func (s *Snapshot) references(path string, offset int, includeDecl, resolvedOnly bool) []Location {
 	h, _, ok := s.at(path, offset)
 	if !ok {
@@ -163,16 +170,16 @@ func (s *Snapshot) references(path string, offset int, includeDecl, resolvedOnly
 	// cost O(n^3) for the use; once per use it is the n^2 edges there are.
 	resolvedTo := map[*Use]map[*Symbol]bool{}
 	for _, sym := range s.hitSyms(h) {
-		declAt := map[[2]interface{}]bool{}
+		declAt := map[refKey]bool{}
 		for _, d := range sym.Decls {
-			declAt[[2]interface{}{s.paths[s.declFile[d]], d.NameRange.Start.Offset}] = true
+			declAt[refKey{s.paths[s.declFile[d]], d.NameRange.Start.Offset}] = true
 			if includeDecl {
 				ls.add(s.declLoc(d))
 			}
 		}
 		filter := resolvedOnly && sym.Kind == DeclFunction
 		for _, b := range s.BindingsOf(sym) {
-			if !includeDecl && declAt[[2]interface{}{b.File, b.Use.Range.Start.Offset}] {
+			if !includeDecl && declAt[refKey{b.File, b.Use.Range.Start.Offset}] {
 				continue
 			}
 			if filter {
