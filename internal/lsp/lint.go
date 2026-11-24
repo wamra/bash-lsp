@@ -277,7 +277,7 @@ func before(a, b Position) bool {
 //
 // ShellCheck never runs on the message loop. An edit publishes the native
 // findings at once, then (scheduleCheck) starts a timer; when it fires, a
-// goroutine runs the Task 6 runner on the document's parsed file, which was
+// goroutine runs the ShellCheck runner on the document's parsed file, which was
 // captured on the loop, and hands the result back with s.post. finishCheck
 // takes it only if the document is still open at the same version and the run
 // is still the latest scheduled; it then publishes the merge. A newer edit, a
