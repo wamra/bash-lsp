@@ -207,3 +207,20 @@ func TestShDashFormsUnchanged(t *testing.T) {
 		}
 	}
 }
+
+// Only `@Q` has a citable first version (FDS-016); the other `@` operators
+// are not recorded at all, and `@Q` is.
+func TestTransformOpsRecorded(t *testing.T) {
+	for _, op := range []string{"U", "u", "L", "K", "k", "a", "A", "E", "P"} {
+		src := bashHead + `echo "${v@` + op + `}"` + "\n"
+		if got := featureTexts(t, "x.sh", src); len(got) != 0 {
+			t.Errorf("@%s: features %q, want none", op, got)
+		}
+	}
+	for _, src := range []string{`echo "${v@Q}"`, `echo ${v@Q}`, `echo "${a[0]@Q}"`} {
+		got := featureTexts(t, "x.sh", bashHead+src+"\n")
+		if len(got) != 1 || !strings.HasPrefix(got[0], "transform-op ") {
+			t.Errorf("%q: features %q, want one transform-op", src, got)
+		}
+	}
+}

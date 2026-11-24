@@ -61,12 +61,25 @@ func (l *lowerer) paramFeatures(p *syntax.ParamExp, n *tree.Node) {
 		case syntax.UpperFirst, syntax.UpperAll, syntax.LowerFirst, syntax.LowerAll:
 			l.featureNode(tree.FeatCaseModification, n)
 		case syntax.OtherParamOps:
-			l.featureNode(tree.FeatTransformOp, n)
+			if transformQ(p.Exp.Word) {
+				l.featureNode(tree.FeatTransformOp, n)
+			}
 		}
 	}
 	if negativeIndex(p.Index) {
 		l.featureNode(tree.FeatNegativeSubscript, n)
 	}
+}
+
+// transformQ reports whether the operator word of an `@` expansion is `Q`,
+// the only one whose first bash version is cited (FDS-016): the others have
+// no citable source and are left out of the rule (docs/version-table.md).
+func transformQ(w *syntax.Word) bool {
+	if w == nil || len(w.Parts) != 1 {
+		return false
+	}
+	lit, ok := w.Parts[0].(*syntax.Lit)
+	return ok && lit.Value == "Q"
 }
 
 // negativeIndex reports whether a subscript is a minus sign before an
