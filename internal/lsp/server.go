@@ -3,6 +3,7 @@
 package lsp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -107,8 +108,9 @@ type server struct {
 	initialized  bool
 	shutdown     bool
 	hierarchical bool
-	watchDynamic bool     // the client registers didChangeWatchedFiles dynamically
-	roots        []string // the workspace folders as the client spelled them
+	ccaps        clientCaps // what the client said it supports (caps)
+	watchDynamic bool       // the client registers didChangeWatchedFiles dynamically
+	roots        []string   // the workspace folders as the client spelled them
 	initOpts     json.RawMessage
 	shownMu      sync.Mutex
 	shown        map[string]bool      // messages shown to the user this session (warnOnce)
@@ -306,6 +308,7 @@ func (s *server) initialize(raw json.RawMessage) (any, *rpcError) {
 	s.initialized = true
 	s.hierarchical = p.Capabilities.TextDocument.DocumentSymbol.Hierarchical
 	s.initOpts = p.InitializationOptions
+	s.ccaps = capsOf(p)
 	s.watchDynamic = p.Capabilities.Workspace.DidChangeWatchedFiles.DynamicRegistration
 	s.roots = rootsOf(p, s.log)
 	if len(s.roots) > 0 {
@@ -313,6 +316,35 @@ func (s *server) initialize(raw json.RawMessage) (any, *rpcError) {
 	}
 	return initializeResult{Capabilities: capabilities(), ServerInfo: serverInfo{Name: "bash-lsp", Version: s.version}}, nil
 }
+
+// clientCaps are the client capabilities the handlers consult, read once at
+// initialize.
+type clientCaps struct {
+	RenamePrepare, DocumentChanges, ChangeAnnotations bool // textDocument.rename.prepareSupport; workspace.workspaceEdit.documentChanges; workspace.workspaceEdit.changeAnnotationSupport present
+	LabelOffset                                       bool // textDocument.signatureHelp.signatureInformation.parameterInformation.labelOffsetSupport
+	LineFoldingOnly                                   bool // textDocument.foldingRange.lineFoldingOnly
+	RangeLimit                                        int  // textDocument.foldingRange.rangeLimit (0 = none)
+	SemanticTokensRefresh, InlayHintRefresh           bool // workspace.semanticTokens.refreshSupport; workspace.inlayHint.refreshSupport
+}
+
+func capsOf(p initializeParams) clientCaps {
+	td, ws := p.Capabilities.TextDocument, p.Capabilities.Workspace
+	ann := bytes.TrimSpace(ws.WorkspaceEdit.ChangeAnnotationSupport)
+	return clientCaps{
+		RenamePrepare:         td.Rename.PrepareSupport,
+		DocumentChanges:       ws.WorkspaceEdit.DocumentChanges,
+		ChangeAnnotations:     len(ann) > 0 && string(ann) != "null" && string(ann) != "false",
+		LabelOffset:           td.SignatureHelp.SignatureInformation.ParameterInformation.LabelOffsetSupport,
+		LineFoldingOnly:       td.FoldingRange.LineFoldingOnly,
+		RangeLimit:            max(td.FoldingRange.RangeLimit, 0),
+		SemanticTokensRefresh: ws.SemanticTokens.RefreshSupport,
+		InlayHintRefresh:      ws.InlayHint.RefreshSupport,
+	}
+}
+
+// caps returns the client capabilities. They are set during initialize,
+// before any other request is read.
+func (s *server) caps() clientCaps { return s.ccaps }
 
 // rootsOf picks the workspace folders, else rootUri, else rootPath. A
 // folder whose URI is not a file URI is logged and left out.

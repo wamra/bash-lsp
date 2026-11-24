@@ -7,13 +7,15 @@
 //
 // User settings are a floor against the repo file, which is untrusted input:
 //   - executable and hook keys (shellcheck.path, codeindex.path, path.profile,
-//     hook.enabled) are accepted only from the user file and initialization
+//     hook.enabled, help.bash_path, help.man_path) are accepted only from the user file and initialization
 //     options; a repo file naming one is refused (Settings.Refused) and the key
 //     is ignored;
 //   - a repo limit applies only when it is lower than the effective value so
 //     far (the built-in cap, or the user's lower value);
-//   - a repo file cannot set shellcheck.enabled = true once the user file set
-//     it false;
+//   - a repo file cannot set shellcheck.enabled, help.enabled or
+//     completion.path_commands to true once the user file set it false;
+//     help.bash_path and help.man_path are executable keys (user file and
+//     initialization options only);
 //   - the repo's diagnostics.disable is added to the user's list and never
 //     removes from it;
 //   - shellcheck.timeout_seconds applies from a repo file only when lower than
@@ -85,6 +87,12 @@ type Settings struct {
 		Path    string
 		Timeout time.Duration
 	}
+	InlayHints struct{ SourceTargets, ParameterNames bool } // inlay_hints.source_targets (default true), inlay_hints.parameter_names (default false)
+	Completion struct{ PathCommands bool }                  // completion.path_commands (default true)
+	Help       struct {
+		Enabled           bool   // help.enabled (default true)
+		BashPath, ManPath string // help.bash_path, help.man_path: user file and init options only
+	}
 	CodeIndexPath    string
 	PathProfile      []string // nil = $PATH
 	Include, Exclude []string // files.include / files.exclude, gitignore syntax, root-relative
@@ -128,28 +136,34 @@ type spec struct {
 }
 
 var known = map[string]spec{
-	"bash.target":                {kind: kString},
-	"bash.dialect":               {kind: kString},
-	"diagnostics.disable":        {kind: kList},
-	"shellcheck.enabled":         {kind: kBool},
-	"shellcheck.path":            {kind: kString, exec: true},
-	"shellcheck.timeout_seconds": {kind: kInt},
-	"codeindex.path":             {kind: kString, exec: true},
-	"path.profile":               {kind: kList, exec: true},
-	"hook.enabled":               {kind: kBool, exec: true},
-	"files.include":              {kind: kList},
-	"files.exclude":              {kind: kList},
-	"sources.paths":              {kind: kList},
-	"limits.max_files":           {kind: kInt},
-	"limits.max_file_bytes":      {kind: kInt},
-	"format.indent":              {kind: kInt},
-	"format.binary_next_line":    {kind: kBool},
-	"format.switch_case_indent":  {kind: kBool},
-	"format.space_redirects":     {kind: kBool},
-	"format.function_next_line":  {kind: kBool},
-	"format.simplify":            {kind: kBool},
-	"references.resolved_only":   {kind: kBool},
-	"references.resolvedOnly":    {kind: kBool},
+	"bash.target":                 {kind: kString},
+	"bash.dialect":                {kind: kString},
+	"diagnostics.disable":         {kind: kList},
+	"shellcheck.enabled":          {kind: kBool},
+	"shellcheck.path":             {kind: kString, exec: true},
+	"shellcheck.timeout_seconds":  {kind: kInt},
+	"codeindex.path":              {kind: kString, exec: true},
+	"path.profile":                {kind: kList, exec: true},
+	"hook.enabled":                {kind: kBool, exec: true},
+	"files.include":               {kind: kList},
+	"files.exclude":               {kind: kList},
+	"sources.paths":               {kind: kList},
+	"limits.max_files":            {kind: kInt},
+	"limits.max_file_bytes":       {kind: kInt},
+	"format.indent":               {kind: kInt},
+	"format.binary_next_line":     {kind: kBool},
+	"format.switch_case_indent":   {kind: kBool},
+	"format.space_redirects":      {kind: kBool},
+	"format.function_next_line":   {kind: kBool},
+	"format.simplify":             {kind: kBool},
+	"inlay_hints.source_targets":  {kind: kBool},
+	"inlay_hints.parameter_names": {kind: kBool},
+	"completion.path_commands":    {kind: kBool},
+	"help.enabled":                {kind: kBool},
+	"help.bash_path":              {kind: kString, exec: true},
+	"help.man_path":               {kind: kString, exec: true},
+	"references.resolved_only":    {kind: kBool},
+	"references.resolvedOnly":     {kind: kBool},
 }
 
 // sectionNames lists the sections a settings file or init object may hold.
@@ -185,6 +199,9 @@ func Merge(user, repo []byte, init json.RawMessage) Settings {
 	s.Target = analysis.DefaultTarget
 	s.ShellCheck.Enabled = true
 	s.ShellCheck.Timeout = defaultShellCheckTimeout
+	s.InlayHints.SourceTargets = true
+	s.Completion.PathCommands = true
+	s.Help.Enabled = true
 	if len(user) > 0 {
 		s.applyFile("config.toml", SrcUser, user)
 	}
@@ -440,6 +457,26 @@ func (s *Settings) set(l layer, e entry, name string) {
 			return
 		}
 		s.ShellCheck.Enabled = e.val.(bool)
+	case "inlay_hints.source_targets":
+		s.InlayHints.SourceTargets = e.val.(bool)
+	case "inlay_hints.parameter_names":
+		s.InlayHints.ParameterNames = e.val.(bool)
+	case "completion.path_commands":
+		if l.src == SrcRepo && e.val.(bool) && !s.Completion.PathCommands {
+			s.warn(l, e, "completion.path_commands: the user settings turn it off; a repo file cannot turn it on (ignored)")
+			return
+		}
+		s.Completion.PathCommands = e.val.(bool)
+	case "help.enabled":
+		if l.src == SrcRepo && e.val.(bool) && !s.Help.Enabled {
+			s.warn(l, e, "help.enabled: the user settings turn it off; a repo file cannot turn it on (ignored)")
+			return
+		}
+		s.Help.Enabled = e.val.(bool)
+	case "help.bash_path":
+		s.Help.BashPath = e.val.(string)
+	case "help.man_path":
+		s.Help.ManPath = e.val.(string)
 	case "shellcheck.path":
 		s.ShellCheck.Path = e.val.(string)
 	case "shellcheck.timeout_seconds":

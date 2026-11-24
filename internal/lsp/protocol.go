@@ -163,6 +163,20 @@ type initializeParams struct {
 			DocumentSymbol struct {
 				Hierarchical bool `json:"hierarchicalDocumentSymbolSupport"`
 			} `json:"documentSymbol"`
+			Rename struct {
+				PrepareSupport bool `json:"prepareSupport"`
+			} `json:"rename"`
+			SignatureHelp struct {
+				SignatureInformation struct {
+					ParameterInformation struct {
+						LabelOffsetSupport bool `json:"labelOffsetSupport"`
+					} `json:"parameterInformation"`
+				} `json:"signatureInformation"`
+			} `json:"signatureHelp"`
+			FoldingRange struct {
+				RangeLimit      int  `json:"rangeLimit"`
+				LineFoldingOnly bool `json:"lineFoldingOnly"`
+			} `json:"foldingRange"`
 		} `json:"textDocument"`
 		// ClientCapabilities.workspace (WorkspaceClientCapabilities)
 		// .didChangeWatchedFiles (DidChangeWatchedFilesClientCapabilities)
@@ -171,6 +185,16 @@ type initializeParams struct {
 			DidChangeWatchedFiles struct {
 				DynamicRegistration bool `json:"dynamicRegistration"`
 			} `json:"didChangeWatchedFiles"`
+			WorkspaceEdit struct {
+				DocumentChanges         bool            `json:"documentChanges"`
+				ChangeAnnotationSupport json.RawMessage `json:"changeAnnotationSupport"`
+			} `json:"workspaceEdit"`
+			SemanticTokens struct {
+				RefreshSupport bool `json:"refreshSupport"`
+			} `json:"semanticTokens"`
+			InlayHint struct {
+				RefreshSupport bool `json:"refreshSupport"`
+			} `json:"inlayHint"`
 		} `json:"workspace"`
 	} `json:"capabilities"`
 }

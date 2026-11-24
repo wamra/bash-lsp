@@ -380,8 +380,22 @@ func (s *server) response(m message) {
 		if len(msg) > 200 {
 			msg = msg[:200] + "..."
 		}
-		s.log.Printf("%s failed: %s; files changed outside the editor are seen only on didSave or reopen", method, msg)
+		s.log.Printf("%s failed: %s; %s", method, msg, failureConsequence(method))
 	}
+}
+
+// failureConsequence says what the server does without the client's answer to
+// the request it sent.
+func failureConsequence(method string) string {
+	switch method {
+	case "client/registerCapability":
+		return "files changed outside the editor are seen only on didSave or reopen"
+	case "workspace/semanticTokens/refresh":
+		return "highlighting may stay stale until the client asks again"
+	case "workspace/inlayHint/refresh":
+		return "inlay hints may stay stale until the client asks again"
+	}
+	return "the server carries on without it"
 }
 
 // didChangeWatched applies workspace/didChangeWatchedFiles: each folder
