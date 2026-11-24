@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"syscall"
 
 	"github.com/wamra/bash-lsp/internal/editorconfig"
 	"github.com/wamra/bash-lsp/internal/front"
@@ -116,7 +118,7 @@ func OptionsFor(path, root string, s Settings, lsp *LSPOptions) Options {
 	set(&o.SpaceRedirects, s.SpaceRedirects)
 	set(&o.FunctionNextLine, s.FunctionNextLine)
 	set(&o.Simplify, s.Simplify)
-	props, _ := editorconfig.LookupNotes(path, root, readEditorconfig)
+	props, _ := editorconfig.LookupNotes(path, root, editorconfigReader(root))
 	applyProps(&o, props)
 	return o
 }
@@ -124,7 +126,7 @@ func OptionsFor(path, root string, s Settings, lsp *LSPOptions) Options {
 // EditorconfigNotes lists the .editorconfig sections that apply to no file
 // because their glob is not supported (see internal/editorconfig).
 func EditorconfigNotes(path, root string) []string {
-	_, notes := editorconfig.LookupNotes(path, root, readEditorconfig)
+	_, notes := editorconfig.LookupNotes(path, root, editorconfigReader(root))
 	return notes
 }
 
@@ -132,14 +134,48 @@ func EditorconfigNotes(path, root string) []string {
 // one is ignored by the reader of the properties.
 const maxEditorconfigRead = 1 << 20
 
-func readEditorconfig(p string) ([]byte, bool) {
-	f, err := os.Open(filepath.FromSlash(p))
-	if err != nil {
-		return nil, false
+// editorconfigReader reads .editorconfig files for a workspace at root. A
+// .editorconfig is repo-controlled, so it is read only if it is a regular
+// file: it is resolved and stat'ed first, opened without blocking (a FIFO
+// would hang the open), and the opened file must be the one that was stat'ed.
+// One inside root must also resolve to a place inside root (a link out of the
+// workspace is not followed). One outside root is the file of a path the user
+// named, and is only checked for being a regular file.
+func editorconfigReader(root string) func(string) ([]byte, bool) {
+	return func(p string) ([]byte, bool) {
+		p = filepath.FromSlash(p)
+		real, err := filepath.EvalSymlinks(p)
+		if err != nil {
+			return nil, false
+		}
+		if root != "" && within(root, p) {
+			base, err := filepath.EvalSymlinks(root)
+			if err != nil || !within(base, real) {
+				return nil, false
+			}
+		}
+		before, err := os.Lstat(real)
+		if err != nil || !before.Mode().IsRegular() {
+			return nil, false
+		}
+		f, err := os.OpenFile(real, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+		if err != nil {
+			return nil, false
+		}
+		defer f.Close()
+		after, err := f.Stat()
+		if err != nil || !after.Mode().IsRegular() || !os.SameFile(before, after) {
+			return nil, false
+		}
+		b, err := io.ReadAll(io.LimitReader(f, maxEditorconfigRead))
+		return b, err == nil
 	}
-	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, maxEditorconfigRead))
-	return b, err == nil
+}
+
+// within reports whether p is dir or lies under it (lexically).
+func within(dir, p string) bool {
+	rel, err := filepath.Rel(dir, p)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func applyProps(o *Options, props map[string]string) {

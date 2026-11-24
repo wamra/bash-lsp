@@ -41,15 +41,16 @@ func fmtSources(t testing.TB) map[string]string {
 		})
 	}
 	for name, s := range map[string]string{
-		"messy":    "#!/bin/bash\n\n\nf(){\nif [ -n \"$1\" ];then echo   \"a  b\"   # keep\nelse\n  echo 'x'\nfi\n}\nfor i in 1 2 3;do echo $i;done\ncase $x in a|b)echo ab;;*)echo other;; esac\nwhile read -r l; do echo \"$l\"; done <<EOF\n  body   with   spaces\nEOF\ncat <<-'EOT'\n\ttabbed   body\n\tEOT\nx=$(echo   $(date))\n[[ \"$a\" == b && -n $c ]] && echo yes || echo no\necho $((1+2*3)) ${a:-b} ${#c} `uname`\na | b |\n  c\n",
-		"redirs":   "echo a>f 2>&1\ncmd <in >out 2>>err\nexec 3<&-\n",
-		"funcs":    "function a { :; }\nb() { :; }\nc()\n{\n  :\n}\n",
-		"arrays":   "a=(1   2 3)\ndeclare -A m=([k]=v)\nfor ((i=0;i<3;i++)); do echo $i; done\n",
-		"comments": "# one\n\n# two\necho a # trailing\n\n\n# end\n",
-		"continue": "echo a \\\n  b \\\n  c\nif a &&\n  b; then :; fi\n",
-		"empty":    "",
-		"blank":    "\n\n\n",
-		"nonl":     "echo   a",
+		"messy":       "#!/bin/bash\n\n\nf(){\nif [ -n \"$1\" ];then echo   \"a  b\"   # keep\nelse\n  echo 'x'\nfi\n}\nfor i in 1 2 3;do echo $i;done\ncase $x in a|b)echo ab;;*)echo other;; esac\nwhile read -r l; do echo \"$l\"; done <<EOF\n  body   with   spaces\nEOF\ncat <<-'EOT'\n\ttabbed   body\n\tEOT\nx=$(echo   $(date))\n[[ \"$a\" == b && -n $c ]] && echo yes || echo no\necho $((1+2*3)) ${a:-b} ${#c} `uname`\na | b |\n  c\n",
+		"redirs":      "echo a>f 2>&1\ncmd <in >out 2>>err\nexec 3<&-\n",
+		"funcs":       "function a { :; }\nb() { :; }\nc()\n{\n  :\n}\n",
+		"arrays":      "a=(1   2 3)\ndeclare -A m=([k]=v)\nfor ((i=0;i<3;i++)); do echo $i; done\n",
+		"comments":    "# one\n\n# two\necho a # trailing\n\n\n# end\n",
+		"continue":    "echo a \\\n  b \\\n  c\nif a &&\n  b; then :; fi\n",
+		"dash-nested": "if a;then\n\tcat <<-EOF\n\t\tx $(date)\n  y\n\tEOF\n\t\tcat   <<-'Q'\n\tz\n\t\tQ\nfi\nf(){\ncat <<-E | tr a b\n\t\t1\n\tE\n}\n",
+		"empty":       "",
+		"blank":       "\n\n\n",
+		"nonl":        "echo   a",
 	} {
 		out["inline:"+name] = s
 	}
@@ -59,13 +60,16 @@ func fmtSources(t testing.TB) map[string]string {
 // loweredSig is a second view of a parse, through the lowered tree the
 // analysis uses: kinds, names and values, no positions.
 func loweredSig(f *tree.File) string {
+	dash := bytes.Contains(f.Src, []byte("<<-"))
 	var b strings.Builder
 	var walk func(n *tree.Node, heredoc bool)
 	walk = func(n *tree.Node, heredoc bool) {
 		v := n.Value
 		if heredoc {
-			// the tabs before a `<<-` delimiter are not part of the body
-			v = strings.TrimRight(v, "\t")
+			// the tabs at the start of a `<<-` body line are not part of the body
+			if dash {
+				v = stripLineTabs(v, true)
+			}
 		}
 		fmt.Fprintf(&b, "(%v %q %q", n.Kind, n.Name, v)
 		for _, c := range n.Children {
@@ -314,9 +318,13 @@ func TestFormatHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	if os.Getenv(maxStackEnv) == "1" {
-		debug.SetMaxStack(safetyStack)
+		stack := safetyStack
+		if v, err := strconv.Atoi(os.Getenv("WB_FMT_STACK")); err == nil { // a smaller limit, to measure the margin
+			stack = v
+		}
+		debug.SetMaxStack(stack)
 	}
-	_, err = Format("x.sh", []byte(atLimit(i, n)), FormatOptions{})
+	_, err = Format("x.sh", []byte(atLimit(i, n)), FormatOptions{Simplify: os.Getenv("WB_FMT_SIMPLIFY") == "1"})
 	if err != nil {
 		msg := err.Error()
 		if len(msg) > 300 {
@@ -328,9 +336,12 @@ func TestFormatHelper(t *testing.T) {
 	fmt.Println("formatted")
 }
 
-func runFormatChild(i, n int) (string, error) {
+func runFormatChild(i, n int, simplify bool) (string, error) {
 	cmd := exec.Command(os.Args[0], "-test.run=^TestFormatHelper$", "-test.v")
 	cmd.Env = append(os.Environ(), fmtCaseEnv+"="+strconv.Itoa(i), fmtLevelsEnv+"="+strconv.Itoa(n), maxStackEnv+"=1")
+	if simplify {
+		cmd.Env = append(cmd.Env, "WB_FMT_SIMPLIFY=1")
+	}
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -346,19 +357,21 @@ func TestFormatDeepInputsSubprocess(t *testing.T) {
 	chains := map[string]bool{"andor": true, "pipes": true, "pipes-commented": true, "arith-plus": true, "arith-comma": true}
 	for i, l := range limits {
 		t.Run(l.name, func(t *testing.T) {
-			out, err := runFormatChild(i, l.ok)
-			if err != nil {
-				t.Fatalf("child died: %v\n%s", err, firstLines(out, 15))
-			}
-			formatted, refused := strings.Contains(out, "\nformatted\n"), strings.Contains(out, "\nrefused: ")
-			if formatted == refused {
-				t.Fatalf("child printed neither or both:\n%s", firstLines(out, 15))
-			}
-			if chains[l.name] && !formatted {
-				t.Fatalf("chain refused:\n%s", firstLines(out, 15))
+			for _, simplify := range []bool{false, true} {
+				out, err := runFormatChild(i, l.ok, simplify)
+				if err != nil {
+					t.Fatalf("simplify=%v: child died: %v\n%s", simplify, err, firstLines(out, 15))
+				}
+				formatted, refused := strings.Contains(out, "\nformatted\n"), strings.Contains(out, "\nrefused: ")
+				if formatted == refused {
+					t.Fatalf("simplify=%v: child printed neither or both:\n%s", simplify, firstLines(out, 15))
+				}
+				if chains[l.name] && !formatted {
+					t.Fatalf("simplify=%v: chain refused:\n%s", simplify, firstLines(out, 15))
+				}
 			}
 			// One more level is the parser's nesting error.
-			_, err = Format("x.sh", []byte(atLimit(i, l.ok+1)), FormatOptions{})
+			_, err := Format("x.sh", []byte(atLimit(i, l.ok+1)), FormatOptions{})
 			if !errors.Is(err, ErrFormatSyntax) || !strings.Contains(err.Error(), "nesting is deeper than 10000 levels") {
 				t.Fatalf("%d levels: %v", l.ok+1, err)
 			}
@@ -387,6 +400,8 @@ func TestTreeSigIgnoresPositionsOnly(t *testing.T) {
 		{"echo   a\n", "echo a\n"},
 		{"if a;then b;fi\n", "if a; then\n  b\nfi\n"},
 		{"# c   \necho a\n", "# c\necho a\n"},
+		{"cat <<-A\n\tx\n\tA\n", "cat <<-A\n\t\t\tx\nA\n"},
+		{"echo `a`\n", "echo $(a)\n"},
 	}
 	for _, c := range same {
 		if treeSig(parse(c[0])) != treeSig(parse(c[1])) {
@@ -401,10 +416,60 @@ func TestTreeSigIgnoresPositionsOnly(t *testing.T) {
 		{"# one\n", "# two\n"},
 		{"a &\n", "a\n"},
 		{"cat <<A\nx\nA\n", "cat <<A\ny\nA\n"},
+		{"cat <<-A\n\tx\nA\n", "cat <<-A\n\ty\nA\n"},
+		{"cat <<A\n\tx\nA\n", "cat <<A\nx\nA\n"},
+		{"cat <<-A\nx  y\nA\n", "cat <<-A\nx y\nA\n"},
 	}
 	for _, c := range differ {
 		if treeSig(parse(c[0])) == treeSig(parse(c[1])) {
 			t.Errorf("%q and %q are the same", c[0], c[1])
 		}
 	}
+}
+
+// BenchmarkFormatPhases times, on the file named by WB_BIG (bench/gen_big.py:
+// the 561 KB script), the strict parse alone, the parse and print (the
+// reference of 29 ms for parse and print is this row), the analysis guard
+// alone, and Format whole (guard, parse, print, check, second print).
+func BenchmarkFormatPhases(b *testing.B) {
+	path := os.Getenv("WB_BIG")
+	if path == "" {
+		b.Skip("WB_BIG names the file to format")
+	}
+	src, err := os.ReadFile(path)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Run("parse", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if _, _, err := strictParse("x.sh", src, Bash); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("parse+print", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			f, _, err := strictParse("x.sh", src, Bash)
+			if err != nil {
+				b.Fatal(err)
+			}
+			if _, err := printTree(f, FormatOptions{}); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("guard", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if _, err := prepare("x.sh", src); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("format", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if _, err := Format("x.sh", src, FormatOptions{}); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }

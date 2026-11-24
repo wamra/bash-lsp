@@ -292,3 +292,58 @@ func TestOptionsForEditorconfigKeys(t *testing.T) {
 		t.Fatalf("d.sh: %+v", got)
 	}
 }
+
+func TestRangeHeredoc(t *testing.T) {
+	for name, c := range map[string]struct{ src, sel, want string }{
+		"plain":  {"echo   a\ncat <<EOF\n  body   x\nEOF\necho   b\n", "body", "echo   a\ncat <<EOF\n  body   x\nEOF\necho   b\n"},
+		"piped":  {"echo   a\ncat   <<EOF |   tr a b\nbody\nEOF\necho   b\n", "body", "echo   a\ncat <<EOF | tr a b\nbody\nEOF\necho   b\n"},
+		"two":    {"cat <<A   <<B\n1\nA\n2\nB\necho   z\n", "echo", "cat <<A   <<B\n1\nA\n2\nB\necho z\n"},
+		"dash":   {"if a;then\n\tcat <<-EOF\n\tx\n\tEOF\nfi\n", "cat", "if a; then\n\tcat <<-EOF\n\t\tx\n\tEOF\nfi\n"},
+		"nested": {"f()   {\n  cat <<EOF\nin  f\nEOF\n}\n", "cat", "f() {\n\tcat <<EOF\nin  f\nEOF\n}\n"},
+		"in-and": {"true   && cat <<EOF\nb\nEOF\n", "true", "true && cat <<EOF\nb\nEOF\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			i := strings.Index(c.src, c.sel)
+			start, end, text, err := Range("x.sh", []byte(c.src), i, i+1, Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := c.src[:start] + string(text) + c.src[end:]; got != c.want {
+				t.Fatalf("got %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// Whatever the range, the result of applying the edit is a script that
+// parses to the same tree, or the call refuses with ErrUnsupported (never
+// ErrSyntax: the file has no syntax error).
+func TestRangeEverywhere(t *testing.T) {
+	srcs := []string{
+		"a   &\nb   ;   c\n# x\nd |   e   # t\n",
+		"cat <<EOF |   tr a b\nbody\nEOF\necho   z\n",
+		"x=1;   y=2\nif a;then b;fi;   echo   q\n",
+		"f()   { cat <<E\n  x\nE\n}\n   g   &   h\n",
+		"echo   a   &&\n  echo   b\n\n\n# end\n",
+	}
+	for _, src := range srcs {
+		for i := 0; i <= len(src); i++ {
+			for _, j := range []int{i, i + 1, len(src)} {
+				if j > len(src) || j < i {
+					continue
+				}
+				start, end, text, err := Range("x.sh", []byte(src), i, j, Options{})
+				if err != nil {
+					if errors.Is(err, ErrSyntax) {
+						t.Errorf("%q [%d,%d): %v", src, i, j, err)
+					}
+					continue
+				}
+				got := src[:start] + string(text) + src[end:]
+				if _, err := Source("x.sh", []byte(got), Options{}); err != nil {
+					t.Errorf("%q [%d,%d): the result %q does not format: %v", src, i, j, got, err)
+				}
+			}
+		}
+	}
+}

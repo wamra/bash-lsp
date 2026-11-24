@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"hash/maphash"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/wamra/bash-lsp/internal/front/syntax"
 	"github.com/wamra/bash-lsp/tree"
@@ -225,11 +227,15 @@ const maxPasses = 3
 // until a pass prints the text it parsed. It returns that text.
 func settle(path string, f *syntax.File, lang syntax.LangVariant, o FormatOptions) ([]byte, error) {
 	var prev []byte
+	var want uint64
+	known := false // want is the signature of f
 	for pass := 0; pass < maxPasses; pass++ {
-		if o.Simplify {
-			syntax.Simplify(f)
+		if o.Simplify && syntax.Simplify(f) {
+			known = false
 		}
-		want := treeSig(f)
+		if !known {
+			want = treeSig(f)
+		}
 		out, err := printTree(f, o)
 		if err != nil {
 			return nil, err
@@ -238,10 +244,14 @@ func settle(path string, f *syntax.File, lang syntax.LangVariant, o FormatOption
 			return prev, nil
 		}
 		g, err := parseStrictLang(path, out, lang)
-		if err != nil || treeSig(g) != want {
+		if err != nil {
 			return nil, unsupported("the formatted text would not parse to the same script; not applied")
 		}
-		prev, f = out, g
+		got := treeSig(g)
+		if got != want {
+			return nil, unsupported("the formatted text would not parse to the same script; not applied")
+		}
+		prev, f, want, known = out, g, got, true
 	}
 	return nil, unsupported("the formatted text does not settle after %d passes; not applied", maxPasses)
 }
@@ -249,17 +259,100 @@ func settle(path string, f *syntax.File, lang syntax.LangVariant, o FormatOption
 // sigSeed makes treeSig's hashes comparable within one process.
 var sigSeed = maphash.MakeSeed()
 
-// treeSig is a hash of f's syntax tree that ignores positions, and comment
-// trailing white space (the printer trims it), and nothing else: the type of
-// every node, every string, number and flag field of it (words, operators,
-// names, comment text, heredoc bodies) and where each child hangs, in a
-// depth-first order with brackets. It recurses once per level, which the
-// parser bounds at 10,000.
+// treeSig is a hash of f's syntax tree that ignores positions, a few spellings
+// that mean the same (below) and nothing else: the type of every node, every
+// string, number and flag field of it (words, operators, names, comment text,
+// heredoc bodies) and where each child hangs, in a depth-first order with
+// brackets. It keeps its own stack: a recursive walk took over 32 MiB of Go
+// stack on the 10,000-level chains the parser accepts.
+//
+// What it ignores, because the printer legitimately changes it: trailing white
+// space of a comment, whether a command substitution is written with backquotes,
+// and the tabs at the start of the lines of a `<<-` body (dashHdoc).
 func treeSig(f *syntax.File) uint64 {
 	var h maphash.Hash
 	h.SetSeed(sigSeed)
-	sigValue(&h, reflect.ValueOf(f))
+	var buf []byte
+	stack := []sigItem{{v: reflect.ValueOf(f)}}
+	for len(stack) > 0 {
+		it := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if it.lit != 0 {
+			h.WriteByte(it.lit)
+			continue
+		}
+		v := it.v
+		switch v.Kind() {
+		case reflect.Interface, reflect.Pointer:
+			if v.IsNil() {
+				h.WriteByte('0')
+			} else {
+				stack = append(stack, sigItem{v: v.Elem()})
+			}
+		case reflect.Struct:
+			t := v.Type()
+			if t == commentType {
+				text := strings.TrimRight(v.Field(commentText).String(), " \t\r\n\v\f")
+				buf = append(append(strconv.AppendInt(append(buf[:0], '#'), int64(len(text)), 10), ':'), text...)
+				h.Write(buf)
+				continue
+			}
+			pl := planOf(t)
+			if pl == nil {
+				continue // a position
+			}
+			h.WriteByte('(')
+			h.WriteString(pl.name)
+			stack = append(stack, sigItem{lit: ')'})
+			dash := pl.hdoc >= 0 && v.Field(pl.op).Uint() == uint64(syntax.DashHdoc)
+			for k := len(pl.fields) - 1; k >= 0; k-- {
+				if fi := pl.fields[k]; dash && fi == pl.hdoc {
+					stack = append(stack, sigItem{v: dashHdoc(v.Field(fi))})
+				} else {
+					stack = append(stack, sigItem{v: v.Field(fi)})
+				}
+			}
+		case reflect.Slice:
+			buf = strconv.AppendInt(append(buf[:0], '['), int64(v.Len()), 10)
+			h.Write(buf)
+			stack = append(stack, sigItem{lit: ']'})
+			for k := v.Len() - 1; k >= 0; k-- {
+				stack = append(stack, sigItem{v: v.Index(k)})
+			}
+		case reflect.String:
+			str := v.String()
+			buf = append(strconv.AppendInt(append(buf[:0], 's'), int64(len(str)), 10), ':')
+			h.Write(buf)
+			h.WriteString(str)
+		case reflect.Bool:
+			if v.Bool() {
+				h.WriteByte('T')
+			} else {
+				h.WriteByte('F')
+			}
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			h.Write(strconv.AppendInt(append(buf[:0], 'i'), v.Int(), 10))
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			h.Write(strconv.AppendUint(append(buf[:0], 'u'), v.Uint(), 10))
+		}
+	}
 	return h.Sum64()
+}
+
+// sigItem is a value still to hash, or (lit != 0) a closing bracket to write
+// once the values pushed after it are done.
+type sigItem struct {
+	v   reflect.Value
+	lit byte
+}
+
+// sigPlan is what treeSig hashes of one struct type: its name and the indices
+// of its fields, without positions, unexported fields and the backquote flag.
+// hdoc and op are the indices of a Redirect's body and operator, else -1.
+type sigPlan struct {
+	name     string
+	fields   []int
+	hdoc, op int
 }
 
 var (
@@ -267,79 +360,71 @@ var (
 	commentType  = reflect.TypeOf(syntax.Comment{})
 	redirectType = reflect.TypeOf(syntax.Redirect{})
 	cmdSubstType = reflect.TypeOf(syntax.CmdSubst{})
+	commentText  = func() int { f, _ := commentType.FieldByName("Text"); return f.Index[0] }()
+	sigPlans     sync.Map // reflect.Type -> *sigPlan (nil plan for a position)
 )
 
-// sigDashHdoc is sigValue of the body of a `<<-` here-document. The tabs in
-// front of the closing delimiter are kept in the body's last literal by the
-// parser, but the shell removes them, and the printer puts the delimiter at
-// the start of its line: they are not part of the body.
-func sigDashHdoc(h *maphash.Hash, v reflect.Value) {
-	w, _ := v.Interface().(*syntax.Word)
-	if w == nil || len(w.Parts) == 0 {
-		sigValue(h, v)
-		return
+func planOf(t reflect.Type) *sigPlan {
+	if p, ok := sigPlans.Load(t); ok {
+		return p.(*sigPlan)
 	}
-	last, ok := w.Parts[len(w.Parts)-1].(*syntax.Lit)
-	if !ok {
-		sigValue(h, v)
-		return
+	var pl *sigPlan
+	if t != posType {
+		pl = &sigPlan{name: t.Name(), hdoc: -1, op: -1}
+		for i := 0; i < t.NumField(); i++ {
+			f := t.Field(i)
+			switch {
+			case !f.IsExported(), t == cmdSubstType && f.Name == "Backquotes":
+				continue
+			case t == redirectType && f.Name == "Hdoc":
+				pl.hdoc = i
+			case t == redirectType && f.Name == "Op":
+				pl.op = i
+			}
+			pl.fields = append(pl.fields, i)
+		}
 	}
-	trimmed := *last
-	if t := strings.TrimRight(trimmed.Value, "\t"); t == "" || strings.HasSuffix(t, "\n") {
-		trimmed.Value = t
-	}
-	cp := *w
-	cp.Parts = append(append([]syntax.WordPart(nil), w.Parts[:len(w.Parts)-1]...), &trimmed)
-	sigValue(h, reflect.ValueOf(&cp))
+	sigPlans.Store(t, pl)
+	return pl
 }
 
-func sigValue(h *maphash.Hash, v reflect.Value) {
-	switch v.Kind() {
-	case reflect.Interface, reflect.Pointer:
-		if v.IsNil() {
-			h.WriteByte('0')
-			return
-		}
-		sigValue(h, v.Elem())
-	case reflect.Struct:
-		t := v.Type()
-		switch t {
-		case posType:
-			return
-		case commentType:
-			h.WriteString("#" + strconv.Quote(strings.TrimRight(v.FieldByName("Text").String(), " \t\r\n\v\f")))
-			return
-		}
-		h.WriteString("(" + t.Name())
-		for i := 0; i < t.NumField(); i++ {
-			switch {
-			case !t.Field(i).IsExported(), t == cmdSubstType && t.Field(i).Name == "Backquotes":
-			case t == redirectType && t.Field(i).Name == "Hdoc" && v.FieldByName("Op").Uint() == uint64(syntax.DashHdoc):
-				sigDashHdoc(h, v.Field(i))
-			default:
-				sigValue(h, v.Field(i))
-			}
-		}
-		h.WriteByte(')')
-	case reflect.Slice:
-		h.WriteString("[" + strconv.Itoa(v.Len()))
-		for i := 0; i < v.Len(); i++ {
-			sigValue(h, v.Index(i))
-		}
-		h.WriteByte(']')
-	case reflect.String:
-		h.WriteString(strconv.Quote(v.String()))
-	case reflect.Bool:
-		if v.Bool() {
-			h.WriteByte('T')
-		} else {
-			h.WriteByte('F')
-		}
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		h.WriteString("i" + strconv.FormatInt(v.Int(), 10))
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		h.WriteString("u" + strconv.FormatUint(v.Uint(), 10))
+// dashHdoc returns the body v of a `<<-` here-document without the tabs at the
+// start of its lines. The shell removes the leading tabs of every body line, and of the line with the closing
+// delimiter, and the printer re-indents the body with the statement: the tabs
+// at the start of a line are not part of the body. (The parser keeps the tabs
+// before the delimiter in the body's last literal.) A literal that follows an
+// expansion on the same line starts mid-line and keeps its tabs.
+func dashHdoc(v reflect.Value) reflect.Value {
+	w, _ := v.Interface().(*syntax.Word)
+	if w == nil {
+		return v
 	}
+	cp := *w
+	cp.Parts = make([]syntax.WordPart, len(w.Parts))
+	atStart := true
+	for i, part := range w.Parts {
+		l, ok := part.(*syntax.Lit)
+		if !ok {
+			cp.Parts[i], atStart = part, false
+			continue
+		}
+		c := *l
+		c.Value = stripLineTabs(l.Value, atStart)
+		cp.Parts[i], atStart = &c, strings.HasSuffix(l.Value, "\n")
+	}
+	return reflect.ValueOf(&cp)
+}
+
+// stripLineTabs removes the tabs at the start of every line of s; the first
+// line only if it starts a line (atStart).
+func stripLineTabs(s string, atStart bool) string {
+	lines := strings.Split(s, "\n")
+	for i := range lines {
+		if i > 0 || atStart {
+			lines[i] = strings.TrimLeft(lines[i], "\t")
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // FormatRange formats the top-level statements that the byte range
@@ -372,25 +457,56 @@ func FormatRange(path string, src []byte, start, end int, o FormatOptions) (edit
 	if err != nil {
 		return 0, 0, nil, err
 	}
-	from, to, picked := -1, -1, []*syntax.Stmt(nil)
-	for _, s := range f.Stmts {
-		a, b := stmtExtent(s, p.text)
-		if !(a < te && b > ts || ts == te && a <= ts && ts <= b) {
-			continue
+	// The extent of every top-level statement, its here-document bodies
+	// included (they come after the line that starts them, not after the
+	// statement), then the statements the range touches and, until nothing
+	// changes, the ones that start inside the text so far.
+	ext := make([][2]int, len(f.Stmts))
+	ends := heredocEnds(f, p.text)
+	for k, s := range f.Stmts {
+		ext[k][0], ext[k][1] = stmtExtent(s, p.text)
+		visitAll(s, func(n syntax.Node) {
+			if r, ok := n.(*syntax.Redirect); ok {
+				if e, ok := ends[r]; ok && e > ext[k][1] {
+					ext[k][1] = e
+				}
+			}
+		})
+	}
+	from, to := -1, -1
+	var picked []*syntax.Stmt
+	in := make([]bool, len(f.Stmts))
+	for k := range f.Stmts {
+		a, b := ext[k][0], ext[k][1]
+		if a < te && b > ts || ts == te && a <= ts && ts <= b {
+			in[k] = true
+			if from < 0 {
+				from = a
+			}
+			to = max(to, b)
 		}
-		if from < 0 {
-			from = a
-		}
-		to = b
-		picked = append(picked, s)
 	}
 	if from < 0 {
 		return start, start, nil, nil
 	}
+	for grew := true; grew; {
+		grew = false
+		for k := range f.Stmts {
+			if !in[k] && ext[k][0] >= from && ext[k][0] < to {
+				in[k], grew = true, true
+				to = max(to, ext[k][1])
+			}
+		}
+	}
+	for k, s := range f.Stmts {
+		if in[k] {
+			picked = append(picked, s)
+		}
+	}
 	slice := p.text[from:to]
 	g, err := parseStrictLang(path, slice, lang)
 	if err != nil {
-		return 0, 0, nil, err
+		return 0, 0, nil, unsupported("the statements in the range cannot be formatted on their own: %v", err)
 	}
 	if o.Simplify {
 		syntax.Simplify(g)
@@ -446,4 +562,39 @@ func rangeStmtEnd(s *syntax.Stmt) int {
 		end = max(end, int(s.Redirs[n-1].End().Offset()))
 	}
 	return end
+}
+
+// heredocEnds maps each here-document redirection of f to the offset of the
+// end of its closing delimiter line (no newline). The body of a redirection
+// follows the line the redirection is on, in the order of the redirections on
+// that line; the parser has no body for an empty one, so its delimiter is the
+// line after the previous body.
+func heredocEnds(f *syntax.File, text []byte) map[*syntax.Redirect]int {
+	var rs []*syntax.Redirect
+	visitAll(f, func(n syntax.Node) {
+		if r, ok := n.(*syntax.Redirect); ok && (r.Op == syntax.Hdoc || r.Op == syntax.DashHdoc) {
+			rs = append(rs, r)
+		}
+	})
+	sort.Slice(rs, func(a, b int) bool { return rs[a].OpPos.Offset() < rs[b].OpPos.Offset() })
+	lineEnd := func(from int) int {
+		if k := bytes.IndexByte(text[from:], '\n'); k >= 0 {
+			return from + k
+		}
+		return len(text)
+	}
+	ends := make(map[*syntax.Redirect]int, len(rs))
+	line, cursor := uint(0), 0
+	for _, r := range rs {
+		if r.OpPos.Line() != line {
+			line, cursor = r.OpPos.Line(), lineEnd(int(r.OpPos.Offset()))
+		}
+		if r.Hdoc != nil {
+			cursor = int(r.Hdoc.End().Offset())
+		} else {
+			cursor = lineEnd(min(cursor+1, len(text)))
+		}
+		ends[r] = cursor
+	}
+	return ends
 }
