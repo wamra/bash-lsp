@@ -275,6 +275,10 @@ func (s *server) handle(m message) (any, *rpcError) {
 		return s.hover(m.Params)
 	case "textDocument/signatureHelp":
 		return s.signatureHelp(m.Params)
+	case "textDocument/completion":
+		return s.completion(m.Params)
+	case "completionItem/resolve":
+		return s.completionResolve(m.Params)
 	case "textDocument/documentSymbol":
 		return s.documentSymbol(m.Params)
 	case "workspace/symbol":

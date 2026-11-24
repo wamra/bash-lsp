@@ -1,10 +1,12 @@
 package extool
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -379,5 +381,54 @@ func TestProfileTimeoutReasonIsRounded(t *testing.T) {
 	p := NewProfile([]string{hung})
 	if sk := p.Skipped(); len(sk) != 1 || !strings.HasSuffix(sk[0], ": timed out after 60ms") {
 		t.Errorf("Skipped() = %q", sk)
+	}
+}
+
+func TestProfileNamesCapped(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("execute bits are a Unix rule")
+	}
+	var dirs []string
+	for d := 0; d < 3; d++ {
+		dir := t.TempDir()
+		dirs = append(dirs, dir)
+		for i := 0; i < 1667; i++ {
+			write(t, dir, fmt.Sprintf("p%d-%04d", d, i), 0o755)
+		}
+	}
+	write(t, dirs[0], "data-file", 0o644)
+	if err := os.Mkdir(filepath.Join(dirs[1], "a-dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := NewProfile(dirs)
+	names, more := p.Names("", 100)
+	if len(names) != 100 || !more {
+		t.Fatalf("%d names, more %v", len(names), more)
+	}
+	if !sort.StringsAreSorted(names) {
+		t.Fatal("not sorted")
+	}
+	for _, n := range names {
+		if _, ok := p.Lookup(n); !ok || n == "data-file" || n == "a-dir" {
+			t.Fatalf("%q is not a program", n)
+		}
+	}
+	// The program rule: a data file and a directory are never listed.
+	all, more := p.Names("", 10000)
+	if more || len(all) != 3*1667 {
+		t.Fatalf("%d names, more %v", len(all), more)
+	}
+	if got, more := p.Names("p1-00", 5); len(got) != 5 || !more || got[0] != "p1-0000" {
+		t.Fatalf("prefix: %v %v", got, more)
+	}
+	if got, more := p.Names("data", 5); len(got) != 0 || more {
+		t.Fatalf("data file: %v %v", got, more)
+	}
+	if got, more := p.Names("p0", 0); len(got) != 0 || !more {
+		t.Fatalf("max 0: %v %v", got, more)
+	}
+	var nilp *Profile
+	if got, more := nilp.Names("", 5); got != nil || more {
+		t.Fatal("nil profile")
 	}
 }

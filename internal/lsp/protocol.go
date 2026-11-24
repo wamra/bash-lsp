@@ -228,6 +228,7 @@ func capabilities() map[string]any {
 		"referencesProvider":              true,
 		"implementationProvider":          true,
 		"hoverProvider":                   true,
+		"completionProvider":              completionOptions(),
 		"signatureHelpProvider":           signatureHelpOptions(),
 		"documentSymbolProvider":          true,
 		"workspaceSymbolProvider":         true,

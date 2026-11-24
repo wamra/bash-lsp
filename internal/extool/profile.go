@@ -55,8 +55,9 @@ type Profile struct {
 	dirs    int      // directories given
 	exts    []string // Windows: PATHEXT, lower-cased; nil elsewhere
 
-	mu    sync.Mutex
-	known map[string]string // name -> the path of the program, "" when none; filled by Lookup
+	mu     sync.Mutex
+	known  map[string]string // name -> the path of the program, "" when none; filled by Lookup
+	sorted []string          // the names of cands in order, built by the first Names
 }
 
 // NewProfile reads each directory of dirs once, in chunks of 1,024 entries
@@ -279,4 +280,34 @@ func windowsExts() []string {
 		}
 	}
 	return out
+}
+
+// Names lists, in order, the programs whose name starts with prefix: at most
+// max of them, and more reports that another one follows. A name counts under
+// the rule of Lookup (a data file or a directory does not), and nothing is
+// run. Safe on a nil Profile.
+func (p *Profile) Names(prefix string, max int) (names []string, more bool) {
+	if p == nil || max < 0 {
+		return nil, false
+	}
+	p.mu.Lock()
+	if p.sorted == nil {
+		p.sorted = make([]string, 0, len(p.cands))
+		for n := range p.cands {
+			p.sorted = append(p.sorted, n)
+		}
+		slices.Sort(p.sorted)
+	}
+	sorted := p.sorted
+	p.mu.Unlock()
+	for i, _ := slices.BinarySearch(sorted, prefix); i < len(sorted) && strings.HasPrefix(sorted[i], prefix); i++ {
+		if _, ok := p.Lookup(sorted[i]); !ok {
+			continue
+		}
+		if len(names) == max {
+			return names, true
+		}
+		names = append(names, sorted[i])
+	}
+	return names, false
 }
