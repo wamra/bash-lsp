@@ -386,13 +386,15 @@ func (c *graphCtx) refs(spec string, o graphOpts, stdout, stderr io.Writer) int 
 	if at == nil {
 		return fail(stderr, fmt.Errorf("%s: no definition found in %s", spec, c.rel(n.Path)))
 	}
-	// An edge at a reference site gives it its resolution and reason.
+	// The edge to the queried function at a reference site gives it its
+	// resolution and reason (another target's edge at the same site, such as
+	// the other constant of a "$cmd", says nothing about this one).
 	type siteKey struct {
 		path string
 		off  int
 	}
 	edgeAt := map[siteKey]analysis.Edge{}
-	for _, e := range c.snap.Edges() {
+	for _, e := range c.snap.EdgesTo(n.Func) {
 		k := siteKey{e.Site.Path, e.Site.Range.Start.Offset}
 		if _, ok := edgeAt[k]; !ok {
 			edgeAt[k] = e

@@ -633,3 +633,37 @@ func TestStatusSizeAndFileCountLimits(t *testing.T) {
 	c.status(graphOpts{}, &out, &errb)
 	wantLines(t, out.String(), "skipped: 2\n", "  b.sh: file limit of 1 reached\n", "  big.sh: 203 bytes exceeds the 100 byte file limit\n", "limit hit: big.sh: 203 bytes exceeds")
 }
+
+// refs labels each site with the edge to the queried function, not with
+// whichever edge at that site came first (here `unset -f f` relabels the
+// edge to f, and the site also calls g).
+func TestRefsLabelOfQueriedTarget(t *testing.T) {
+	root := writeRoot(t, map[string]string{"v.sh": "f(){ :; }\ng(){ :; }\nunset -f f\nif x; then cmd=f; else cmd=g; fi\n\"$cmd\"\n"})
+	out := runOK(t, "refs", "--root", root, "g")
+	if !strings.Contains(out, "v.sh:5:1  g  calls  candidate/variable-constant") || strings.Contains(out, "unset-in-view") {
+		t.Errorf("refs g:\n%s", out)
+	}
+	callers := runOK(t, "callers", "--root", root, "g")
+	if !strings.Contains(callers, "candidate/variable-constant") {
+		t.Fatalf("callers g:\n%s", callers)
+	}
+	var doc struct {
+		Results []jsonRef `json:"results"`
+	}
+	mustJSON(t, runOK(t, "refs", "--root", root, "--json", "g"), &doc)
+	found := false
+	for _, r := range doc.Results {
+		if r.Line == 5 {
+			found = true
+			if r.Reason != "variable-constant" || r.Resolution != "candidate" || r.Relation != "calls" {
+				t.Errorf("refs g --json at line 5: %+v", r)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("refs g --json has no line 5: %+v", doc.Results)
+	}
+	if out := runOK(t, "refs", "--root", root, "f"); !strings.Contains(out, "v.sh:5:1  f  calls  candidate/unset-in-view") {
+		t.Errorf("refs f:\n%s", out)
+	}
+}
