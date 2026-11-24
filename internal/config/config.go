@@ -68,8 +68,8 @@ type Refusal struct{ File, Key, Reason string }
 
 // Settings are the merged settings.
 type Settings struct {
-	Target     analysis.VersionRange
-	Dialect    tree.Dialect // bash.dialect: fallback for files with no directive, no shebang and a .sh or no extension; 0 = Bash
+	Target     analysis.VersionRange // bash.target "MIN-MAX": only MIN drives WB1301; MAX is validated and reserved (see analysis.DiagOptions)
+	Dialect    tree.Dialect          // bash.dialect: fallback for files with no directive, no shebang and a .sh or no extension; 0 = Bash
 	Disabled   map[string]bool
 	Severity   map[string]analysis.Severity
 	ShellCheck struct {

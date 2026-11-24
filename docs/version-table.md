@@ -30,7 +30,7 @@ The vendored parser carries no per-feature version notes, so none is used.
 | `nameref` | 4.3 | fails (measured): `declare: -n: invalid option`, exit 2 | `declare`, `typeset`, `local` with `-n` | analysis (`VarAttrs.Nameref`) |
 | `wait-n` | 4.3 | fails (measured): `wait: -n: invalid option`, exit 2 | `wait` with an option word that holds `n` | analysis (command) |
 | `negative-subscript` | 4.3 | fails (measured): `bad array subscript`, exit 1 (the probe asserts the value) | a subscript that is `-` and an integer literal, in `${a[-1]}`, `a[-1]=x`, `$((a[-1]))` | front |
-| `transform-op` | 4.4 | fails (measured): `bad substitution`, exit 1 | `${v@Q}` and the other `@` operators | front |
+| `transform-op` | 4.4 | fails (measured): `bad substitution`, exit 1 | `${v@Q}` only (the other `@` operators are not flagged, see below) | front |
 | `epochseconds` | 5.0 | fails (measured): the variable is unset (exit 1 from `[ -n "${EPOCHSECONDS-}" ]`) | a read of `EPOCHSECONDS` or `EPOCHREALTIME` | analysis (variable read) |
 | `wait-p` | 5.1 | fails (measured): `wait: -p: invalid option`, exit 2 | `wait` with an option word that holds `p` | analysis (command) |
 
@@ -64,21 +64,77 @@ Reported in a file whose dialect is `sh` (shebang `sh`, `dash`, `ash`, or
 
 plus every syntactic key of the version rows (`case-modification`, `coproc`,
 `case-fallthrough`, `pipe-all`, `append-all`, `negative-subscript`,
-`transform-op`). ShellCheck codes that report the same: `SC3*` and `SC2113`.
+`transform-op`, which is `${v@Q}` only). ShellCheck codes that report the same:
+`SC3*` and `SC2113`.
+
+An `sh` file is read with the POSIX grammar first. Only when that parse has
+errors is it read again with the bash grammar, and that result is used if it
+has fewer errors; so bash-only syntax in an sh file is one WB1302 finding
+instead of a run of syntax errors, and a valid sh file gives the same tree,
+symbols and findings as a POSIX-only parse. The second parse costs one more parse of the file, only for a file that needs
+it: a bash-only hint (`[[`, `$'`, `coproc`, `source`) or an error in the POSIX
+parse. Measured with `bash-lsp ast` (mean of 8 runs) on a valid 1.1 MB sh
+file: 0.77 s with nothing to re-parse, 0.83 s with one `[[` in it, 0.84 s with
+one error in it, against 0.74 s before the change (a bash-grammar parse
+only). The 2 MiB and time budgets apply to each parse.
+
+An sh shebang is `sh`, `dash`, `ash`, `busybox sh`, `busybox ash`, and the same
+behind `env` (its options `-i`, `-v`, `-0`, `-C dir`, `-P path`, `-u name`,
+`VAR=value`, and `-S` strings).
 
 ## When a finding is not reported
 
 - **WB1301 only for bash files** (dialect `bash`). A file with an `sh`, `zsh`,
   `ksh`/`mksh` or bats dialect gets none. WB1302 only for `sh` files.
-- **A version check silences WB1301 for the whole file.** If the text mentions
-  `BASH_VERSION` or `BASH_VERSINFO` anywhere (an `if`, `[[ ]] &&`, a `case`, an
-  early `exit` before the feature, even a comment), the file is taken to guard
-  its newer features. This also misses a real unguarded feature in a file that
-  checks the version for another reason.
-- **Not detected as guards:** feature probes (`declare -A x 2>/dev/null ||
-  fallback`, `type mapfile`, `command -v`), `[ -n "${BASH_VERSION}" ]` kept in
-  another file, and checks made through `$(bash --version)`. Each is a possible
-  false positive.
+- **A version check silences the features after it, not the whole file.**
+  A read of `BASH_VERSION` or `BASH_VERSINFO` in code (an `if ((...))`, a
+  `[[ ... ]] || exit`, a `case`, an assignment that is later compared) silences
+  every feature at or after the first such read, in source order. Not a read:
+  a comment, a single-quoted string, a heredoc body, and an argument of `echo`,
+  `printf` or `log` outside a test or arithmetic (`echo "running on
+  $BASH_VERSION"` only prints). A feature written before the first read is
+  still reported.
+- **Tolerated uses.** A feature is not reported when its command is the left
+  side of `||` (`shopt -s globstar 2>/dev/null || true`), or sends standard
+  error to `/dev/null` (`2>/dev/null`, `2>>/dev/null`, `&>/dev/null`), or is
+  the right side of `&&` after a test (`[ -n "$x" ] && shopt -s globstar`), or
+  is a statement of the then-body of an `if`/`elif` whose condition holds a
+  test. A test is `[[ ]]`, `[ ]`, `test` or `(( ))`. **Known gap:** what the
+  test checks cannot be told apart from a version probe, so any test counts,
+  including `[ $# -gt 0 ] && declare -A m`: a feature behind an unrelated test
+  is missed. Still reported: top-level code, code after `;`, behind a command
+  that is not a test, in an else branch, in a loop or a function, deeper than
+  the then-body's own statements, and the right side of `||`.
+- **`EPOCHSECONDS`/`EPOCHREALTIME` inside a test** (`[[ -z $EPOCHSECONDS ]]`,
+  `[ "$EPOCHSECONDS" -gt 5 ]`, `test -n ...`, a `(( ))` condition) is how a
+  script finds out whether it has the variable, so it is not reported.
+- **Not flagged, with the reason** (no citable first version on this machine;
+  each of these fails on 3.2.57 when run, which says nothing of the version
+  that added it):
+  - `[[ -v x ]]`: fails on 3.2.57 (`conditional binary operator expected`).
+  - `mapfile` / `readarray`: see "Left out of the table".
+  - `$BASHPID`: empty on 3.2.57.
+  - bats files: a bats dialect gets neither rule.
+  - the `@` operators other than `Q`, `${v@U}`, `${v@u}`, `${v@L}`,
+    `${v@K}`, `${v@k}` (and `@a`, `@A`, `@E`, `@P`): FDS-016 names only
+    `${v@Q}`, and no source on this machine dates the others. Each fails on
+    3.2.57 with `bad substitution` (checked for `@U`, `@L`, `@u`, `@K`, `@k`,
+    `@Q`). **Unverified:** `@U`, `@u`, `@L`, `@K`, `@k`. They are neither
+    flagged by WB1301 nor reported by WB1302 until a source is cited.
+- **The release gate is open.** FDS-016 requires each row to be confirmed
+  against real bash 4.x and 5.x builds before release. Only 3.2.57 is
+  installed here and installing another bash needs the network, so this needs
+  the owner.
+- **A directive after a command on the same line covers nothing** for WB1301
+  and WB1302, as for every rule. ShellCheck 0.11.0 on a file with `echo $x #
+  shellcheck disable=SC2086` prints `SC1126: Place shellcheck directives
+  before commands, not after` (and `SC1073`, `SC1072` for the line), so it
+  does not apply the directive to that line or the next. Write the directive
+  alone on the line before the command.
+- **Not detected as guards:** feature probes other than a test or `||`
+  (`type mapfile`, `command -v`), version checks made through `$(bash
+  --version)`, and a `BASH_VERSION` check kept in another file. Each is a
+  possible false positive.
 - **A sourced file with no shebang** is silent for both rules: it runs in the
   shell that sources it.
 - **Strings, heredocs, comments.** Syntax is recorded from parser tokens, so
@@ -90,7 +146,7 @@ plus every syntactic key of the version rows (`case-modification`, `coproc`,
   such a declaration in a sourced file. An array declared where the analysis
   cannot see it is reported as 4.3.
 - **`EPOCHSECONDS`/`EPOCHREALTIME`** are not reported when the script assigns
-  them, or reads them with a fallback or test operator (`${EPOCHSECONDS:-...}`,
+  them, or reads them with a default operator (`${EPOCHSECONDS:-...}`,
   `${EPOCHSECONDS+x}`).
 - **Calls through wrappers** (`builtin shopt -s globstar`, `command wait -n`)
   and `shopt`/`wait` inside strings that are evaluated later are not seen.
@@ -102,3 +158,9 @@ version is above MIN (message: "associative arrays (`declare -A`) need bash
 4.0; the target range starts at 3.2"). With no setting the target is `3.2-5.3`
 (spec D-8), so the rule is on by default. `DiagOptions` with a zero `Target`
 means the same default.
+
+**Only MIN drives WB1301.** MAX is parsed and checked (MIN must not exceed
+MAX) and shown in the settings, but no rule reads it. Neither the spec (FDS-004,
+D-8) nor the task brief gives it a use; it is kept for rules about what newer
+bash changes or removes, which do not exist yet. Narrowing MAX therefore does
+not change any finding.

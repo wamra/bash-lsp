@@ -49,7 +49,10 @@ type RuleInfo struct {
 
 // DiagOptions are the settings diagnostics depend on: the bash versions the
 // scripts target, the rules turned off and per-rule severities. A zero
-// Target means DefaultTarget.
+// Target means DefaultTarget. Only Target.Min drives WB1301 (a feature is
+// reported when its first version is above it); Target.Max is validated and
+// carried but no rule reads it yet, and is kept for rules about what newer
+// bash changes or removes.
 type DiagOptions struct {
 	Target   VersionRange
 	Disabled map[string]bool

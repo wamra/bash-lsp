@@ -93,3 +93,29 @@ func TestWB1301VersionReads(t *testing.T) {
 		})
 	}
 }
+
+// A directive after a command on the same line covers nothing, for these
+// rules as for the others: ShellCheck 0.11.0 refuses one there (SC1126,
+// "Place shellcheck directives before commands, not after"), and bash-lsp
+// does not apply it to the next line either.
+func TestVersionRulesTrailingDirective(t *testing.T) {
+	src := "#!/bin/bash\necho start\ndeclare -A m # bash-lsp disable=WB1301\ndeclare -A n\n"
+	got := ofRule(diagsWith(t, oneFile(src), "x.sh", "3.2-5.3"), "WB1301")
+	if len(got) != 2 {
+		t.Fatalf("trailing directive silenced something:\n%s", describe(src, got))
+	}
+	for dir, line := range map[string]string{
+		"bash-lsp":  "[[ -n $x ]] # bash-lsp disable=WB1302",
+		"shellcheck": "[[ -n $x ]] # shellcheck disable=SC3010",
+	} {
+		src := "#!/bin/sh\necho start\n" + line + "\n[[ -n $y ]]\n"
+		if got := ofRule(diagsWith(t, oneFile(src), "x.sh", ""), "WB1302"); len(got) != 2 {
+			t.Errorf("%s: trailing directive silenced something:\n%s", dir, describe(src, got))
+		}
+	}
+	// Alone on the line before the command, it does silence it.
+	src = "#!/bin/bash\necho start\n# bash-lsp disable=WB1301\ndeclare -A m\n"
+	if got := ofRule(diagsWith(t, oneFile(src), "x.sh", "3.2-5.3"), "WB1301"); len(got) != 0 {
+		t.Fatalf("leading directive:\n%s", describe(src, got))
+	}
+}
