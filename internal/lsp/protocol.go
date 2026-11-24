@@ -230,6 +230,10 @@ func capabilities() map[string]any {
 		"codeActionProvider":              map[string]any{"codeActionKinds": []string{"quickfix"}},
 		"documentFormattingProvider":      true,
 		"documentRangeFormattingProvider": true,
+		"foldingRangeProvider":            true,
+		"selectionRangeProvider":          true,
+		"documentHighlightProvider":       true,
+		"documentLinkProvider":            map[string]any{"resolveProvider": false},
 	}
 }
 

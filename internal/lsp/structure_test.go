@@ -1,0 +1,220 @@
+package lsp
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+
+	"github.com/wamra/bash-lsp/analysis"
+)
+
+const lspFoldSrc = "# one\n# two\n# three\nf() {\n  if true; then\n    cat <<EOF\nbody\nEOF\n  fi\n}\n# region setup\nx=1\n# endregion\n"
+
+func foldText(fs []foldingRange) string {
+	var out []string
+	for _, f := range fs {
+		out = append(out, fmt.Sprintf("(%d,%d,%s)", f.StartLine, f.EndLine, f.Kind))
+	}
+	return strings.Join(out, " ")
+}
+
+var structFolds = []analysis.Fold{{StartLine: 0, EndLine: 2, Kind: "comment"}, {StartLine: 3, EndLine: 9, Kind: ""}, {StartLine: 4, EndLine: 8, Kind: ""}, {StartLine: 5, EndLine: 7, Kind: ""}, {StartLine: 10, EndLine: 12, Kind: "region"}}
+
+func TestFoldingRangesCaps(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		caps clientCaps
+		want string
+	}{
+		{"plain", clientCaps{}, "(0,2,comment) (3,9,) (4,8,) (5,7,) (10,12,region)"},
+		{"lineFoldingOnly", clientCaps{LineFoldingOnly: true}, "(0,2,comment) (3,8,) (4,7,) (5,6,) (10,12,region)"},
+		{"rangeLimit 2", clientCaps{RangeLimit: 2}, "(3,9,) (4,8,)"},
+		{"rangeLimit above the count", clientCaps{RangeLimit: 9}, "(0,2,comment) (3,9,) (4,8,) (5,7,) (10,12,region)"},
+		{"both", clientCaps{LineFoldingOnly: true, RangeLimit: 3}, "(0,2,comment) (3,8,) (4,7,)"},
+	} {
+		if got := foldText(foldingRanges(structFolds, tc.caps)); got != tc.want {
+			t.Errorf("%s: %s, want %s", tc.name, got, tc.want)
+		}
+	}
+	// a two-line bracket fold has no line left to fold with lineFoldingOnly
+	if got := foldingRanges([]analysis.Fold{{StartLine: 0, EndLine: 1, Kind: ""}, {StartLine: 2, EndLine: 3, Kind: "comment"}}, clientCaps{LineFoldingOnly: true}); foldText(got) != "(2,3,comment)" {
+		t.Errorf("two-line fold: %s", foldText(got))
+	}
+}
+
+func TestFoldingRangeRequest(t *testing.T) {
+	ws := t.TempDir()
+	writeFile(t, ws, "a.sh", lspFoldSrc)
+	c := client(t, ws)
+	c.open("a.sh")
+	raw := c.call("textDocument/foldingRange", map[string]any{"textDocument": map[string]any{"uri": c.uri("a.sh")}})
+	var got []foldingRange
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("%v: %s", err, raw)
+	}
+	if want := "(0,2,comment) (3,9,) (4,8,) (5,7,) (10,12,region)"; foldText(got) != want {
+		t.Fatalf("%s, want %s", foldText(got), want)
+	}
+	if strings.Contains(string(raw), "startCharacter") {
+		t.Fatalf("columns on a fold: %s", raw)
+	}
+}
+
+type selNode struct {
+	Range  Range    `json:"range"`
+	Parent *selNode `json:"parent"`
+}
+
+func (c *testClient) selection(rel string, ps ...Position) []selNode {
+	c.t.Helper()
+	raw := c.call("textDocument/selectionRange", map[string]any{"textDocument": map[string]any{"uri": c.uri(rel)}, "positions": ps})
+	var out []selNode
+	if err := json.Unmarshal(raw, &out); err != nil {
+		c.t.Fatalf("%v: %s", err, raw)
+	}
+	return out
+}
+
+func TestSelectionRangeRequest(t *testing.T) {
+	ws := t.TempDir()
+	const src = "f() { echo \"$x\"; }\n"
+	writeFile(t, ws, "a.sh", src)
+	c := client(t, ws)
+	c.open("a.sh")
+	got := c.selection("a.sh", c.pos("a.sh", "$x", 1), Position{5, 0})
+	if len(got) != 2 {
+		t.Fatalf("%d answers for two positions", len(got))
+	}
+	var texts []string
+	for n := &got[0]; n != nil; n = n.Parent {
+		r := n.Range
+		if r.Start.Line != 0 || r.End.Line > 1 {
+			t.Fatalf("range %+v", r)
+		}
+		line := src
+		if r.End.Line == 1 {
+			texts = append(texts, line[r.Start.Character:])
+		} else {
+			texts = append(texts, line[r.Start.Character:r.End.Character])
+		}
+	}
+	want := []string{"x", "$x", "\"$x\"", "echo \"$x\"", "{ echo \"$x\"; }", "f() { echo \"$x\"; }", src}
+	if strings.Join(texts, "|") != strings.Join(want, "|") {
+		t.Fatalf("chain %q, want %q", texts, want)
+	}
+	// a position past the end still answers one range
+	if got[1].Parent != nil && got[1].Range.Start.Line > 6 {
+		t.Fatalf("far position: %+v", got[1])
+	}
+}
+
+func (c *testClient) highlights(rel string, p Position) []documentHighlight {
+	c.t.Helper()
+	raw := c.call("textDocument/documentHighlight", map[string]any{"textDocument": map[string]any{"uri": c.uri(rel)}, "position": p})
+	var out []documentHighlight
+	if err := json.Unmarshal(raw, &out); err != nil {
+		c.t.Fatalf("%v: %s", err, raw)
+	}
+	return out
+}
+
+func TestDocumentHighlightRequest(t *testing.T) {
+	c := client(t, copyCorpus(t))
+	c.open("main.sh")
+	var got []string
+	for _, h := range c.highlights("main.sh", c.pos("main.sh", `local name="$1"`, 6)) {
+		got = append(got, fmt.Sprintf("%d:%d", h.Range.Start.Line+1, h.Kind))
+	}
+	if want := "5:3 6:2 7:2"; strings.Join(got, " ") != want {
+		t.Fatalf("highlights %v, want %s", got, want)
+	}
+	if hs := c.highlights("main.sh", Position{0, 0}); len(hs) != 0 {
+		t.Fatalf("highlights on the shebang: %v", hs)
+	}
+}
+
+func TestStructureUTF16(t *testing.T) {
+	ws := t.TempDir()
+	writeFile(t, ws, "lib.sh", "g() { :; }\n")
+	const src = "x=1\n: \"😀\" \"$x\"\necho \"😀\"; source ./lib.sh\n"
+	writeFile(t, ws, "a.sh", src)
+	c := client(t, ws)
+	c.open("a.sh")
+	hs := c.highlights("a.sh", Position{0, 0})
+	if len(hs) != 2 || hs[0].Range != (Range{Position{0, 0}, Position{0, 1}}) || hs[0].Kind != 3 ||
+		hs[1].Range != (Range{Position{1, 9}, Position{1, 10}}) || hs[1].Kind != 2 {
+		t.Fatalf("highlights: %+v", hs)
+	}
+	raw := c.call("textDocument/documentLink", map[string]any{"textDocument": map[string]any{"uri": c.uri("a.sh")}})
+	var links []documentLink
+	if err := json.Unmarshal(raw, &links); err != nil {
+		t.Fatalf("%v: %s", err, raw)
+	}
+	if len(links) != 1 || links[0].Range != (Range{Position{2, 18}, Position{2, 26}}) || links[0].Target != c.uri("lib.sh") || links[0].Tooltip != "source → lib.sh" {
+		t.Fatalf("links: %s", raw)
+	}
+	sel := c.selection("a.sh", Position{1, 9})
+	if sel[0].Range != (Range{Position{1, 9}, Position{1, 10}}) || sel[0].Parent.Range != (Range{Position{1, 8}, Position{1, 10}}) {
+		t.Fatalf("selection around the emoji: %+v", sel[0])
+	}
+}
+
+func TestAC09DocumentLink(t *testing.T) {
+	c := client(t, copyCorpus(t))
+	c.open("dyn.sh")
+	raw := c.call("textDocument/documentLink", map[string]any{"textDocument": map[string]any{"uri": c.uri("dyn.sh")}})
+	var links []documentLink
+	if err := json.Unmarshal(raw, &links); err != nil {
+		t.Fatalf("%v: %s", err, raw)
+	}
+	var got []string
+	for _, l := range links {
+		got = append(got, fmt.Sprintf("%d:%s", l.Range.Start.Line+1, c.relOf(l.Target)))
+	}
+	if want := "3:lib/util.sh"; !contains(got, want) {
+		t.Fatalf("links %v, want %s among them (%s)", got, want, raw)
+	}
+	if strings.Contains(string(raw), "resolveProvider") || strings.Contains(string(raw), `"data"`) {
+		t.Fatalf("links carry resolve data: %s", raw)
+	}
+}
+
+func TestDocumentLinkShebangAndGlob(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no absolute /bin/sh")
+	}
+	ws := t.TempDir()
+	writeFile(t, ws, "a.sh", "#!/bin/sh\nfor f in mods/*.sh; do . \"$f\"; done\n")
+	if err := os.MkdirAll(filepath.Join(ws, "mods"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, ws, "mods/m1.sh", "m1() { :; }\n")
+	writeFile(t, ws, "mods/m2.sh", "m2() { :; }\n")
+	c := client(t, ws)
+	c.open("a.sh")
+	raw := c.call("textDocument/documentLink", map[string]any{"textDocument": map[string]any{"uri": c.uri("a.sh")}})
+	var links []documentLink
+	if err := json.Unmarshal(raw, &links); err != nil {
+		t.Fatalf("%v: %s", err, raw)
+	}
+	if len(links) != 1 || !strings.HasSuffix(links[0].Target, "/bin/sh") || links[0].Range != (Range{Position{0, 2}, Position{0, 9}}) {
+		t.Fatalf("links: %s", raw)
+	}
+}
+
+func TestStructureCapabilities(t *testing.T) {
+	caps := capabilities()
+	for _, k := range []string{"foldingRangeProvider", "selectionRangeProvider", "documentHighlightProvider"} {
+		if caps[k] != true {
+			t.Errorf("%s = %v", k, caps[k])
+		}
+	}
+	b, _ := json.Marshal(caps["documentLinkProvider"])
+	if string(b) != `{"resolveProvider":false}` {
+		t.Errorf("documentLinkProvider = %s", b)
+	}
+}
