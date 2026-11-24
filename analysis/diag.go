@@ -196,10 +196,10 @@ type diagCtx struct {
 	disabled   map[string]bool // rules turned off: they do not run
 	extraRoots []string        // workspace folders besides the snapshot's root
 
-	oneWords      map[*Symbol]bool     // WB1401: symbols whose every value is one word, on first need
-	graph         *callGraph           // calls between the functions in view, on first need
-	reach         map[string]reachable // per name, the functions its locals may reach by calls
-	unresolvedFns map[*tree.Node]bool  // functions of the file that call a name resolving to nothing in view, on first need
+	oneWords      map[*Symbol]bool    // WB1401: symbols whose every value is one word, on first need
+	graph         *callGraph          // calls between the functions in view, on first need
+	lreach        *localReach         // which functions a name's locals may reach by calls, on first need
+	unresolvedFns map[*tree.Node]bool // functions of the file that call a name resolving to nothing in view, on first need
 
 	union     *nameUnion      // what the file's visibility reads or names, built on first need
 	wantReads map[string]bool // the names WB1202 asks readByName about (nil: all)
@@ -489,12 +489,12 @@ func mentionWalkNeeded(src []byte) bool {
 		return true
 	}
 	for i := bytes.IndexByte(src, '-'); i >= 0 && i+1 < len(src); {
-		if i == 0 || src[i-1] == ' ' || src[i-1] == '\t' || src[i-1] == '\n' || src[i-1] == ';' {
+		if i == 0 || clusterStart[src[i-1]] {
 			j := i + 1
 			for j < len(src) && optionLetter[src[j]] {
 				j++
 			}
-			end := j == len(src) || src[j] == ' ' || src[j] == '\t' || src[j] == '\n' || src[j] == ';' || src[j] == ']'
+			end := j == len(src) || clusterEnd[src[j]]
 			if run := src[i+1 : j]; len(run) > 0 && end && (bytes.ContainsAny(run, "vpa") || arithOps[string(src[i:j])]) {
 				return true
 			}
@@ -515,6 +515,21 @@ var optionLetter = func() (t [256]bool) {
 		t[c] = true
 	}
 	return t
+}()
+
+// clusterStart and clusterEnd hold the bytes that may stand before and
+// after an option cluster: blanks, `;`, a quote (`set "-a"`), and after it
+// `]` and a redirect or pipe (`set -a>/dev/null`). Not `)`: `(set -a)` and
+// `$(set -a)` change no option of the shell, and the walk does not tell a
+// subshell apart.
+var clusterStart, clusterEnd = func() (s, e [256]bool) {
+	for _, c := range " \t\n;\"'" {
+		s[c], e[c] = true, true
+	}
+	for _, c := range "]<>|&" {
+		e[c] = true
+	}
+	return s, e
 }()
 
 // wordsOf returns the words of file (fileMentions describes them), made on
@@ -608,7 +623,9 @@ func scanFile(ff *FileFacts) *fileScan {
 	}
 	// IFS: a function with `local IFS` changes it for itself and what it
 	// calls; any other assignment (not a one-command prefix, not a bare
-	// `export IFS`) changes it everywhere.
+	// `export IFS`), by `=` or by a builtin that writes it (`read IFS`,
+	// `for IFS in`, `printf -v IFS`, `mapfile`, `getopts`, arithmetic),
+	// changes it everywhere.
 	for _, d := range ifsDecls {
 		if fn := funcBody(d.Scope); fn != nil && d.Attrs.Local {
 			if sc.localIFS == nil {
@@ -619,7 +636,7 @@ func scanFile(ff *FileFacts) *fileScan {
 	}
 	for _, d := range ifsDecls {
 		i := d.NameRange.End.Offset
-		assigns := i >= 0 && i < len(src) && (src[i] == '=' || src[i] == '+')
+		assigns := d.Implicit != "" || i >= 0 && i < len(src) && (src[i] == '=' || src[i] == '+')
 		if fn := funcBody(d.Scope); assigns && !d.Attrs.Local && (fn == nil || !sc.localIFS[fn]) {
 			sc.setsIFS = true
 		}
@@ -1032,6 +1049,34 @@ func codeDollarNames(m map[string]bool, f *tree.File, want map[string]bool) {
 		}
 		return inertText(loc.At(i), src)
 	}
+	// heredocOp: the tree decides whether the `<<` at i, which reads as a
+	// heredoc operator, is one (a redirect holding a heredoc) or a shift in
+	// arithmetic (`$((1<<2))`, `(( y = 1 << n ))`, `${a[1<<2]}`). With no
+	// tree, or in code the parser skipped, the text decides.
+	heredocOp := func(i int) bool {
+		if f.Root == nil {
+			return true
+		}
+		if loc == nil {
+			loc = f.NewLocator()
+		}
+		n := loc.At(i)
+		if n == nil || n.Kind == tree.KErrorGap || n.Enclosing(tree.KErrorGap) != nil {
+			return true
+		}
+		// The redirect must start at i, or at its fd just before (`3<<`,
+		// `{fd}<<`): redirects hang off the statement, so the deepest node
+		// at a shift in a later argument can be the redirect too.
+		if a := n.Range.Start.Offset; n.Kind != tree.KRedirect || a > i || !fdPrefix(src[a:i]) {
+			return false
+		}
+		for _, k := range n.Children {
+			if k.Kind == tree.KHeredoc {
+				return true
+			}
+		}
+		return false
+	}
 	// name reads the name after the `$` at i; k is past it, 0 for none.
 	name := func(i int) (j, k int) {
 		j = i + 1
@@ -1129,7 +1174,7 @@ func codeDollarNames(m map[string]bool, f *tree.File, want map[string]bool) {
 					i += 2
 					continue
 				}
-				if h, end, ok := heredocAt(src, i); ok {
+				if h, end, ok := heredocAt(src, i); ok && heredocOp(i) {
 					heredocs = append(heredocs, h)
 					i = end - 1
 				}
@@ -1158,6 +1203,26 @@ func codeDollarNames(m map[string]bool, f *tree.File, want map[string]bool) {
 			record(j, k, state == single, i)
 		}
 	}
+}
+
+// fdPrefix reports text that may stand before a redirect operator: nothing,
+// an fd number or `{name}`.
+func fdPrefix(p []byte) bool {
+	if len(p) >= 3 && p[0] == '{' && p[len(p)-1] == '}' {
+		p = p[1 : len(p)-1]
+		for _, c := range p {
+			if !isIdentChar(c) {
+				return false
+			}
+		}
+		return true
+	}
+	for _, c := range p {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 var lexStopNormal, lexStopSingle, lexStopDouble [256]bool

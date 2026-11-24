@@ -797,57 +797,197 @@ func (c *diagCtx) calls() *callGraph {
 	return g
 }
 
-// reachable is every function symbol a call chain from one of starts may
-// reach (the starts included), found breadth first along the call graph;
-// all is set when a function on the way has calls that are not all known.
-type reachable struct {
-	fns map[*Symbol]bool
-	all bool
+// reachBudget is the most functions one search below visits, from a reader
+// back along its callers or from a name's declaring functions along their
+// callees. Both searches are first tried with reachProbe, so the short one
+// of the two decides. When both pass reachBudget, the answer is the one that
+// drops the proof (a local may reach the reader): a deep call graph costs a
+// finding, never time.
+const (
+	reachProbe  = 16
+	reachBudget = 512
+)
+
+// localReach answers, for the caller-local checks, whether a function that
+// declares a name local may reach a function by calls; it is built once per
+// diagnostics run, and each answer is found by short searches, not by one
+// search over the whole graph per name.
+type localReach struct {
+	g            *callGraph
+	callers      map[*Symbol][]*Symbol
+	toIncomplete map[*Symbol]bool            // functions with a call chain to one whose calls are not all known
+	declaring    map[string]map[*Symbol]bool // per name, the functions in view declaring it local
+	open         map[string]bool             // per name: a declaring function reaches calls that are not all known
+	reached      map[string]downSet          // per name, what its declaring functions reach
+	answers      map[reachQuestion]bool
 }
 
-func (c *diagCtx) reachableFrom(starts []*Symbol) reachable {
-	g := c.calls()
-	r := reachable{fns: map[*Symbol]bool{}}
-	queue := append([]*Symbol(nil), starts...)
-	for len(queue) > 0 {
-		d := queue[0]
-		queue = queue[1:]
-		if r.fns[d] {
-			continue
-		}
-		r.fns[d] = true
-		if g.incomplete[d] {
-			r.all = true
-			return r
-		}
-		queue = append(queue, g.callees[d]...)
+// downSet is what a name's declaring functions reach (fns, once a search
+// finished) or the budget a search passed (tried).
+type downSet struct {
+	fns   map[*Symbol]bool
+	tried int
+}
+
+type reachQuestion struct {
+	name string
+	fn   *Symbol
+}
+
+func (c *diagCtx) localReach() *localReach {
+	if c.lreach != nil {
+		return c.lreach
 	}
-	return r
-}
-
-// functionsWith returns the functions in view holding a declaration that
-// matches keep (in its own body, not at file level).
-func (c *diagCtx) functionsWith(keep func(*Decl) bool) []*Symbol {
 	s := c.s
-	var out []*Symbol
-	seen := map[*Symbol]bool{}
+	g := c.calls()
+	x := &localReach{g: g, callers: map[*Symbol][]*Symbol{}, toIncomplete: map[*Symbol]bool{},
+		declaring: map[string]map[*Symbol]bool{}, open: map[string]bool{}, reached: map[string]downSet{},
+		answers: map[reachQuestion]bool{}}
+	for from, tos := range g.callees {
+		for _, to := range tos {
+			x.callers[to] = append(x.callers[to], from)
+		}
+	}
+	var queue []*Symbol
+	for d := range g.incomplete {
+		x.toIncomplete[d] = true
+		queue = append(queue, d)
+	}
+	for len(queue) > 0 {
+		d := queue[len(queue)-1]
+		queue = queue[:len(queue)-1]
+		for _, p := range x.callers[d] {
+			if !x.toIncomplete[p] {
+				x.toIncomplete[p] = true
+				queue = append(queue, p)
+			}
+		}
+	}
 	s.visible[c.file].each(func(j int) {
 		ff := s.facts[j]
 		if ff == nil {
 			return
 		}
 		for _, d := range ff.Decls {
-			if d.Kind == DeclVariable && keep(d) {
-				if fn := funcBody(d.Scope); fn != nil {
-					if fd := s.funcDeclOf(j, fn); fd != nil && !seen[s.declSym[fd]] {
-						seen[s.declSym[fd]] = true
-						out = append(out, s.declSym[fd])
+			if d.Kind != DeclVariable || !d.Attrs.Local {
+				continue
+			}
+			if fn := funcBody(d.Scope); fn != nil {
+				if fd := s.funcDeclOf(j, fn); fd != nil {
+					m := x.declaring[d.Name]
+					if m == nil {
+						m = map[*Symbol]bool{}
+						x.declaring[d.Name] = m
 					}
+					m[s.declSym[fd]] = true
 				}
 			}
 		}
 	})
-	return out
+	c.lreach = x
+	return x
+}
+
+// reaches reports whether a function in view that declares name local may
+// call, through any chain, the function around sc, or reaches a function
+// whose calls are not all known (then it may call anything).
+func (x *localReach) reaches(c *diagCtx, name string, sc *Scope) bool {
+	starts := x.declaring[name]
+	if len(starts) == 0 {
+		return false
+	}
+	open, ok := x.open[name]
+	if !ok {
+		for d := range starts {
+			if x.toIncomplete[d] {
+				open = true
+				break
+			}
+		}
+		x.open[name] = open
+	}
+	if open {
+		return true
+	}
+	d := c.s.callerOfScope(c.file, sc)
+	if d == nil {
+		return false
+	}
+	q := reachQuestion{name, c.s.declSym[d]}
+	if v, ok := x.answers[q]; ok {
+		return v
+	}
+	var v, done bool
+	for _, limit := range []int{reachProbe, reachBudget} {
+		if v, done = x.up(q.fn, starts, limit); done {
+			break
+		}
+		if v, done = x.down(name, starts, q.fn, limit); done {
+			break
+		}
+	}
+	v = v || !done
+	x.answers[q] = v
+	return v
+}
+
+// up searches from fn back along its callers for one of starts; done is
+// false when the search passed limit before finding one or finishing.
+func (x *localReach) up(fn *Symbol, starts map[*Symbol]bool, limit int) (found, done bool) {
+	seen := map[*Symbol]bool{fn: true}
+	queue := []*Symbol{fn}
+	for len(queue) > 0 {
+		d := queue[0]
+		queue = queue[1:]
+		if starts[d] {
+			return true, true
+		}
+		for _, p := range x.callers[d] {
+			if !seen[p] {
+				if len(seen) >= limit {
+					return false, false
+				}
+				seen[p] = true
+				queue = append(queue, p)
+			}
+		}
+	}
+	return false, true
+}
+
+// down reports whether the declaring functions of name (starts) reach fn;
+// done is false when their search passed limit. A finished search is kept
+// per name.
+func (x *localReach) down(name string, starts map[*Symbol]bool, fn *Symbol, limit int) (found, done bool) {
+	ds := x.reached[name]
+	if ds.fns != nil {
+		return ds.fns[fn], true
+	}
+	if ds.tried >= limit {
+		return false, false
+	}
+	r := map[*Symbol]bool{}
+	var queue []*Symbol
+	for d := range starts {
+		r[d] = true
+		queue = append(queue, d)
+	}
+	for len(queue) > 0 {
+		d := queue[0]
+		queue = queue[1:]
+		for _, k := range x.g.callees[d] {
+			if !r[k] {
+				if len(r) >= limit {
+					x.reached[name] = downSet{tried: limit}
+					return false, false
+				}
+				r[k] = true
+				queue = append(queue, k)
+			}
+		}
+	}
+	x.reached[name] = downSet{fns: r}
+	return r[fn], true
 }
 
 // callerLocal reports whether a function that declares name local may call
@@ -857,28 +997,7 @@ func (c *diagCtx) callerLocal(name string, sc *Scope) bool {
 	if !c.visibleFlag(func(f *fileScan) bool { return f.localNames[name] }) {
 		return false
 	}
-	return c.reachesCached(name, sc, func(d *Decl) bool { return d.Attrs.Local && d.Name == name })
-}
-
-// reachesCached reports whether the function around sc is reachable from
-// the functions holding a declaration that matches keep; the reachable set
-// is found once per key.
-func (c *diagCtx) reachesCached(key string, sc *Scope, keep func(*Decl) bool) bool {
-	if c.reach == nil {
-		c.reach = map[string]reachable{}
-	}
-	r, ok := c.reach[key]
-	if !ok {
-		r = c.reachableFrom(c.functionsWith(keep))
-		c.reach[key] = r
-	}
-	if r.all {
-		return true
-	}
-	if d := c.s.callerOfScope(c.file, sc); d != nil {
-		return r.fns[c.s.declSym[d]]
-	}
-	return false
+	return c.localReach().reaches(c, name, sc)
 }
 
 // underLocalIFS reports whether the function around sc declares `local
@@ -887,7 +1006,7 @@ func (c *diagCtx) underLocalIFS(sc *Scope) bool {
 	if !c.visibleFlag(func(f *fileScan) bool { return len(f.localIFS) > 0 }) {
 		return false
 	}
-	return c.reachesCached("\x00IFS", sc, func(d *Decl) bool { return d.Attrs.Local && d.Name == "IFS" })
+	return c.localReach().reaches(c, "IFS", sc)
 }
 
 // visibleFlag reports whether f holds for the scan of some visible file.
