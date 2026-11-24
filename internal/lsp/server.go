@@ -103,14 +103,14 @@ type server struct {
 	initialized  bool
 	shutdown     bool
 	hierarchical bool
-	resolvedOnly bool     // initialization option references.resolvedOnly
 	watchDynamic bool     // the client registers didChangeWatchedFiles dynamically
 	roots        []string // the workspace folders as the client spelled them
 	initOpts     json.RawMessage
 	shownMu      sync.Mutex
 	shown        map[string]bool      // messages shown to the user this session (warnOnce)
 	logged       map[string]bool      // internal parser errors logged this session (logInternal)
-	looseDiag    analysis.DiagOptions // settings of documents outside every folder
+	looseSt      config.Settings      // settings of documents outside every folder
+	looseDiag    analysis.DiagOptions // its diagnostic part
 	profileOnce  sync.Once
 	profile      *extool.Profile // the PATH profile, read once per session (pathProfile)
 
@@ -274,7 +274,6 @@ func (s *server) initialize(raw json.RawMessage) (any, *rpcError) {
 	}
 	s.initialized = true
 	s.hierarchical = p.Capabilities.TextDocument.DocumentSymbol.Hierarchical
-	s.resolvedOnly = resolvedOnlyOption(p.InitializationOptions, s.log)
 	s.initOpts = p.InitializationOptions
 	s.watchDynamic = p.Capabilities.Workspace.DidChangeWatchedFiles.DynamicRegistration
 	s.roots = rootsOf(p, s.log)
@@ -282,25 +281,6 @@ func (s *server) initialize(raw json.RawMessage) (any, *rpcError) {
 		go s.pathProfile() // read while the client sends `initialized` and the folders are walked
 	}
 	return initializeResult{Capabilities: capabilities(), ServerInfo: serverInfo{Name: "bash-lsp", Version: s.version}}, nil
-}
-
-// resolvedOnlyOption reads `{"references": {"resolvedOnly": true}}` from the
-// initialization options. Anything else, or a value of the wrong type, means
-// the default (false); a malformed value is logged, never an error.
-func resolvedOnlyOption(raw json.RawMessage, lg *log.Logger) bool {
-	if len(raw) == 0 || string(raw) == "null" {
-		return false
-	}
-	var o struct {
-		References struct {
-			ResolvedOnly bool `json:"resolvedOnly"`
-		} `json:"references"`
-	}
-	if err := json.Unmarshal(raw, &o); err != nil {
-		lg.Printf("ignoring initializationOptions: %v", err)
-		return false
-	}
-	return o.References.ResolvedOnly
 }
 
 // rootsOf picks the workspace folders, else rootUri, else rootPath. A
@@ -339,7 +319,8 @@ func (s *server) startWorkspace() {
 	}
 	s.started = true
 	s.loose = newDocsOnly()
-	s.looseDiag = s.settings("")
+	s.looseSt = s.loadSettings("")
+	s.looseDiag = diagOptionsOf(s.looseSt)
 	if len(s.roots) == 0 {
 		close(s.ready)
 		return
@@ -529,14 +510,20 @@ func (s *server) diagOptions(be backend) analysis.DiagOptions {
 	return opt
 }
 
-// settings loads the settings of a folder root ("" for documents outside
-// every folder: the user file and initialization options only) and logs
-// what was ignored, including rule ids no native rule has.
-func (s *server) settings(root string) analysis.DiagOptions {
-	return diagOptionsOf(s.loadSettings(root))
+// settingsOf returns the settings of the folder be serves; the loose
+// documents' settings for any other backend.
+func (s *server) settingsOf(be backend) config.Settings {
+	for _, f := range s.folders {
+		if backend(f.ws) == be {
+			return f.st
+		}
+	}
+	return s.looseSt
 }
 
-// loadSettings loads the settings of root and logs what was ignored.
+// loadSettings loads the settings of a folder root ("" for documents outside
+// every folder: the user file and initialization options only) and logs what
+// was ignored, including rule ids no native rule has.
 func (s *server) loadSettings(root string) config.Settings {
 	st := config.Load(root, s.initOpts)
 	for _, w := range st.Warnings {
@@ -697,7 +684,7 @@ func (s *server) references(raw json.RawMessage) (any, *rpcError) {
 	if rerr != nil || !ok {
 		return []Location{}, rerr
 	}
-	if s.resolvedOnly {
+	if be, _, rerr := s.locate(p.TextDocument.URI); rerr == nil && s.settingsOf(be).ResolvedOnly {
 		return s.locations(snap, snap.ResolvedReferences(path, off, p.Context.IncludeDeclaration)), nil
 	}
 	return s.locations(snap, snap.References(path, off, p.Context.IncludeDeclaration)), nil

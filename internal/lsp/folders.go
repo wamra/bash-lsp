@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/wamra/bash-lsp/analysis"
+	"github.com/wamra/bash-lsp/internal/config"
 	"github.com/wamra/bash-lsp/internal/workspace"
 )
 
@@ -34,7 +36,8 @@ import (
 type folder struct {
 	client string // the root as the client spelled it, cleaned
 	ws     *workspace.Workspace
-	diag   analysis.DiagOptions // from the folder's settings, loaded when it opened
+	st     config.Settings      // the folder's settings (see reloadSettings)
+	diag   analysis.DiagOptions // their diagnostic part
 }
 
 // declaredFolder is a folder the client named, served or not.
@@ -123,7 +126,7 @@ func (s *server) reconcile(declared []declaredFolder, existing []*folder) []*fol
 			for _, n := range ws.Report().Notices {
 				s.log.Printf("workspace %s: %s", d.client, n)
 			}
-			f = &folder{client: d.client, ws: ws, diag: diagOptionsOf(st)}
+			f = &folder{client: d.client, ws: ws, st: st, diag: diagOptionsOf(st)}
 		}
 		out = append(out, f)
 		at[f] = i
@@ -273,8 +276,15 @@ func (s *server) didChangeFolders(raw json.RawMessage) *rpcError {
 }
 
 // isGitignore reports whether path names a .gitignore file: the only files
-// whose change can alter which directories a folder's walk reaches.
-func isGitignore(path string) bool { return filepath.Base(path) == ".gitignore" }
+// whose change can alter which directories a folder's walk reaches. fold is
+// the folder's CaseInsensitive: on a case-folding volume `.GitIgnore` is the
+// same file.
+func isGitignore(path string, fold bool) bool {
+	if fold {
+		return strings.EqualFold(filepath.Base(path), ".gitignore")
+	}
+	return filepath.Base(path) == ".gitignore"
+}
 
 // sameRoot reports whether two resolved roots name one directory: equal
 // spellings, or the same directory on disk (a case variant on a
@@ -402,7 +412,7 @@ func (s *server) didChangeWatched(raw json.RawMessage) *rpcError {
 			order = append(order, f)
 		}
 		paths[f] = append(paths[f], filepath.Clean(path))
-		if isGitignore(path) {
+		if isGitignore(path, f.ws.CaseInsensitive()) {
 			// An open .gitignore keeps its buffer, which the walk never
 			// reads, so the whole folder is refreshed from disk.
 			ignores = true
@@ -438,7 +448,7 @@ func (s *server) didSave(raw json.RawMessage) *rpcError {
 		return nil
 	}
 	if f, _ := s.folderOfClient(path); f != nil {
-		if isGitignore(path) {
+		if isGitignore(path, f.ws.CaseInsensitive()) {
 			f.ws.Refresh()
 			s.queueFolderJob()
 			return nil
