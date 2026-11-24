@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sort"
 	"strconv"
@@ -111,6 +112,27 @@ type Doc struct {
 	Results    any      `json:"results"`
 	Truncated  bool     `json:"truncated,omitempty"`
 	Lines      []string `json:"-"`
+}
+
+// Len is the number of records of the list; Cut returns a copy of the answer
+// with the list cut to k records and "truncated": true. The MCP adapter uses
+// them to hold a reply to its size cap by dropping records, never bytes.
+func (d *Doc) Len() int {
+	if rv := reflect.ValueOf(d.Results); rv.Kind() == reflect.Slice {
+		return rv.Len()
+	}
+	return 0
+}
+
+// Cut is described at Len.
+func (d *Doc) Cut(k int) any {
+	c := *d
+	c.Lines = nil
+	if rv := reflect.ValueOf(d.Results); rv.Kind() == reflect.Slice && k < rv.Len() {
+		c.Results = rv.Slice(0, max(k, 0)).Interface()
+		c.Truncated = true
+	}
+	return &c
 }
 
 // Marshal encodes v the way every command and tool prints it: two-space
@@ -798,6 +820,7 @@ type StatusDoc struct {
 	Limits        []string       `json:"limits"`
 	NestingErrors int            `json:"nesting_errors"`
 	Cache         string         `json:"cache"`
+	Truncated     bool           `json:"truncated,omitempty"`
 }
 
 // StatusOption adds what the workspace report does not carry.
@@ -853,7 +876,23 @@ func Status(s *analysis.Snapshot, rep workspace.Report, cfg config.Settings, opt
 	if dialects == nil {
 		dialects = map[string]int{}
 	}
-	return &StatusDoc{s.Generation(), o.root, rep.Files, dialects, rep.Skipped, skipped, limits, nesting, "none"}
+	return &StatusDoc{s.Generation(), o.root, rep.Files, dialects, rep.Skipped, skipped, limits, nesting, "none", false}
+}
+
+// Len is the longer of the two lists of the answer; Cut cuts both to k
+// records. See Doc.Len.
+func (d *StatusDoc) Len() int { return max(len(d.SkippedFiles), len(d.Limits)) }
+
+// Cut is described at Len.
+func (d *StatusDoc) Cut(k int) any {
+	c := *d
+	if k < len(c.SkippedFiles) {
+		c.SkippedFiles, c.Truncated = c.SkippedFiles[:k], true
+	}
+	if k < len(c.Limits) {
+		c.Limits, c.Truncated = c.Limits[:k], true
+	}
+	return &c
 }
 
 // Lines is the text form of the status.
