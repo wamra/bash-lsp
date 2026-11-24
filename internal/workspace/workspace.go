@@ -247,7 +247,7 @@ type Workspace struct {
 	// Fixed at Open (Config).
 	commands func(name string) (string, bool)
 	include  *ignore.Set // nil: every file the walk lists
-	exclude  *ignore.Set // never nil
+	exclude  excludeSets // never empty
 	dialect  tree.Dialect
 	srcDirs  []string // sources.paths: absolute, inside the root
 	notes    []string // sources.paths entries dropped
@@ -259,6 +259,7 @@ type Config struct {
 	Commands    func(name string) (string, bool) // PATH profile lookup; nil = no command edges
 	Include     []string                         // gitignore syntax, root-relative; nil = every file discovery lists, else only matching files (a directory pattern includes what is below it)
 	Exclude     []string                         // matching files and directories are skipped, as .gitignore'd ones are; wins over a .gitignore negation and over Include
+	RepoExclude []string                         // a second list of the same kind, with its own negations: a path is skipped when either list skips it
 	SourcePaths []string                         // root-relative directories searched by `source`, after the .shellcheckrc ones; one that is absolute, spelled with ~ or $, or resolves outside the root is dropped and reported in Report.Notices
 	Dialect     tree.Dialect                     // fallback dialect for a file that names none; 0 = Bash
 }
@@ -303,7 +304,7 @@ func OpenWith(root string, lim Limits, exclude []string, cfg Config) (*Workspace
 	if w.dialect == 0 {
 		w.dialect = tree.Bash
 	}
-	w.exclude = patternSet(cfg.Exclude)
+	w.exclude = excludeSets{patternSet(cfg.Exclude), patternSet(cfg.RepoExclude)}
 	if cfg.Include != nil {
 		w.include = patternSet(cfg.Include)
 	}
@@ -1217,6 +1218,19 @@ func (w *Workspace) ignoredPath(rel string, dir bool) bool {
 
 // patternSet compiles files.include or files.exclude patterns (gitignore
 // syntax, relative to the root) into one matcher.
+// excludeSets are the exclude lists; a path is excluded when any list
+// excludes it, and a negation works only inside its own list.
+type excludeSets []*ignore.Set
+
+func (e excludeSets) Ignored(rel string, isDir bool) bool {
+	for _, s := range e {
+		if s.Ignored(rel, isDir) {
+			return true
+		}
+	}
+	return false
+}
+
 func patternSet(patterns []string) *ignore.Set {
 	set := &ignore.Set{}
 	set.Add(ignore.Parse("", []byte(strings.Join(patterns, "\n"))))

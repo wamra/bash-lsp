@@ -48,6 +48,7 @@ A comment directive silences findings:
   header). After a command on the same line, before `else` or `elif`, between
   case arms, or with no command after it in its block, it applies to nothing.
 - The settings key `diagnostics.disable` turns a rule off everywhere.
+- The settings key `files.exclude` skips files and directories (gitignore syntax). The user file and the repo file each have their own list with their own `!` negations, and a path is skipped when either list skips it: a repo negation cannot bring back what the user excluded, and a repo pattern skips a file the user's list re-included (user `["*", "!keep.sh"]` with repo `["*.sh"]` skips `keep.sh`).
 
 ## Command line
 

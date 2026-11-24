@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/wamra/bash-lsp/internal/workspace"
@@ -96,29 +95,44 @@ func TestWorkspaceKeysFromSettings(t *testing.T) {
 	}
 }
 
-// The repo file adds to the user's excludes; it cannot take one away, and a
-// negation in it cannot bring back what the user excluded.
-func TestRepoExcludeAddsToUserExclude(t *testing.T) {
+// The user's excludes and the repo's are two lists, each with its own
+// negations: a path is excluded when either list excludes it.
+func TestRepoExcludeIsASeparateList(t *testing.T) {
 	root := t.TempDir()
+	put(t, root, "top.sh", "t() { :; }\n")
+	put(t, root, "keep.sh", "k() { :; }\n")
 	put(t, root, "vendor/x.sh", "x() { :; }\n")
 	put(t, root, "gen/g.sh", "g() { :; }\n")
 	put(t, root, "src/s.sh", "s() { :; }\n")
-	user := "[files]\nexclude = [\"vendor/**\"]\n"
-	repo := "[files]\nexclude = [\"gen/**\", \"!vendor/x.sh\"]\n"
-	s := Merge([]byte(user), []byte(repo), nil)
-	if got, want := rels(openSettings(t, root, s, nil)), []string{"src/s.sh"}; !slices.Equal(got, want) {
-		t.Errorf("files = %v, want %v", got, want)
+	files := func(user, repo string) ([]string, []string) {
+		var u, r []byte
+		if user != "" {
+			u = []byte(user)
+		}
+		if repo != "" {
+			r = []byte(repo)
+		}
+		s := Merge(u, r, nil)
+		return rels(openSettings(t, root, s, nil)), s.Warnings
 	}
-	found := false
-	for _, w := range s.Warnings {
-		found = found || strings.Contains(w, "negat")
+	// A repo negation works on the repo's own patterns.
+	got, warns := files("", "[files]\nexclude = [\"*.sh\", \"!top.sh\"]\n")
+	if want := []string{"top.sh"}; !slices.Equal(got, want) || len(warns) != 0 {
+		t.Errorf("repo [*.sh, !top.sh]: files %v warnings %q, want %v and none", got, warns, want)
 	}
-	if !found {
-		t.Errorf("no warning for the dropped negation: %q", s.Warnings)
+	// It cannot bring back what the user excluded.
+	got, warns = files("[files]\nexclude = [\"vendor/**\"]\n", "[files]\nexclude = [\"gen/**\", \"!vendor/x.sh\"]\n")
+	if slices.Contains(got, "vendor/x.sh") || slices.Contains(got, "gen/g.sh") || !slices.Contains(got, "src/s.sh") || len(warns) != 0 {
+		t.Errorf("user vendor + repo gen, !vendor/x.sh: files %v warnings %q", got, warns)
 	}
-	// With no user file the repo's own excludes apply as before.
-	r := Merge(nil, []byte("[files]\nexclude = [\"gen/**\"]\n"), nil)
-	if got := rels(openSettings(t, root, r, nil)); slices.Contains(got, "gen/g.sh") || !slices.Contains(got, "vendor/x.sh") {
-		t.Errorf("repo only: %v", got)
+	// Either list excludes: the repo's *.sh takes keep.sh out although the user re-included it.
+	got, _ = files("[files]\nexclude = [\"*\", \"!keep.sh\"]\n", "[files]\nexclude = [\"*.sh\"]\n")
+	if slices.Contains(got, "keep.sh") {
+		t.Errorf("user [*, !keep.sh] + repo [*.sh]: %v, want keep.sh excluded", got)
+	}
+	// The user's list alone keeps its negation.
+	got, _ = files("[files]\nexclude = [\"*\", \"!keep.sh\"]\n", "")
+	if !slices.Contains(got, "keep.sh") {
+		t.Errorf("user [*, !keep.sh]: %v", got)
 	}
 }
