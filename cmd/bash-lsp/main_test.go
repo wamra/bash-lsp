@@ -493,7 +493,7 @@ func TestHelp(t *testing.T) {
 	}
 	for _, args := range cases {
 		code, out, errs := runCode(t, args...)
-		if code != 0 || !strings.HasPrefix(out, "usage: bash-lsp") || errs != "" {
+		if code != 0 || !strings.HasPrefix(out, "usage: bash-lsp") || errs != "" || strings.HasSuffix(out, "\n\n") {
 			t.Errorf("%v: exit %d stdout %q stderr %q", args, code, out, errs)
 		}
 	}

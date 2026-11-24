@@ -34,11 +34,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		args = []string{"serve"}
 	}
 	if isHelp(args) {
-		if args[0] == "check" || len(args) > 1 && args[0] == "help" && args[1] == "check" {
-			fmt.Fprintln(stdout, checkUsage)
-		} else {
-			fmt.Fprintln(stdout, usage)
+		cmd := args[0]
+		if cmd == "help" && len(args) > 1 {
+			cmd = args[1]
 		}
+		fmt.Fprintln(stdout, strings.TrimRight(helpText(cmd), "\n"))
 		return 0
 	}
 	switch args[0] {
@@ -82,6 +82,23 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "bash-lsp: unknown command %q\n%s\n", args[0], usage)
 		return 2
 	}
+}
+
+// helpText is the usage of command cmd, or of the program for any other word.
+func helpText(cmd string) string {
+	switch cmd {
+	case "check":
+		return checkUsage
+	case "fmt":
+		return fmtHelp
+	case "search":
+		return searchUsage
+	case "mcp":
+		return mcpUsage
+	case "status", "callers", "callees", "refs", "impact", "trace", "unresolved", "cycles":
+		return graphUsage
+	}
+	return usage
 }
 
 // isHelp reports whether args ask for the usage: "help" or a help flag first,
