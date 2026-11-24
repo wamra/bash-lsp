@@ -11,21 +11,28 @@ Only `internal/front` imports it (`boundary_test.go` at the repository root).
   parsing"). `go.sum` lines of that version:
   `h1:KNSILCN8TpA1+ytVyUR+OfaGV1Fl8myrnaOVgmc1K6M=` and
   `/go.mod h1:fiX5Z1I9lku4M1awdjesFL8qRLU32fJSTJuOoj2dzIk=`.
-- Copied unchanged from the module's `syntax/` directory: `doc.go`,
-  `lexer.go`, `nodes.go`, `parser.go`, `parser_arithm.go`, `tokens.go`,
-  `tokens_parse.go`, `token_string.go`, `walk.go`, and `LICENSE` from the
-  module root. Commit 67e84c7 is that copy, byte for byte (`cmp` against the
-  module cache).
+- Copied from the module's `syntax/` directory: `doc.go`, `lexer.go`,
+  `nodes.go`, `parser.go`, `parser_arithm.go`, `tokens.go`, `tokens_parse.go`,
+  `token_string.go`, `walk.go` and `simplify.go`, and `LICENSE` from the
+  module root. Commit 67e84c7 is the copy of the first nine, byte for byte
+  (`cmp` against the module cache); `simplify.go` is copied unchanged too.
+  `printer.go` is copied and patched (its import of
+  `mvdan.cc/sh/v3/fileutil` is gone and its one `fileutil.Shebang` call is
+  `Shebang`), so no commit holds it pristine: the patch has the hunk.
 - Why each: `parser.go`, `parser_arithm.go` and `lexer.go` are the parser;
   `nodes.go`, `tokens.go`, `token_string.go` and `tokens_parse.go` are the
   types and tables it uses; `walk.go` is what `visitAll` in `internal/front`
   mirrors and is tested against (`TestVisitAllMatchesWalk`); `doc.go` is the
-  package documentation; the licence requires `LICENSE`.
-- Left out, because nothing here uses them: `printer.go` (it imports
-  `mvdan.cc/sh/v3/fileutil`), `braces.go`, `quote.go`, `simplify.go`,
+  package documentation; the licence requires `LICENSE`; `printer.go` and
+  `simplify.go` are the formatter (`internal/front/format.go`), the
+  simplifier being what the `Simplify` option runs.
+- Left out, because nothing here uses them: `braces.go`, `quote.go`,
   `gen_token_parse.go` (a generator, not part of the build), the `typedjson`
   package, and upstream's tests and test data.
-- Ours: `bash-lsp.patch` (the changes to upstream's files),
+- Ours: `shebang.go` (`Shebang` and `shebangRe`, verbatim from
+  `mvdan.cc/sh/v3/fileutil/file.go`, with an origin comment: the printer
+  calls it and nothing here may import the upstream module),
+  `bash-lsp.patch` (the changes to upstream's files),
   `depth_test.go`, `bash-lsp_test.go`, this file.
 
 ## Why it is vendored
@@ -36,7 +43,7 @@ A Go stack overflow is fatal, and upstream's parser is recursive. Commit
 levels`. That commit is not in a release, and three things remained that a
 release would not fix either. They are the patch.
 
-## The patch (`bash-lsp.patch`: 3 files, 13 lines added, 2 removed)
+## The patch (`bash-lsp.patch`: 4 files, 14 lines added, 5 removed)
 
 1. `lexer.go`, `(*Parser).next`: after a comment the lexer called itself to
    read the next token, one stack frame per comment line. 2 MiB of `#` lines
@@ -57,6 +64,10 @@ release would not fix either. They are the patch.
    reaches `doHeredocs` again only through word parts, which are counted).
    They are counted so that `TestEveryRecursionIsCounted` needs no exception
    for them.
+4. `printer.go`: the import of `mvdan.cc/sh/v3/fileutil` is removed and the
+   call `fileutil.Shebang` (in `(*Printer).comments`, only reached with
+   `Minify`) is `Shebang`, defined in `shebang.go`. Nothing else in the
+   printer differs from upstream.
 
 Items 1 and 2 are bugs in upstream at `0e0eb36bb6dd`, and also at `v3.14.1`
 and at `95154f9b8122` (the tip when this was written). They are worth
@@ -65,17 +76,25 @@ repository owner's decision.
 
 ## Upgrading
 
+A pristine `printer.go` imports `mvdan.cc/sh/v3/fileutil` and does not build
+here, so there is no commit that holds a pristine copy of all files. The git
+index holds it instead.
+
 1. Fetch the new version into the module cache (network access needed):
    `go mod download mvdan.cc/sh/v3@<version>` from a scratch module outside
    this repository.
-2. Replace the nine upstream files and `LICENSE` here with the new ones, and
-   commit that alone (a pristine copy, checked with `cmp`). If upstream added
-   a file that the nine need, copy it too and list it above.
+2. Copy all the upstream files listed above (`syntax/*.go` that are listed
+   as copied, and `LICENSE`) over the ones here, `cmp` each against the module
+   cache, and `git add` them. The index now holds the pristine bytes. If
+   upstream added a file that these need, copy it too and list it above.
 3. `git apply internal/front/syntax/bash-lsp.patch`. For each hunk that no
    longer applies, read upstream's new code: if upstream fixed the problem,
-   drop the hunk; otherwise redo it by hand.
-4. Regenerate the patch file:
-   `git diff <pristine commit> -- internal/front/syntax/lexer.go internal/front/syntax/parser.go internal/front/syntax/parser_arithm.go > internal/front/syntax/bash-lsp.patch`.
+   drop the hunk; otherwise redo it by hand. The package must build (the
+   `printer.go` hunk and `shebang.go` are what make it build).
+4. Regenerate the patch file before committing, so the diff is the working
+   tree against the pristine index:
+   `git diff -- internal/front/syntax/lexer.go internal/front/syntax/parser.go internal/front/syntax/parser_arithm.go internal/front/syntax/printer.go > internal/front/syntax/bash-lsp.patch`.
+   Commit the copied files, the patched files and the patch together.
 5. Update the version, hashes and commit ids in this file, in `NOTICE` and in
    `docs/m2a-nesting-design.md`.
 

@@ -3,7 +3,9 @@ Copyright (c) 2026 wamra. Licensed under the MIT License (see LICENSE).
 
 This repository and the bash-lsp binary include a modified copy of the
 package mvdan.cc/sh/v3/syntax (https://github.com/mvdan/sh, commit
-0e0eb36bb6dd) in internal/front/syntax. The changes are listed in
+0e0eb36bb6dd) in internal/front/syntax, with its printer and simplifier, and
+a copy of the function Shebang from the package mvdan.cc/sh/v3/fileutil (same
+commit, same licence). The changes are listed in
 internal/front/syntax/bash-lsp.patch. The package is licensed under the
 BSD 3-Clause License (internal/front/syntax/LICENSE):
 

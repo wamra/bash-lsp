@@ -62,3 +62,25 @@ index 175732d..8f56eae 100644
  		return ue
  	case leftParen:
  		if p.quote == paramExpArithm && p.lang.in(LangZsh) {
+diff --git a/internal/front/syntax/printer.go b/internal/front/syntax/printer.go
+index 7d42542..bf3f0ee 100644
+--- a/internal/front/syntax/printer.go
++++ b/internal/front/syntax/printer.go
+@@ -11,8 +11,6 @@ import (
+ 	"strings"
+ 	"text/tabwriter"
+ 	"unicode"
+-
+-	"mvdan.cc/sh/v3/fileutil"
+ )
+ 
+ // PrinterOption is a function which can be passed to NewPrinter
+@@ -658,7 +656,7 @@ func (p *Printer) flushComments() {
+ func (p *Printer) comments(comments ...Comment) {
+ 	if p.minify {
+ 		for _, c := range comments {
+-			if fileutil.Shebang([]byte("#"+c.Text)) != "" && c.Hash.Col() == 1 && c.Hash.Line() == 1 {
++			if Shebang([]byte("#"+c.Text)) != "" && c.Hash.Col() == 1 && c.Hash.Line() == 1 {
+ 				p.w.WriteString(strings.TrimRightFunc("#"+c.Text, unicode.IsSpace))
+ 				p.w.WriteString("\n")
+ 				p.line++
