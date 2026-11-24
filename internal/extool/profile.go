@@ -117,11 +117,15 @@ type dirResult struct {
 
 // readDirBounded reads dir in chunks, keeping at most budget program-like
 // names (over is set when there were more), within profileDirTimeout. The
-// read runs in its own goroutine that touches only its own values: on a
+// read runs in its own goroutine that touches only values copied for it: on a
 // time-out it is left to finish (or hang) on its own.
 func (p *Profile) readDirBounded(dir string, budget int, limit time.Duration) (dirResult, error) {
 	done := make(chan dirResult, 1)
-	go func() { done <- p.readNames(dir, budget) }()
+	// Everything the goroutine uses is copied here, on the caller's side: openDir and
+	// maxProfileNames are package variables (a test restores them after an abandoned read) and the
+	// goroutine may only start running after this call has returned.
+	open, exts, maxNames := openDir, p.exts, maxProfileNames
+	go func() { done <- readNames(open, exts, maxNames, dir, budget) }()
 	timer := time.NewTimer(limit)
 	defer timer.Stop()
 	select {
@@ -132,8 +136,8 @@ func (p *Profile) readDirBounded(dir string, budget int, limit time.Duration) (d
 	}
 }
 
-func (p *Profile) readNames(dir string, budget int) (res dirResult) {
-	r, err := openDir(dir)
+func readNames(open func(string) (dirReader, error), exts []string, maxNames int, dir string, budget int) (res dirResult) {
+	r, err := open(dir)
 	if err != nil {
 		res.err = err
 		return
@@ -143,7 +147,7 @@ func (p *Profile) readNames(dir string, budget int) (res dirResult) {
 	for {
 		ents, err := r.ReadDir(profileChunk)
 		for _, e := range ents {
-			if read++; read > 2*maxProfileNames {
+			if read++; read > 2*maxNames {
 				res.over = true
 				return
 			}
@@ -151,9 +155,9 @@ func (p *Profile) readNames(dir string, budget int) (res dirResult) {
 				continue
 			}
 			name := e.Name()
-			if p.exts != nil {
+			if exts != nil {
 				ext := strings.ToLower(filepath.Ext(name))
-				if !slices.Contains(p.exts, ext) {
+				if !slices.Contains(exts, ext) {
 					continue
 				}
 				name = strings.TrimSuffix(name, filepath.Ext(name))
