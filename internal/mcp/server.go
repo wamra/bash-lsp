@@ -48,7 +48,7 @@ const (
 	callTimeout = 60 * time.Second
 )
 
-// protocolVersions are the versions offered, newest first (Decision 21).
+// protocolVersions are the versions offered, newest first.
 var protocolVersions = []string{"2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"}
 
 // negotiate is the client's version when it is offered, else the newest.
@@ -77,8 +77,8 @@ var registry struct {
 }
 
 // Register adds t to the tools the server offers, or replaces the tool of
-// the same name. M3 registers ten tools in tools.go; a later milestone adds
-// its own the same way.
+// the same name. tools.go registers the ten tools of the server; another
+// package can add its own the same way.
 func Register(t Tool) {
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
@@ -149,11 +149,7 @@ type server struct {
 }
 
 func newServer(root string, cfg config.Settings, version string, logw io.Writer) (*server, error) {
-	prof := extool.ProfileFromEnv()
-	if cfg.PathProfile != nil {
-		prof = extool.NewProfile(cfg.PathProfile)
-	}
-	ws, err := workspace.OpenWith(root, cfg.Limits(), nil, cfg.Workspace(prof.Commands()))
+	ws, prof, err := query.OpenWith(root, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -253,9 +249,7 @@ func errorReply(id json.RawMessage, code int, msg string) []byte {
 	if len(id) == 0 {
 		id = json.RawMessage("null")
 	}
-	if len(msg) > maxMsgBytes {
-		msg = clipUTF8(msg, maxMsgBytes)
-	}
+	msg = safeClip(msg, maxMsgBytes)
 	b, _ := json.Marshal(struct {
 		JSONRPC string          `json:"jsonrpc"`
 		ID      json.RawMessage `json:"id"`
@@ -266,7 +260,7 @@ func errorReply(id json.RawMessage, code int, msg string) []byte {
 	}{JSONRPC: "2.0", ID: id, Error: struct {
 		Code    int    `json:"code"`
 		Message string `json:"message"`
-	}{code, redact.String(msg)}})
+	}{code, msg}})
 	return b
 }
 
@@ -281,6 +275,10 @@ func resultReply(id json.RawMessage, result any) []byte {
 	}
 	return b
 }
+
+// safeClip redacts s, then cuts it to n bytes at a rune boundary: a secret is
+// never cut into a piece the patterns no longer match.
+func safeClip(s string, n int) string { return clipUTF8(redact.String(s), n) }
 
 func clipUTF8(s string, n int) string {
 	if len(s) <= n {
@@ -420,7 +418,7 @@ func (s *server) handle(frame []byte) (reply []byte) {
 	if len(method) >= len("notifications/") && method[:len("notifications/")] == "notifications/" {
 		return errorReply(id, codeInvalidRequest, "a notification takes no id")
 	}
-	return errorReply(id, codeMethodNotFound, "method not found: "+clipUTF8(method, 64))
+	return errorReply(id, codeMethodNotFound, "method not found: "+method)
 }
 
 // callTool runs a tools/call request.
@@ -434,7 +432,7 @@ func (s *server) callTool(id json.RawMessage, params json.RawMessage) []byte {
 	}
 	t, ok := lookupTool(p.Name)
 	if !ok {
-		return errorReply(id, codeInvalidParams, "unknown tool: "+clipUTF8(p.Name, 64))
+		return errorReply(id, codeInvalidParams, "unknown tool: "+p.Name)
 	}
 	args := bytes.TrimSpace(p.Arguments)
 	if len(args) == 0 || bytes.Equal(args, []byte("null")) {
@@ -454,15 +452,15 @@ func (s *server) callTool(id json.RawMessage, params json.RawMessage) []byte {
 	defer cancel()
 	v, err := s.safeCall(ctx, t, args)
 	if err != nil {
-		s.log.Printf("tools/call %s failed: %v", clipUTF8(p.Name, 64), err)
-		return textReply(id, redact.String(clipUTF8(err.Error(), 4096)), true)
+		s.log.Printf("tools/call %s failed: %v", safeClip(p.Name, 64), err)
+		return textReply(id, safeClip(err.Error(), 4096), true)
 	}
 	reply, err := render(id, v)
 	if err != nil {
-		s.log.Printf("tools/call %s failed: %v", clipUTF8(p.Name, 64), err)
+		s.log.Printf("tools/call %s failed: %v", safeClip(p.Name, 64), err)
 		return textReply(id, err.Error(), true)
 	}
-	s.log.Printf("tools/call %s ok in %v", clipUTF8(p.Name, 64), time.Since(start).Round(time.Millisecond))
+	s.log.Printf("tools/call %s ok in %v", safeClip(p.Name, 64), time.Since(start).Round(time.Millisecond))
 	return reply
 }
 

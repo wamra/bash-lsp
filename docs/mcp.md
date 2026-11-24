@@ -27,7 +27,7 @@ A symbol is a function name, a root-relative file path, or `path:line:col` with 
 
 The graph answers are the documents the command line prints with `--json`, from the same encoder (`internal/query`): the same question gives the same bytes on both (`TestAC20`). `get_callers` on `lib/util.sh:4:1` equals `bash-lsp callers lib/util.sh:4:1 --json`. The text content of a result is that document.
 
-M4 adds `preview_rename` by calling `mcp.Register`; a tool reaches the refreshed snapshot, the root and the settings through `mcp.SessionFrom(ctx)`.
+Another package adds a tool by calling `mcp.Register`; a tool reaches the refreshed snapshot, the root and the settings through `mcp.SessionFrom(ctx)`.
 
 ## What bounds a call
 
@@ -36,10 +36,10 @@ M4 adds `preview_rename` by calling `mcp.Register`; a tool reaches the refreshed
 - **Nothing is executed from the workspace.** No tool starts a program of the workspace. `search_code` starts code-index, found by `extool.Find` from `codeindex.path` in the user settings or from `PATH`; a program inside the root, by its own path or after resolving links, is refused, and so is a `PATH` entry inside it.
 - **Arguments.** At most 64 KiB, a JSON object nested at most 32 deep (the whole request line too), each string at most 4096 bytes without NUL, at most 256 paths. Unknown members and wrong types are refused. `depth` is 0 or more.
 - **Requests.** A line over 1 MiB is read to its end without being kept and answered with an error (id null). Batch arrays get one error and none of their elements run. An id must be a string (at most 256 bytes) or a number; any other id, `null` included, is answered with an error whose id is null. A message with no id is a notification and is never answered. Unknown methods are answered with -32601, a notification method sent with an id with -32600, anything unparsable with -32700. Tools may be called without `initialize`.
-- **Graph depth.** `depth` 0 or above 64 runs at 64 levels; the answer carries `"truncated": true` when more levels existed (Decision 24).
+- **Graph depth.** `depth` 0 or above 64 runs at 64 levels; the answer carries `"truncated": true` when more levels existed.
 - **Lists.** At most 10,000 records per list, `"truncated": true` when cut.
 - **Replies.** At most 1 MiB per reply line. When a reply would be longer, records are dropped from the end of the list until it fits, never bytes from the middle of the JSON, and the answer says `"truncated": true`. `truncated` is absent when nothing was cut.
-- **Redaction.** Strings in every answer, every error text and every log line pass through `internal/redact`. Patterns: `AKIA[0-9A-Z]{16}`, `gh[pousr]_[A-Za-z0-9]{36,}`, `github_pat_[A-Za-z0-9_]{22,}`, `xox[abprs]-[A-Za-z0-9-]{10,}`, `-----BEGIN [A-Z ]*PRIVATE KEY-----`, and `(?i)(password|passwd|secret|token|api_?key)=\S+` (the value only). Answers are redacted string by string inside the JSON, so keys, order and delimiters are untouched. A secret in a format not listed passes through.
+- **Redaction.** Strings in every answer of the server and of `search`, every error text and every log line pass through `internal/redact`. Patterns: `AKIA[0-9A-Z]{16}`, `gh[pousr]_[A-Za-z0-9]{36,}`, `github_pat_[A-Za-z0-9_]{22,}`, `xox[abprs]-[A-Za-z0-9-]{10,}`, `-----BEGIN [A-Z ]*PRIVATE KEY-----`, and `(?i)(password|passwd|secret|token|api_?key)=\S+` (the value only). Answers are redacted string by string inside the JSON, so keys, order and delimiters are untouched. A secret in a format not listed passes through.
 
 ## `search`
 
@@ -57,7 +57,7 @@ with the text as one argument after `--`, so a text such as `--mode=auto` cannot
 
 A non-zero exit gives `used: false` and `reason` = the first line code-index wrote to standard error, cut to 200 bytes and redacted. The hits are code-index's own records. There is no database check beforehand.
 
-The run goes through the same runner as ShellCheck: environment filtered to what a program needs (a `PATH` without entries inside the root, `HOME`, locale, temp), a 10 s timeout, 1 MiB of output. Its working directory is the file system root, not the workspace. code-index finds its database from the working directory, so the server names it instead with `CODE_INDEX_DB`: the user's own value when set, else `<root>/.Wammy/code.sqlite`, which is where code-index looks for a repository root. Checked against a real code-index build (index made by `code-index index`, search run by `bash-lsp search` from the file system root): the hits come back and the index is the workspace's.
+The run goes through the same runner as ShellCheck: environment filtered to what a program needs (a `PATH` without entries inside the root, `HOME`, locale, temp), a 10 s timeout, 1 MiB of output. Its working directory is the file system root, not the workspace. code-index finds its database from the working directory, so the server names it instead with `CODE_INDEX_DB`. The value is the user's own `$CODE_INDEX_DB` when set. Otherwise it is found the way code-index's own lookup finds it from a directory inside the root: the nearest directory upward that holds a `.git` is the repository and its `.Wammy/code.sqlite` is the index (so `--root repo/scripts` finds the index of `repo`); with no `.git`, the nearest directory upward that holds `.Wammy/code.sqlite`; with none, `<root>/.Wammy/code.sqlite`. A database that is a symlink or any other non-regular file is refused (`used: false`, with the reason). Checked against a real code-index build (index made by `code-index index`, search run by `bash-lsp search` from the file system root): the hits come back and the index is the workspace's.
 
 ## Protocol facts
 

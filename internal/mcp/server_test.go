@@ -655,3 +655,32 @@ func (o outPipe) next(t testing.TB) map[string]any {
 	}
 	return nil
 }
+
+// Error text is redacted before it is cut, so a token that straddles the cut
+// is gone whole, in the reply and in the log.
+func TestMCPRedactsBeforeClipping(t *testing.T) {
+	token := "ghp_" + strings.Repeat("Y", 36)
+	root := workspaceRoot(t, nil)
+	var in []string
+	for pad := 40; pad < 80; pad += 5 {
+		m := strings.Repeat("m", pad) + token
+		in = append(in, fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":%q}`, pad, m))
+		in = append(in, call(1000+pad, "get_callers", map[string]any{"symbol": strings.Repeat("s", pad) + token}))
+		in = append(in, fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":%q}}`, 2000+pad, strings.Repeat("n", pad)+token))
+	}
+	// a long message: the cut falls inside the token
+	for pad := 270; pad < 300; pad += 4 {
+		in = append(in, fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":%q}`, 3000+pad, strings.Repeat("m", pad)+token))
+	}
+	s := serve(t, root, config.Settings{}, in...)
+	for _, bad := range []string{"ghp_", "YYYY"} {
+		if strings.Contains(string(s.out), bad) || strings.Contains(s.logs, bad) {
+			t.Fatalf("a piece of the token (%s) is in the output or the log", bad)
+		}
+	}
+	for _, r := range s.replies(t) {
+		if e, ok := r["error"].(map[string]any); ok && len(e["message"].(string)) > maxMsgBytes {
+			t.Errorf("message of %d bytes", len(e["message"].(string)))
+		}
+	}
+}
