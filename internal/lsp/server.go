@@ -329,10 +329,11 @@ func (s *server) initialize(raw json.RawMessage) (any, *rpcError) {
 		}
 	}
 	s.initialized = true
-	s.hierarchical = p.Capabilities.TextDocument.DocumentSymbol.Hierarchical
+	cc := readClientCapabilities(p.Capabilities, s.log)
+	s.hierarchical = cc.TextDocument.DocumentSymbol.Hierarchical
 	s.initOpts = p.InitializationOptions
-	s.ccaps = capsOf(p)
-	s.watchDynamic = p.Capabilities.Workspace.DidChangeWatchedFiles.DynamicRegistration
+	s.ccaps = capsOf(cc)
+	s.watchDynamic = cc.Workspace.DidChangeWatchedFiles.DynamicRegistration
 	s.roots = rootsOf(p, s.log)
 	if len(s.roots) > 0 {
 		go s.pathProfile() // read while the client sends `initialized` and the folders are walked
@@ -350,8 +351,23 @@ type clientCaps struct {
 	SemanticTokensRefresh, InlayHintRefresh           bool // workspace.semanticTokens.refreshSupport; workspace.inlayHint.refreshSupport
 }
 
-func capsOf(p initializeParams) clientCaps {
-	td, ws := p.Capabilities.TextDocument, p.Capabilities.Workspace
+// readClientCapabilities decodes the client capabilities. A value of the
+// wrong type is left out and logged: one malformed optional capability must
+// not fail initialize. encoding/json skips the offending field and decodes
+// the rest, so well-formed siblings still count.
+func readClientCapabilities(raw json.RawMessage, lg *log.Logger) clientCapabilities {
+	var cc clientCapabilities
+	if len(raw) == 0 {
+		return cc
+	}
+	if err := json.Unmarshal(raw, &cc); err != nil {
+		lg.Printf("client capabilities: %v; the malformed value is ignored", err)
+	}
+	return cc
+}
+
+func capsOf(cc clientCapabilities) clientCaps {
+	td, ws := cc.TextDocument, cc.Workspace
 	ann := bytes.TrimSpace(ws.WorkspaceEdit.ChangeAnnotationSupport)
 	return clientCaps{
 		RenamePrepare:         td.Rename.PrepareSupport,

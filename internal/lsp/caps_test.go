@@ -1,7 +1,11 @@
 package lsp
 
 import (
+	"math"
+	"unicode/utf8"
+
 	"encoding/json"
+	"github.com/wamra/bash-lsp/analysis"
 	"io"
 	"strings"
 	"testing"
@@ -59,5 +63,61 @@ func TestResponseLogNamesMethod(t *testing.T) {
 	s.response(message{ID: json.RawMessage(`"bash-lsp/2"`), Error: errBody})
 	if !strings.Contains(logs.String(), "files changed outside the editor are seen only on didSave or reopen") {
 		t.Errorf("the watcher failure lost its wording: %q", logs.String())
+	}
+}
+
+func TestClientCapsRefreshFlagsAreDistinct(t *testing.T) {
+	sem := initServer(t, `{"capabilities":{"workspace":{"semanticTokens":{"refreshSupport":true}}}}`).caps()
+	if !sem.SemanticTokensRefresh || sem.InlayHintRefresh {
+		t.Errorf("semanticTokens only: %+v", sem)
+	}
+	inl := initServer(t, `{"capabilities":{"workspace":{"inlayHint":{"refreshSupport":true}}}}`).caps()
+	if inl.SemanticTokensRefresh || !inl.InlayHintRefresh {
+		t.Errorf("inlayHint only: %+v", inl)
+	}
+}
+
+func TestMalformedOptionalCapabilityDoesNotFailInitialize(t *testing.T) {
+	var logs syncBuffer
+	s := newServer(strings.NewReader(""), io.Discard, &logs, "test")
+	params := `{"capabilities":{
+	  "textDocument":{"rename":{"prepareSupport":"yes"},"foldingRange":{"rangeLimit":1e30,"lineFoldingOnly":true},"signatureHelp":7},
+	  "workspace":{"workspaceEdit":5,"semanticTokens":{"refreshSupport":true}}}}`
+	if _, rerr := s.initialize(json.RawMessage(params)); rerr != nil {
+		t.Fatalf("initialize failed: %v", rerr)
+	}
+	got := s.caps()
+	if got.RenamePrepare || !got.LineFoldingOnly || !got.SemanticTokensRefresh {
+		t.Errorf("well-formed siblings lost: %+v", got)
+	}
+	if got.RangeLimit < 0 {
+		t.Errorf("RangeLimit %d", got.RangeLimit)
+	}
+	if !strings.Contains(logs.String(), "client capabilities") {
+		t.Errorf("malformed capability not logged: %q", logs.String())
+	}
+}
+
+func TestFoldingRangeLimitHuge(t *testing.T) {
+	folds := []analysis.Fold{{StartLine: 0, EndLine: 3}, {StartLine: 1, EndLine: 2}}
+	if got := foldingRanges(folds, clientCaps{RangeLimit: math.MaxInt}); len(got) != 2 {
+		t.Errorf("got %v", got)
+	}
+}
+
+func TestResponseLogIsRedactedAndRuneSafe(t *testing.T) {
+	var logs syncBuffer
+	s := newServer(strings.NewReader(""), io.Discard, &logs, "test")
+	s.pending = map[string]string{"bash-lsp/1": "workspace/semanticTokens/refresh", "bash-lsp/2": "workspace/semanticTokens/refresh"}
+	secret := "ghp_" + strings.Repeat("a", 36)
+	s.response(message{ID: json.RawMessage(`"bash-lsp/1"`), Error: json.RawMessage(`{"code":1,"message":"token=` + secret + `"}`)})
+	if strings.Contains(logs.String(), secret) {
+		t.Errorf("secret in log: %q", logs.String())
+	}
+	// A 3-byte rune straddling the 200-byte cut.
+	body := `{"message":"` + strings.Repeat("a", 186) + strings.Repeat("€", 20) + `"}`
+	s.response(message{ID: json.RawMessage(`"bash-lsp/2"`), Error: json.RawMessage(body)})
+	if !utf8.ValidString(logs.String()) {
+		t.Errorf("log is not valid UTF-8: %q", logs.String())
 	}
 }

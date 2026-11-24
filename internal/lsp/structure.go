@@ -91,7 +91,7 @@ func foldingRanges(folds []analysis.Fold, c clientCaps) []foldingRange {
 		idx[i] = i
 	}
 	sort.SliceStable(idx, func(a, b int) bool { return depth[idx[a]] < depth[idx[b]] })
-	idx = idx[:c.RangeLimit]
+	idx = idx[:min(c.RangeLimit, len(idx))]
 	sort.Ints(idx)
 	kept := make([]foldingRange, len(idx))
 	for i, k := range idx {

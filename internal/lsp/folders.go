@@ -6,9 +6,11 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/wamra/bash-lsp/analysis"
 	"github.com/wamra/bash-lsp/internal/config"
+	"github.com/wamra/bash-lsp/internal/redact"
 	"github.com/wamra/bash-lsp/internal/workspace"
 )
 
@@ -378,9 +380,13 @@ func (s *server) response(m message) {
 	}
 	delete(s.pending, id)
 	if len(m.Error) > 0 && string(m.Error) != "null" {
-		msg := string(m.Error)
+		msg := redact.String(string(m.Error)) // redact first, so the cut cannot split a credential
 		if len(msg) > 200 {
-			msg = msg[:200] + "..."
+			cut := 200
+			for cut > 0 && !utf8.RuneStart(msg[cut]) {
+				cut--
+			}
+			msg = msg[:cut] + "..."
 		}
 		s.log.Printf("%s failed: %s; %s", method, msg, failureConsequence(method))
 	}
