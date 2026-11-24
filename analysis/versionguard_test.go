@@ -1,6 +1,11 @@
 package analysis
 
-import "testing"
+import (
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+)
 
 func wb1301(t *testing.T, src string) int {
 	t.Helper()
@@ -150,6 +155,14 @@ func TestWB1301GuardScope(t *testing.T) {
 		{"guard inside a function does not cover its sibling", "h() { ((BASH_VERSINFO[0]>=4)) || return; }\nk() { declare -A m; }\n", 1},
 		{"guard function called in another function", "h() { ((BASH_VERSINFO[0]>=4)) || exit 1; }\nmain() { h; declare -A m; }\nmain\n", 0},
 		{"guard function, feature before the call", "h() { ((BASH_VERSINFO[0]>=4)) || exit 1; }\ndeclare -A a\nh\n", 1},
+		{"guard inside a function only covers after it", "g() { declare -A q; ((BASH_VERSINFO[0]>=4)) || exit 1; declare -A r; }; g\n", 1},
+		{"guard function's own statements before the guard", "g() { declare -A q; ((BASH_VERSINFO[0]>=4)) || exit 1; }\ng\n", 1},
+		{"top-level guard call covers a function called before it", "f() { declare -A m; }\nh() { ((BASH_VERSINFO[0]>=4)) || exit 1; }\nf\nh\n", 0},
+		{"top-level guard call covers a function with its own later check", "req() { ((BASH_VERSINFO[0]>=4)) || exit 1; }\nmaybe() { declare -A x; ((BASH_VERSINFO[0]>=5)) && echo new; }\nreq\nmaybe\n", 0},
+		{"wrapper of a guard function", "g() { ((BASH_VERSINFO[0]>=4)) || exit 1; }\nhelper() { g; }; helper; declare -A m\n", 0},
+		{"wrapper of a wrapper", "g() { ((BASH_VERSINFO[0]>=4)) || exit 1; }\nw1() { g; }\nw2() { w1; declare -A m; }\nw2\n", 0},
+		{"wrapper body before its guard call", "g() { ((BASH_VERSINFO[0]>=4)) || exit 1; }\nmain() { declare -A m; g; declare -A p; }\nmain\ndeclare -A n\n", 1},
+		{"conditional call in a wrapper does not make a guard", "g() { ((BASH_VERSINFO[0]>=4)) || exit 1; }\nhelper() { if [ -n \"$1\" ]; then g; fi; }\nhelper\ndeclare -A m\n", 1},
 		{"assignment, never tested", "v=$BASH_VERSION\ndeclare -A m\n", 1},
 		{"assignment, tested in [", "ver=${BASH_VERSION%%.*}\n[ \"$ver\" -ge 4 ] || exit 1\ndeclare -A m\n", 0},
 		{"assignment, tested in [[", "v=$BASH_VERSION\n[[ $v == 4* ]] || exit 1\ndeclare -A m\n", 0},
@@ -200,6 +213,14 @@ func TestWB1301GuardThreshold(t *testing.T) {
 		{"5.0 feature under a major 4 guard", "(( BASH_VERSINFO[0] >= 4 )) || exit 1\necho $EPOCHSECONDS\n", 1},
 		{"5.0 feature under a major 5 guard", "(( BASH_VERSINFO[0] >= 5 )) || exit 1\necho $EPOCHSECONDS\n", 0},
 		{"guard function with a threshold", "check() { (( BASH_VERSINFO[0] >= 3 )) || exit 1; }\ncheck\ndeclare -A m\n", 1},
+		{"hex number keeps silencing", "(( BASH_VERSINFO[0] >= 0x4 )) || exit 1; declare -A m\n", 0},
+		{"base#n number keeps silencing", "(( BASH_VERSINFO[0] >= 2#100 )) || exit 1\ndeclare -A m\n", 0},
+		{"octal number keeps silencing", "(( BASH_VERSINFO[0] >= 010 )) || exit 1\ndeclare -A m\n", 0},
+		{"expansion keeps silencing", "(( BASH_VERSINFO[0] >= $min )) || exit 1\ndeclare -A m\n", 0},
+		{"== then exit keeps silencing", "[[ ${BASH_VERSINFO[0]} == 3 ]] && exit 1; declare -A m\n", 0},
+		{"-eq in an if that exits keeps silencing", "if [ \"${BASH_VERSINFO[0]}\" -eq 3 ]; then echo old; exit 1; fi\ndeclare -A m\n", 0},
+		{"== or exit is a bound", "[[ ${BASH_VERSINFO[0]} == 4 ]] || exit 1\necho $EPOCHSECONDS\n", 1},
+		{"-eq in an if body is a bound", "if [ \"${BASH_VERSINFO[0]}\" -eq 3 ]; then declare -A m; fi\n", 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -207,5 +228,61 @@ func TestWB1301GuardThreshold(t *testing.T) {
 				t.Fatalf("%d findings for %q, want %d", n, c.src, c.want)
 			}
 		})
+	}
+}
+
+// The guard function's own statements before its check are reported where
+// they are, and the statements after it are not.
+func TestWB1301GuardFunctionOwnBody(t *testing.T) {
+	src := "#!/bin/bash\ng() { declare -A q; ((BASH_VERSINFO[0]>=4)) || exit 1; declare -A r; }; g\n"
+	got := ofRule(diagsWith(t, oneFile(src), "x.sh", "3.2-5.3"), "WB1301")
+	if len(got) != 1 || got[0].Range.Start.Line != 2 || got[0].Range.Start.Col != 7 {
+		t.Fatalf("want one finding at 2:7:\n%s", describe(src, got))
+	}
+}
+
+// wrapperChain is a guard function g and n wrappers, each calling the one
+// below it at its top level; callers are defined before their callees. The
+// top level calls the outermost wrapper and then uses a feature, and every
+// wrapper uses one after its call.
+func wrapperChain(n int) string {
+	var b strings.Builder
+	b.WriteString("#!/bin/bash\n")
+	for i := n; i >= 1; i-- {
+		callee := "g"
+		if i > 1 {
+			callee = fmt.Sprintf("w%d", i-1)
+		}
+		fmt.Fprintf(&b, "w%d() { %s; declare -A m%d; }\n", i, callee, i)
+	}
+	b.WriteString("g() { ((BASH_VERSINFO[0]>=4)) || exit 1; }\n")
+	fmt.Fprintf(&b, "w%d\ndeclare -A m\n", n)
+	return b.String()
+}
+
+// A guard reaches the top level through a chain of wrappers, and the cost
+// of finding that grows with the chain, not with its square: each doubling
+// of the chain at most 2.5 times the time (best of five runs each).
+func TestWB1301WrapperChainGrowth(t *testing.T) {
+	if got := ofRule(diagsWith(t, oneFile(wrapperChain(50)), "x.sh", "3.2-5.3"), "WB1301"); len(got) != 0 {
+		t.Fatalf("%d findings behind a chain of 50 wrappers", len(got))
+	}
+	best := func(n int) time.Duration {
+		files := oneFile(wrapperChain(n))
+		d := time.Duration(1<<63 - 1)
+		for k := 0; k < 5; k++ {
+			start := time.Now()
+			diagsWith(t, files, "x.sh", "3.2-5.3")
+			d = min(d, time.Since(start))
+		}
+		return d
+	}
+	prev := best(1000)
+	for _, n := range []int{2000, 4000} {
+		cur := best(n)
+		if r := float64(cur) / float64(prev); r > 2.5 {
+			t.Fatalf("chain of %d wrappers: %v, %.2fx the time of half as many", n, cur, r)
+		}
+		prev = cur
 	}
 }

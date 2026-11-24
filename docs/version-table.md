@@ -86,41 +86,65 @@ behind `env` (its options `-i`, `-v`, `-0`, `-C dir`, `-P path`, `-u name`,
 
 - **WB1301 only for bash files** (dialect `bash`). A file with an `sh`, `zsh`,
   `ksh`/`mksh` or bats dialect gets none. WB1302 only for `sh` files.
-- **A version check silences the features after it, not the whole file.**
-  A read of `BASH_VERSION` or `BASH_VERSINFO` in code that checks something
-  (an `if ((...))`, a `[[ ... ]] || exit`, a `case`, arithmetic) silences every
-  feature at or after the first such read, in source order. A check at the top
-  level (outside every function) also silences the features inside every
-  function body of the file, wherever the function is defined: `f() { declare
-  -A m; }` above `((BASH_VERSINFO[0] >= 4)) || exit 1` is silent, as is a
-  `main` called from `if ((BASH_VERSINFO[0] >= 4)); then main; fi`. Top-level
-  code before the check is still reported. A check inside a function guards
-  only what follows it in source order. Not a check: a comment, a
+- **A version check silences only the code that runs after it, not the whole
+  file.** A read of `BASH_VERSION` or `BASH_VERSINFO` in code that checks
+  something (an `if ((...))`, a `[[ ... ]] || exit`, a `case`, arithmetic) is a
+  check. What it covers:
+  - At the top level (outside every function), the top-level code after it,
+    and the features inside every function body of the file, wherever the
+    function is defined or called: `f() { declare -A m; }` above
+    `((BASH_VERSINFO[0] >= 4)) || exit 1` is silent, as is a `main` called
+    from `if ((BASH_VERSINFO[0] >= 4)); then main; fi`. Top-level code before
+    the check is still reported.
+  - Inside a function, only what follows it in that function: in `g() {
+    declare -A q; ((BASH_VERSINFO[0]>=4)) || exit 1; declare -A r; }; g`,
+    `q` is reported and `r` is not; a function that holds a check and is
+    never called guards only itself.
+  - At a call of a function that holds a check, the calling scope from the
+    call on (`check() { ... || exit 1; }; check` guards the code after
+    `check`). The same holds for a wrapper: a function that calls a guard
+    function as a statement of its own body (not inside an `if`, a loop or a
+    list) is itself a guard function, through any number of wrappers
+    (`helper() { g; }; helper; declare -A m` is silent). A wrapper's own
+    statements before its call of the guard function are reported.
+  - A guard function called at the top level also covers every other
+    function body, wherever defined or called, the same rule as for a check
+    at the top level: `f() { declare -A m; }; h() { <check> }; f; h` is
+    silent although `f` runs before `h`. It does not cover the guard
+    function's own body or the bodies of the wrappers its guard comes
+    through: those are covered from their own check or call on.
+
+  Not a check: a comment, a
   single-quoted string, a heredoc body, a standalone argument of `echo`,
   `printf` or `log` (`echo "running on $BASH_VERSION"` only prints), and an
   assignment (`v=$BASH_VERSION`) unless the variable is later read in a test,
   arithmetic or a `case` word of the same file. A print piped into a command
   that decides an `||`, an `&&` or an `if` (`echo "$BASH_VERSION" | grep -q ^4
   || exit 1`) is a check.
-  A guard inside a function guards what follows it inside that function, and
-  the scope that calls the function from the call on (`check() { ... || exit 1;
-  }; check` guards the code after `check`); a function that holds a check and is
-  never called guards only itself.
 - **A check that compares the major version with an integer** guards only the
   features that major version has: `[ "${BASH_VERSINFO[0]}" -ge 3 ] || exit 1`
   does not guard `declare -A` (4.0), `-ge 4` does. Decided for one mention of
   `BASH_VERSINFO[0]`, `$BASH_VERSINFO` or `${BASH_VERSION%%.*}` in a test or
-  arithmetic expression, compared by `-ge`, `-gt`, `-eq`, `>=`, `>`, `==`, or by
-  `-lt`, `-le`, `<`, `<=` when the statement also exits or returns. Every other
-  form (minor or patch numbers, string comparison, `case`, several mentions)
-  silences everything after it, as before; a major check also silences
-  features of a later minor of the same major (`>= 4` silences `declare -n`,
-  4.3).
+  arithmetic expression, compared with a plain decimal number (no leading
+  zero) by `-ge`, `-gt`, `>=`, `>`; by `-eq`, `==`, `=` only where the code
+  after it runs when the test holds (the condition of an `if` whose body does
+  not exit or return, of a `while`, or the left side of `||`); or by `-lt`,
+  `-le`, `<`, `<=` when the statement also exits or returns. Every other form
+  (minor or patch numbers, string comparison, `case`, several mentions, a
+  number in another base such as `0x4`, `010` or `2#100`, an expansion such as
+  `$min`, and `[[ ${BASH_VERSINFO[0]} == 3 ]] && exit 1`) silences everything
+  after it, as before; a major check also silences features of a later minor
+  of the same major (`>= 4` silences `declare -n`, 4.3).
 - **Known gaps of the guard.** A top-level version test used only to choose a
   message, and `echo "$BASH_VERSION" | tee log || exit 1`, count as guards and
   hide later features. `[ "$(echo "$BASH_VERSION" | cut -d. -f1)" -ge 4 ] ||
   exit 1` is not recognised as a guard (the read is a print inside a command
-  substitution), so the features after it are reported.
+  substitution), so the features after it are reported. A guard function run
+  in a subshell or by `trap` (`x=$(g)`, `( g )`, `trap g EXIT`), or called
+  inside an `if` at the top level, counts as a guard although it does not stop
+  the caller. Functions of the same name are merged: a check in any
+  definition counts for every call of that name. A guard in a sourced file
+  does not guard the sourcing file (see "Known gaps").
 - **Tolerated uses.** A feature is not reported when its command is the left
   side of `||` (`shopt -s globstar 2>/dev/null || true`) or sends standard
   error to `/dev/null` (`2>/dev/null`, `2>>/dev/null`, `&>/dev/null`). A test

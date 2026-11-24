@@ -107,13 +107,20 @@ type featureHit struct {
 // versionScan is what scanFile collects for the version rules from the
 // facts: no walk of the tree.
 type versionScan struct {
-	hits    []featureHit
-	epoch   []*Use // reads of EPOCHSECONDS and EPOCHREALTIME
-	assoc   map[string]bool
-	src     []byte
-	top     guardSet                 // checks outside every function
-	funcs   map[*tree.Node]*guardSet // checks inside each function
-	pending []pendingRead
+	hits      []featureHit
+	epoch     []*Use // reads of EPOCHSECONDS and EPOCHREALTIME
+	assoc     map[string]bool
+	src       []byte
+	top       guardSet                 // checks and guard calls outside every function
+	topChecks guardSet                 // checks outside every function, calls left out
+	funcs     map[*tree.Node]*guardSet // checks and guard calls inside each function
+	pending   []pendingRead
+	// topCalls holds, for each guard function called at the top level, the
+	// majors it guarantees (bit i for major i, bit 11 for unknown); reach
+	// is the set of functions each one's guard comes through, itself included.
+	topCalls map[string]uint16
+	wraps    map[string][]string // function -> guard functions it calls unconditionally
+	reach    map[string]map[string]bool
 }
 
 // unknownMajor stands for a check whose guarantee cannot be decided: it
@@ -180,10 +187,12 @@ const (
 // echo, printf and log only print, unless the print is a stage of a pipeline
 // that decides an `||`, `&&` or `if` (`echo "$BASH_VERSION" | grep -q ^4 ||
 // exit 1`); an assignment (`v=$BASH_VERSION`) counts once the variable is
-// tested (finish). A check guards what follows it in its own scope (the top
-// level or its function); one at the top level also guards every function
-// body, and a function that holds one guards the scope that calls it, from
-// the call on (finish).
+// tested (finish). A check guards only code that runs after it: what follows
+// it in its own scope (the top level or its function). One at the top level
+// also guards every function body. A call of a function that holds one, or of
+// a wrapper that calls such a function at its own top level, guards the
+// calling scope from the call on; made at the top level, it also guards every
+// function body except those its guard comes through (finish, covered).
 func (vs *versionScan) read(u *Use) {
 	kind, name := versionCheck(u.Node)
 	switch kind {
@@ -194,44 +203,43 @@ func (vs *versionScan) read(u *Use) {
 	}
 }
 
+// note records a check at n.
 func (vs *versionScan) note(n *tree.Node, off, major int) {
-	g := &vs.top
-	if fn := enclosingFunc(n); fn != nil {
-		if vs.funcs == nil {
-			vs.funcs = map[*tree.Node]*guardSet{}
-		}
-		if vs.funcs[fn] == nil {
-			vs.funcs[fn] = &guardSet{}
-		}
-		g = vs.funcs[fn]
-	}
+	g := vs.scope(n)
 	g.note(off, major)
+	if g == &vs.top {
+		vs.topChecks.note(off, major)
+	}
+}
+
+// scope is the guard set of the function around n, or the top level's.
+func (vs *versionScan) scope(n *tree.Node) *guardSet {
+	fn := enclosingFunc(n)
+	if fn == nil {
+		return &vs.top
+	}
+	if vs.funcs == nil {
+		vs.funcs = map[*tree.Node]*guardSet{}
+	}
+	if vs.funcs[fn] == nil {
+		vs.funcs[fn] = &guardSet{}
+	}
+	return vs.funcs[fn]
 }
 
 // finish settles the assignments from version variables (one is a check when
 // the assigned variable is read after it in a test, an arithmetic expression
 // or the word of a `case`) and the calls of functions that hold a check.
+// A function holds the majors of its own checks and of the functions it
+// calls unconditionally at its top level (a statement of its body, not
+// nested in an if, a loop or a list); that is settled once over the
+// functions by a worklist, each function revisited only when its majors
+// grow. Same-name functions are merged.
 func (vs *versionScan) finish(uses []*Use) {
 	if len(vs.pending) == 0 && len(vs.funcs) == 0 {
 		return
 	}
-	var byName map[string]*guardSet
-	for fn, g := range vs.funcs {
-		if fn.Name == "" {
-			continue
-		}
-		if byName == nil {
-			byName = map[string]*guardSet{}
-		}
-		if byName[fn.Name] == nil {
-			byName[fn.Name] = &guardSet{}
-		}
-		for i, f := range g.first {
-			if f != 0 {
-				byName[fn.Name].first[i] = 1
-			}
-		}
-	}
+	var calls []*Use
 	for _, u := range uses {
 		off := u.Range.Start.Offset
 		switch u.Kind {
@@ -247,27 +255,140 @@ func (vs *versionScan) finish(uses []*Use) {
 				}
 			}
 		case UseCall:
-			if g := byName[u.Name]; g != nil && u.Node != nil {
-				for i, f := range g.first {
-					if f == 0 {
-						continue
-					}
-					major := i
-					if i == 11 {
-						major = unknownMajor
-					}
-					vs.note(u.Node, off, major)
-				}
+			if u.Node != nil {
+				calls = append(calls, u)
 			}
 		}
 	}
 	vs.pending = nil
+	if len(vs.funcs) == 0 {
+		return
+	}
+	held := map[string]uint16{}
+	for fn, g := range vs.funcs {
+		if fn.Name == "" {
+			continue
+		}
+		for i, f := range g.first {
+			if f != 0 {
+				held[fn.Name] |= 1 << i
+			}
+		}
+	}
+	callers := map[string][]string{} // callee -> functions calling it unconditionally at their top level
+	for _, u := range calls {
+		if fn := topLevelCallIn(u.Node); fn != nil && fn.Name != "" {
+			callers[u.Name] = append(callers[u.Name], fn.Name)
+		}
+	}
+	work := make([]string, 0, len(held))
+	for name := range held {
+		work = append(work, name)
+	}
+	for len(work) > 0 {
+		callee := work[len(work)-1]
+		work = work[:len(work)-1]
+		for _, caller := range callers[callee] {
+			if m := held[caller] | held[callee]; m != held[caller] {
+				held[caller] = m
+				work = append(work, caller)
+			}
+		}
+	}
+	for _, u := range calls {
+		m := held[u.Name]
+		if m == 0 {
+			continue
+		}
+		g := vs.scope(u.Node)
+		for i := 0; i < 12; i++ {
+			if m&(1<<i) == 0 {
+				continue
+			}
+			major := i
+			if i == 11 {
+				major = unknownMajor
+			}
+			g.note(u.Range.Start.Offset, major)
+		}
+		if g == &vs.top {
+			if vs.topCalls == nil {
+				vs.topCalls = map[string]uint16{}
+			}
+			vs.topCalls[u.Name] |= m
+		} else if fn := topLevelCallIn(u.Node); fn != nil && fn.Name != "" {
+			if vs.wraps == nil {
+				vs.wraps = map[string][]string{}
+			}
+			vs.wraps[fn.Name] = append(vs.wraps[fn.Name], u.Name)
+		}
+	}
+}
+
+// topLevelCallIn is the function whose body holds call as one of its own
+// statements, nil when the call is nested deeper or outside every function.
+func topLevelCallIn(call *tree.Node) *tree.Node {
+	st := call.Parent
+	if st == nil || st.Kind != tree.KStmt {
+		return nil
+	}
+	body := st.Parent
+	if body == nil || body.Kind != tree.KBlock || body.Parent == nil || body.Parent.Kind != tree.KStmt {
+		return nil
+	}
+	if fn := body.Parent.Parent; fn != nil && fn.Kind == tree.KFuncDecl {
+		return fn
+	}
+	return nil
+}
+
+// topGuarded reports whether a guard function called at the top level,
+// whose guard does not come through the function fn, guarantees need.
+func (vs *versionScan) topGuarded(fn string, need int) bool {
+	for callee, m := range vs.topCalls {
+		if m>>min(need, 10) == 0 { // bits need..10 and 11 (unknown)
+			continue
+		}
+		if fn == "" || !vs.reaches(callee)[fn] {
+			return true
+		}
+	}
+	return false
+}
+
+// reaches is the set of functions the guard of a call of callee comes
+// through: callee and, transitively, the guard functions it calls
+// unconditionally at its top level.
+func (vs *versionScan) reaches(callee string) map[string]bool {
+	if r, ok := vs.reach[callee]; ok {
+		return r
+	}
+	r := map[string]bool{callee: true}
+	for stack := []string{callee}; len(stack) > 0; {
+		f := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		for _, g := range vs.wraps[f] {
+			if !r[g] {
+				r[g] = true
+				stack = append(stack, g)
+			}
+		}
+	}
+	if vs.reach == nil {
+		vs.reach = map[string]map[string]bool{}
+	}
+	vs.reach[callee] = r
+	return r
 }
 
 // covered reports whether a feature of bash major version need at node at,
 // offset off, sits behind a check.
 func (vs *versionScan) covered(at *tree.Node, off, need int) bool {
-	if vs.top.covers(off, need) || inFunc(at) && vs.top.any(need) {
+	fn := enclosingFunc(at)
+	if fn == nil {
+		return vs.top.covers(off, need)
+	}
+	if vs.topChecks.any(need) || vs.topGuarded(fn.Name, need) {
 		return true
 	}
 	for p := at; p != nil; p = p.Parent {
@@ -282,17 +403,23 @@ func (vs *versionScan) covered(at *tree.Node, off, need int) bool {
 // expression reads it.
 const majorExpr = `(?:"?\$\{BASH_VERSINFO(?:\[0\])?\}"?|"?\$BASH_VERSINFO"?|BASH_VERSINFO\[0\]|"?\$\{BASH_VERSION%%\.\*\}"?)`
 
-var majorCompare = regexp.MustCompile(majorExpr + `\s*(-ge|-gt|-le|-lt|-eq|>=|>|<=|<|==|=)\s*"?(\d{1,3})"?`)
+var majorCompare = regexp.MustCompile(majorExpr + `\s*(-ge|-gt|-le|-lt|-eq|>=|>|<=|<|==|=)\s*"?([^\s"'()\[\]&|;<>!=]*)`)
 var exitWord = regexp.MustCompile(`\b(exit|return)\b`)
+
+// decimal is an operand threshold reads: a plain decimal number without a
+// leading zero. Hex, octal, base#n and expansions are left undecided.
+var decimal = regexp.MustCompile(`^(?:0|[1-9][0-9]{0,2})$`)
 
 // threshold is the bash major version a check at n guarantees, or
 // unknownMajor. Decided only for the simple form: the test or the
 // arithmetic expression around the read holds exactly one mention of a
-// version variable, compared with an integer literal by -ge, -gt, -eq, >=,
-// >, == (the major is at least N, N+1, N), or by -lt, -le, <, <= when the
-// statement around it also exits or returns (the major is at least N, N+1
-// after it). Anything else, minor and patch numbers and string comparisons
-// included, is unknown.
+// version variable, compared with a plain decimal number by -ge, -gt, >=, >
+// (the major is at least N, N+1), by -eq, ==, = when the test is the
+// condition of an if or while whose body does not exit or return, or the
+// left side of `||` (the major is N where the code goes on), or by -lt, -le,
+// <, <= when the statement around it also exits or returns (the major is at
+// least N, N+1 after it). Anything else, minor and patch numbers, string
+// comparisons and numbers in another base included, is unknown.
 func (vs *versionScan) threshold(n *tree.Node) int {
 	var box *tree.Node
 	for p := n; p != nil && box == nil; p = p.Parent {
@@ -322,16 +449,21 @@ func (vs *versionScan) threshold(n *tree.Node) int {
 		return unknownMajor
 	}
 	m := majorCompare.FindSubmatch(text)
-	if m == nil {
+	if m == nil || !decimal.Match(m[2]) {
 		return unknownMajor
 	}
 	var v int
 	fmt.Sscanf(string(m[2]), "%d", &v)
 	switch string(m[1]) {
-	case "-ge", ">=", "-eq", "==", "=":
+	case "-ge", ">=":
 		return v
 	case "-gt", ">":
 		return v + 1
+	case "-eq", "==", "=":
+		if vs.equalGoesOn(box) {
+			return v
+		}
+		return unknownMajor
 	}
 	// -lt, -le, <, <=: a guard only when the statement leaves the script.
 	st := box
@@ -357,6 +489,35 @@ func (vs *versionScan) threshold(n *tree.Node) int {
 		return v + 1
 	}
 	return v
+}
+
+// equalGoesOn reports whether the code that runs on after the equality test
+// box runs only when the test holds: box is the condition of an if whose
+// body does not exit or return, of a while, or the left side of `||`.
+func (vs *versionScan) equalGoesOn(box *tree.Node) bool {
+	st := box.Parent
+	if st == nil || st.Kind != tree.KStmt || st.Parent == nil {
+		return false
+	}
+	switch p := st.Parent; p.Kind {
+	case tree.KAndOr:
+		i := slices.Index(p.Children, st)
+		return i >= 0 && i+1 < len(p.Children) && andOrOp(vs.src, p, i) == "||"
+	case tree.KBlock:
+		g := p.Parent
+		if g == nil || len(g.Children) < 2 || g.Children[0] != p {
+			return false
+		}
+		switch g.Kind {
+		case tree.KWhile:
+			return true
+		case tree.KIf:
+			body := g.Children[1]
+			c, d := body.Range.Start.Offset, body.Range.End.Offset
+			return c >= 0 && d <= len(vs.src) && c <= d && !exitWord.Match(vs.src[c:d])
+		}
+	}
+	return false
 }
 
 // versionCheck classifies a read at n; for an assignment it names the
@@ -433,16 +594,6 @@ func enclosingFunc(n *tree.Node) *tree.Node {
 		}
 	}
 	return nil
-}
-
-// inFunc reports whether n is inside a function body.
-func inFunc(n *tree.Node) bool {
-	for p := n; p != nil; p = p.Parent {
-		if p.Kind == tree.KFuncDecl {
-			return true
-		}
-	}
-	return false
 }
 
 // callWord is the literal command word of a call node.
@@ -567,10 +718,9 @@ func (c *diagCtx) versions() {
 
 // bashVersions reports each feature whose first version is above the
 // target's minimum, except where the script shows it copes with an older
-// bash: a check of BASH_VERSION or BASH_VERSINFO guards every feature after
-// it (the guard may be an `if`, an `&&`, or an early exit) and, when made at
-// the top level, every function body; a use that tolerates failure is
-// skipped (see tolerated).
+// bash: a check of BASH_VERSION or BASH_VERSINFO guards the features that run
+// after it (the guard may be an `if`, an `&&`, or an early exit; see read and
+// covered); a use that tolerates failure is skipped (see tolerated).
 func (c *diagCtx) bashVersions() {
 	vs := &c.scan.version
 	min := c.target.Min
