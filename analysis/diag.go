@@ -200,7 +200,8 @@ type diagCtx struct {
 	oneWords      map[*Symbol]bool    // WB1401: symbols whose every value is one word, on first need
 	unresolvedFns map[*tree.Node]bool // functions of the file that call a name resolving to nothing in view, on first need
 
-	union *nameUnion // what the file's visibility reads or names, built on first need
+	union     *nameUnion      // what the file's visibility reads or names, built on first need
+	wantReads map[string]bool // the names WB1202 asks readByName about (nil: all)
 }
 
 func (c *diagCtx) add(rule string, r tree.Range, msg string) *Diagnostic {
@@ -451,7 +452,7 @@ func (s *Snapshot) mentionsOf(file int) *fileMentions {
 		// evaluate: an over-count (a read bound elsewhere counts too) that
 		// needs no walk. The forms only a walk finds are rare; walk only when
 		// their text appears.
-		codeDollarNames(m.dollar, ff.File)
+		codeDollarNames(m.dollar, ff.File, nil)
 		if mentionWalkNeeded(ff.File.Src) {
 			walkMentions(ff, &scanWalker{m: m})
 		}
@@ -974,7 +975,7 @@ var evalCommands = map[string]bool{"eval": true, "trap": true, "bash": true, "sh
 // except in comments, in single-quoted strings that no command evaluates
 // (`echo '$x is literal'`, not `trap 'rm "$tmp"' EXIT` or `x='$y'`), and in
 // the body of a heredoc whose tag is quoted.
-func codeDollarNames(m map[string]bool, f *tree.File) {
+func codeDollarNames(m map[string]bool, f *tree.File, want map[string]bool) {
 	src := f.Src
 	cmts := f.Comments
 	var loc *tree.Locator
@@ -1073,6 +1074,9 @@ func codeDollarNames(m map[string]bool, f *tree.File) {
 			k++
 		}
 		if k == j || !isIdentStart(src[j]) {
+			continue
+		}
+		if name := src[j:k]; want != nil && !want[string(name)] || m[string(name)] {
 			continue
 		}
 		if (state == single || quotedHeredoc) && ask(i) {
@@ -1227,8 +1231,16 @@ func (c *diagCtx) allExport() bool {
 func (c *diagCtx) ownReads(u *nameUnion) {
 	s := c.s
 	u.reads = map[string]bool{}
-	for k := range s.mentionsOf(c.file).dollar {
-		u.reads[k] = true
+	// The file's own mentions, for the wanted names only (the file was just
+	// edited: its mentions are not cached yet, and most of them are no
+	// candidate's).
+	codeDollarNames(u.reads, c.f, c.wantReads)
+	if mentionWalkNeeded(c.f.Src) {
+		m := &fileMentions{dollar: map[string]bool{}}
+		walkMentions(c.ff, &scanWalker{m: m})
+		for k := range m.dollar {
+			u.reads[k] = true
+		}
 	}
 	for k := range s.bindings[c.file] {
 		b := &s.bindings[c.file][k]

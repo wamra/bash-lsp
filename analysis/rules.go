@@ -484,6 +484,7 @@ func (c *diagCtx) unusedFunctions() {
 func (c *diagCtx) unusedVariables() {
 	s := c.s
 	var seen map[*Symbol]bool // symbols with several declarations, looked at already
+	var pending []unusedCand
 	script := -1
 	for _, d := range c.ff.Decls {
 		if d.Kind != DeclVariable || d.Temp || d.Implicit != "" || d.Name == "_" || shellVariable(d.Name) || upperName(d.Name) {
@@ -527,7 +528,19 @@ func (c *diagCtx) unusedVariables() {
 		if u.indirect || u.nameref || u.dynamic {
 			continue
 		}
-		if c.readByName(d.Name) || global && c.allExport() {
+		pending = append(pending, unusedCand{d, global})
+	}
+	if len(pending) == 0 {
+		return
+	}
+	// Names read by name are looked up only for the candidates left.
+	c.wantReads = make(map[string]bool, len(pending))
+	for _, p := range pending {
+		c.wantReads[p.d.Name] = true
+	}
+	for _, p := range pending {
+		d := p.d
+		if c.readByName(d.Name) || p.global && c.allExport() {
 			continue
 		}
 		what := "variable"
@@ -537,6 +550,11 @@ func (c *diagCtx) unusedVariables() {
 		dg := c.add("WB1202", d.NameRange, fmt.Sprintf("%s %s is assigned but never read", what, d.Name))
 		dg.Unnecessary = true
 	}
+}
+
+type unusedCand struct {
+	d      *Decl
+	global bool
 }
 
 // appended reports whether some declaration of sym appends (`xs+=(1)`,
