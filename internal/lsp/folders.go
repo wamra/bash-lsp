@@ -425,6 +425,7 @@ func (s *server) didChangeWatched(raw json.RawMessage) *rpcError {
 		} else {
 			f.ws.Refresh(paths[f]...)
 		}
+		s.refreshOthers(f.ws, nil)
 	}
 	if ignores {
 		s.queueFolderJob()
@@ -454,6 +455,7 @@ func (s *server) didSave(raw json.RawMessage) *rpcError {
 			return nil
 		}
 		f.ws.Refresh(filepath.Clean(path))
+		s.refreshOthers(f.ws, nil)
 	}
 	return nil
 }

@@ -93,6 +93,7 @@ type document struct {
 	be      backend // the workspace that holds its overlay
 	version int
 	text    []byte
+	lint    docLint // what was published for it (lint.go)
 }
 
 type server struct {
@@ -225,6 +226,10 @@ func (s *server) handle(m message) (any, *rpcError) {
 		return nil, s.didChangeWatched(m.Params)
 	case "workspace/didChangeWorkspaceFolders":
 		return nil, s.didChangeFolders(m.Params)
+	case "textDocument/diagnostic":
+		return s.diagnostic(m.Params)
+	case "textDocument/codeAction":
+		return s.codeAction(m.Params)
 	case "textDocument/definition":
 		return s.definition(m.Params)
 	case "textDocument/references":
@@ -404,6 +409,7 @@ func (s *server) didOpen(raw json.RawMessage) *rpcError {
 	s.byURI[d.uri] = path
 	be.SetOverlay(path, d.version, d.text)
 	s.publish(be, d, path)
+	s.refreshOthers(be, d)
 	return nil
 }
 
@@ -428,6 +434,7 @@ func (s *server) didChange(raw json.RawMessage) *rpcError {
 	d.version = p.TextDocument.Version
 	d.be.SetOverlay(d.path, d.version, d.text)
 	s.publish(d.be, d, d.path)
+	s.refreshOthers(d.be, d)
 	return nil
 }
 
@@ -466,28 +473,13 @@ func (s *server) didClose(raw json.RawMessage) *rpcError {
 	for _, u := range uris {
 		s.c.notify("textDocument/publishDiagnostics", publishDiagnosticsParams{URI: u, Diagnostics: []Diagnostic{}})
 	}
+	s.refreshOthers(d.be, nil)
 	return nil
 }
 
-// publish sends the native findings of an open document, computed on the
-// snapshot that holds its latest text, under the settings of its folder.
+// publish sends the findings of an open document (see publishDoc).
 func (s *server) publish(be backend, d *document, path string) {
-	diags := []Diagnostic{}
-	snap := be.Snapshot()
-	if ff := snap.Facts(path); ff != nil && ff.File != nil {
-		s.logInternal(path, ff.File)
-		conv := ff.File.NewConverter()
-		for _, x := range snap.Diagnostics(path, s.diagOptions(be)) {
-			out := Diagnostic{Severity: int(x.Severity), Code: x.Rule, Source: x.Origin, Message: x.Message}
-			out.Range.Start.Line, out.Range.Start.Character = conv.ToUTF16(x.Range.Start)
-			out.Range.End.Line, out.Range.End.Character = conv.ToUTF16(x.Range.End)
-			if x.Unnecessary {
-				out.Tags = []int{diagnosticTagUnnecessary}
-			}
-			diags = append(diags, out)
-		}
-	}
-	s.c.notify("textDocument/publishDiagnostics", publishDiagnosticsParams{URI: d.uri, Diagnostics: diags})
+	s.publishDoc(d, true)
 }
 
 // diagnosticTagUnnecessary is LSP DiagnosticTag 1, Unnecessary.

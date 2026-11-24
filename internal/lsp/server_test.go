@@ -32,6 +32,8 @@ type testClient struct {
 	nextID  int
 	replies map[string]*rpcReply
 	diags   map[string][][]Diagnostic
+	vers    map[string][]int  // the version of each push in diags, -1 when absent
+	logMsgs []string          // window/logMessage texts, in arrival order
 	shown   []json.RawMessage // params of window/showMessage notifications
 	closed  bool
 
@@ -127,7 +129,7 @@ func clientWith(t *testing.T, cfg clientCfg) *testClient {
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
 	c := &testClient{t: t, root: root, in: inW, out: outR, done: make(chan error, 1),
-		replies: map[string]*rpcReply{}, diags: map[string][][]Diagnostic{}, respond: cfg.respond, logs: &syncBuffer{}}
+		replies: map[string]*rpcReply{}, diags: map[string][][]Diagnostic{}, vers: map[string][]int{}, respond: cfg.respond, logs: &syncBuffer{}}
 	c.cond = sync.NewCond(&c.mu)
 	if root == "" {
 		c.root = t.TempDir() // a place to name documents; not sent as the root
@@ -194,6 +196,15 @@ func (c *testClient) readLoop() {
 			var p publishDiagnosticsParams
 			_ = json.Unmarshal(m.Params, &p)
 			c.diags[p.URI] = append(c.diags[p.URI], p.Diagnostics)
+			v := -1
+			if p.Version != nil {
+				v = *p.Version
+			}
+			c.vers[p.URI] = append(c.vers[p.URI], v)
+		} else if m.Method == "window/logMessage" {
+			var p logMessageParams
+			_ = json.Unmarshal(m.Params, &p)
+			c.logMsgs = append(c.logMsgs, p.Message)
 		} else if m.Method == "window/showMessage" {
 			c.shown = append(c.shown, m.Params)
 		} else if len(m.ID) > 0 && m.Method != "" { // a request from the server
@@ -321,6 +332,7 @@ func (c *testClient) waitDiag(rel string) []Diagnostic {
 	}
 	d := c.diags[uri][0]
 	c.diags[uri] = c.diags[uri][1:]
+	c.vers[uri] = c.vers[uri][1:]
 	return d
 }
 
@@ -459,7 +471,9 @@ func TestInitializeCapabilities(t *testing.T) {
 	if err := json.Unmarshal(got, &resp); err != nil {
 		t.Fatal(err)
 	}
-	want := `{"callHierarchyProvider":true,"definitionProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"implementationProvider":true,` +
+	want := `{"callHierarchyProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix"]},"definitionProvider":true,` +
+		`"diagnosticProvider":{"interFileDependencies":true,"workspaceDiagnostics":false},"documentFormattingProvider":true,` +
+		`"documentRangeFormattingProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"implementationProvider":true,` +
 		`"positionEncoding":"utf-16","referencesProvider":true,"textDocumentSync":{"change":2,"openClose":true,"save":{"includeText":false}},` +
 		`"workspace":{"workspaceFolders":{"changeNotifications":"workspace/didChangeWorkspaceFolders","supported":true}},"workspaceSymbolProvider":true}`
 	have, _ := json.Marshal(resp.Result.Capabilities) // map keys marshal sorted
