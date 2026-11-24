@@ -17,8 +17,19 @@ import (
 // else tree.Bash.
 func Detect(path string, src []byte) tree.Dialect { return front.Detect(path, src) }
 
+// DetectWith is Detect with fallback in place of tree.Bash for a file that
+// names no dialect itself (see front.DetectWith).
+func DetectWith(path string, src []byte, fallback tree.Dialect) tree.Dialect {
+	return front.DetectWith(path, src, fallback)
+}
+
 // File detects the dialect of path and src, then parses. It never returns nil.
 func File(path string, src []byte) *tree.File { return FileAs(path, src, Detect(path, src)) }
+
+// FileWith is File with DetectWith's fallback dialect.
+func FileWith(path string, src []byte, fallback tree.Dialect) *tree.File {
+	return FileAs(path, src, DetectWith(path, src, fallback))
+}
 
 // FileAs parses src as dialect d. It never returns nil; File.Dialect is d.
 func FileAs(path string, src []byte, d tree.Dialect) *tree.File { return front.Parse(path, src, d) }

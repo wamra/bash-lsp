@@ -44,7 +44,13 @@ func byShellName(name string) (Dialect, bool) {
 // the first 5 lines; the shebang interpreter (basename; `env` options, `env -S` strings and
 // `busybox APPLET` unwrapped);
 // the file extension; else Bash.
-func Detect(path string, src []byte) Dialect {
+func Detect(path string, src []byte) Dialect { return DetectWith(path, src, Bash) }
+
+// DetectWith is Detect with fallback in place of Bash for a file that names no
+// dialect itself: no directive, no shebang that names one, and the extension
+// .sh or none that says anything (.bash, .ksh, .mksh, .bats and .zsh still
+// decide). It is what the bash.dialect setting reaches.
+func DetectWith(path string, src []byte, fallback Dialect) Dialect {
 	lines := bytes.SplitN(src, []byte("\n"), 6)
 	if len(lines) > 5 {
 		lines = lines[:5]
@@ -62,8 +68,10 @@ func Detect(path string, src []byte) Dialect {
 		}
 	}
 	switch strings.ToLower(filepath.Ext(path)) {
-	case ".bash", ".sh":
+	case ".bash":
 		return Bash
+	case ".sh":
+		return fallback
 	case ".bats":
 		return Bats
 	case ".ksh", ".mksh":
@@ -71,7 +79,7 @@ func Detect(path string, src []byte) Dialect {
 	case ".zsh":
 		return Zsh
 	}
-	return Bash
+	return fallback
 }
 
 func byShebang(line string) (Dialect, bool) {
