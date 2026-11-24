@@ -964,7 +964,6 @@ func addTokens(m map[string]bool, v string) {
 	}
 }
 
-
 // evalCommands run a string argument as shell code, now or later: a
 // single-quoted `$name` in their arguments is a read.
 var evalCommands = map[string]bool{"eval": true, "trap": true, "bash": true, "sh": true, "dash": true, "ksh": true,
