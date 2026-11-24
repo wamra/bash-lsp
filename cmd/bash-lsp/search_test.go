@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -282,5 +283,58 @@ func TestSearchUsage(t *testing.T) {
 	}
 	if code, _, errs := runCode(t, "search", "--root", filepath.Join(root, "missing"), "x"); code != 1 || errs == "" {
 		t.Errorf("missing root: exit %d %q", code, errs)
+	}
+}
+
+// The workspace is a directory below the repository root: code-index's own
+// lookup finds the index at the repository root, so the program is told that
+// database.
+func TestSearchFindsIndexAboveTheWorkspaceRoot(t *testing.T) {
+	t.Setenv("CODE_INDEX_DB", "")
+	repo := writeRoot(t, map[string]string{".git/HEAD": "ref: x\n", "scripts/a.sh": "deploy() { :; }\n"})
+	canon, _ := filepath.EvalSymlinks(repo)
+	record := installFake(t, fakeBehavior{Stdout: `{"hits":[],"route":"fts"}`})
+	out := searchJSON(t, filepath.Join(repo, "scripts"), "deploy")
+	if !out.CodeIndex.Used {
+		t.Fatalf("%+v", out.CodeIndex)
+	}
+	want := "CODE_INDEX_DB=" + filepath.Join(canon, ".Wammy", "code.sqlite")
+	if env := strings.Join(readSaw(t, record).Env, "\n"); !strings.Contains(env, want) {
+		t.Errorf("want %s in\n%s", want, env)
+	}
+}
+
+// What the command line prints is redacted like what MCP returns.
+func TestSearchRedactsOutput(t *testing.T) {
+	root := writeRoot(t, map[string]string{"a.sh": "password=hunter2\ndeploy() { :; }\n"})
+	hit := `{"hits":[{"name":"deploy","path":"a.sh","line":1,"kind":"function","summary":"uses password=hunter2 now","signature":"x TOKEN=abc"}],"route":"fts"}`
+	installFake(t, fakeBehavior{Stdout: hit})
+	for _, args := range [][]string{
+		{"search", "--json", "--root", root, "--", "deploy"},
+		{"search", "--json", "--root", root, "--", "password"},
+		{"search", "--root", root, "--", "password"},
+	} {
+		out := runOK(t, args...)
+		if strings.Contains(out, "hunter2") || strings.Contains(out, "TOKEN=abc") {
+			t.Errorf("%v: unredacted output:\n%s", args, out)
+		}
+	}
+	if out := runOK(t, "search", "--json", "--root", root, "--", "deploy"); !strings.Contains(out, "password=[redacted]") {
+		t.Errorf("redaction left no mark:\n%s", out)
+	}
+}
+
+// A repo setting that is ignored because only user settings may carry it is
+// said on stderr, by search and by mcp.
+func TestRefusedRepoSettingsAreNoticed(t *testing.T) {
+	root := writeRoot(t, map[string]string{"a.sh": ":\n", ".bash-lsp.toml": "[codeindex]\npath = \"/tmp/evil\"\n"})
+	_, _, errs := runCode(t, "search", "--root", root, "--", "x")
+	if !strings.Contains(errs, "codeindex.path") || !strings.Contains(errs, "ignored") {
+		t.Errorf("search stderr %q", errs)
+	}
+	var out, errb bytes.Buffer
+	run([]string{"mcp", "--root", root}, strings.NewReader(""), &out, &errb)
+	if !strings.Contains(errb.String(), "codeindex.path") || !strings.Contains(errb.String(), "ignored") {
+		t.Errorf("mcp stderr %q", errb.String())
 	}
 }

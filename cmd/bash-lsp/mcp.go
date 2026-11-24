@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/wamra/bash-lsp/internal/config"
 	"github.com/wamra/bash-lsp/internal/mcp"
+	"github.com/wamra/bash-lsp/internal/query"
 )
 
 const mcpUsage = "usage: bash-lsp mcp [--root DIR]"
@@ -28,10 +28,8 @@ func cmdMCP(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return usageErrorOf(stderr, mcpUsage, fmt.Sprintf("unexpected argument %q", a))
 		}
 	}
-	st := config.Load(root, nil)
-	for _, w := range st.Warnings {
-		fmt.Fprintf(stderr, "bash-lsp: settings: %s\n", w)
-	}
+	st := query.LoadSettings(root, stderr)
+	query.NoteRefused(st, stderr)
 	if err := mcp.Serve(stdin, stdout, stderr, root, st, version); err != nil {
 		return fail(stderr, err)
 	}

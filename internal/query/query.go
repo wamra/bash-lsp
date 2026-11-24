@@ -20,6 +20,7 @@ import (
 
 	"github.com/wamra/bash-lsp/analysis"
 	"github.com/wamra/bash-lsp/internal/config"
+	"github.com/wamra/bash-lsp/internal/redact"
 	"github.com/wamra/bash-lsp/internal/workspace"
 	"github.com/wamra/bash-lsp/tree"
 )
@@ -28,7 +29,7 @@ import (
 // carries "truncated": true.
 const MaxResults = 10000
 
-// MaxDepth is the deepest graph walk a query runs (Decision 24): a depth of 0
+// MaxDepth is the deepest graph walk a query runs a depth of 0
 // (unlimited) or above 64 is run at 64, and the answer carries "truncated":
 // true when more levels existed.
 const MaxDepth = 64
@@ -680,8 +681,13 @@ func kindName(k analysis.DeclKind) string {
 	return "variable"
 }
 
-// sourceLine is the line of src holding offset, trimmed and cut to
-// maxSignature bytes at a rune boundary.
+// signatureWindow is how much of a source line is looked at: a longer line
+// is cut there, at its last blank, before redaction.
+const signatureWindow = 8192
+
+// sourceLine is the line of src holding offset, trimmed, with credentials
+// redacted and then cut to maxSignature bytes at a rune boundary (redacting
+// first, so a secret is never cut into a piece the patterns miss).
 func sourceLine(src []byte, off int) string {
 	if off < 0 || off > len(src) {
 		return ""
@@ -692,13 +698,20 @@ func sourceLine(src []byte, off int) string {
 		end = off + i
 	}
 	line := bytes.TrimSpace(src[start:end])
-	if len(line) > maxSignature {
-		line = line[:maxSignature]
-		for len(line) > 0 && !utf8.Valid(line) {
-			line = line[:len(line)-1]
+	if len(line) > signatureWindow {
+		line = line[:signatureWindow]
+		if i := bytes.LastIndexAny(line, " \t"); i > 0 {
+			line = line[:i]
 		}
 	}
-	return strings.ToValidUTF8(string(line), "")
+	out := redact.String(strings.ToValidUTF8(string(line), ""))
+	if len(out) > maxSignature {
+		out = out[:maxSignature]
+		for len(out) > 0 && !utf8.ValidString(out) {
+			out = out[:len(out)-1]
+		}
+	}
+	return out
 }
 
 // FindSymbol answers the functions, aliases and file-level variables whose

@@ -68,17 +68,49 @@ func SearchArgs(text string) []string {
 // IndexEnv is the environment variable code-index reads for its database.
 const IndexEnv = "CODE_INDEX_DB"
 
-// indexDB is the database code-index should open for root: the user's own
-// $CODE_INDEX_DB when set, else <root>/.Wammy/code.sqlite (what code-index
-// itself would find from a working directory inside root).
-func indexDB(root string) string {
+// indexDB is the database code-index should open for root. The user's own
+// $CODE_INDEX_DB wins. Otherwise it is found as code-index's own lookup finds
+// it from a working directory inside root: the nearest directory upward that
+// holds a .git names the repository; with none, the nearest directory upward
+// that holds .Wammy/code.sqlite; with none, root itself. The database must be
+// a regular file: a symlink or other file there is refused, so the program
+// is not pointed through a link at an index elsewhere.
+func indexDB(root string) (string, error) {
 	if v := os.Getenv(IndexEnv); v != "" {
 		if abs, err := filepath.Abs(v); err == nil {
-			return abs
+			return abs, nil
 		}
-		return v
+		return v, nil
 	}
-	return filepath.Join(root, ".Wammy", "code.sqlite")
+	base := root
+	repo := ""
+	for d := root; ; d = filepath.Dir(d) {
+		if _, err := os.Lstat(filepath.Join(d, ".git")); err == nil {
+			repo = d
+			break
+		}
+		if filepath.Dir(d) == d {
+			break
+		}
+	}
+	if repo != "" {
+		base = repo
+	} else {
+		for d := root; ; d = filepath.Dir(d) {
+			if _, err := os.Lstat(filepath.Join(d, ".Wammy", "code.sqlite")); err == nil {
+				base = d
+				break
+			}
+			if filepath.Dir(d) == d {
+				break
+			}
+		}
+	}
+	p := filepath.Join(base, ".Wammy", "code.sqlite")
+	if fi, err := os.Lstat(p); err == nil && !fi.Mode().IsRegular() {
+		return "", fmt.Errorf("the index database %s is not a regular file", p)
+	}
+	return p, nil
 }
 
 // Search matches text against symbol names natively and, when the code-index
@@ -110,9 +142,14 @@ func Search(ctx context.Context, s *analysis.Snapshot, root, text string, cfg co
 		doc.CodeIndex.Reason = "code-index was not found on PATH"
 		return doc
 	}
+	db, err := indexDB(root)
+	if err != nil {
+		doc.CodeIndex.Reason = clip(err.Error())
+		return doc
+	}
 	res, err := extool.Run(ctx, tool, SearchArgs(text), extool.RunOptions{
 		Dir:       extool.NeutralDir(),
-		Env:       extool.ChildEnv([]string{root}, IndexEnv+"="+indexDB(root)),
+		Env:       extool.ChildEnv([]string{root}, IndexEnv+"="+db),
 		Timeout:   CodeIndexTimeout,
 		MaxOutput: CodeIndexMaxOutput,
 	})

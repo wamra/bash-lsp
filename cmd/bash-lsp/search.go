@@ -6,10 +6,8 @@ import (
 	"io"
 	"strings"
 
-	"github.com/wamra/bash-lsp/internal/config"
-	"github.com/wamra/bash-lsp/internal/extool"
 	"github.com/wamra/bash-lsp/internal/query"
-	"github.com/wamra/bash-lsp/internal/workspace"
+	"github.com/wamra/bash-lsp/internal/redact"
 )
 
 const searchUsage = "usage: bash-lsp search [--json] [--root DIR] [--] TEXT"
@@ -17,21 +15,6 @@ const searchUsage = "usage: bash-lsp search [--json] [--root DIR] [--] TEXT"
 // searchRoot is the root `search` works in. Kept apart so the root rules the
 // other commands share can replace it in one place.
 func searchRoot(flagRoot string) string { return flagRoot }
-
-// openSettled opens root and returns what the workspace was opened with: the
-// settings (user file, then root/.bash-lsp.toml) and the PATH profile.
-func openSettled(root string, stderr io.Writer) (*workspace.Workspace, config.Settings, *extool.Profile, error) {
-	st := config.Load(root, nil)
-	for _, w := range st.Warnings {
-		fmt.Fprintf(stderr, "bash-lsp: settings: %s\n", w)
-	}
-	prof := extool.ProfileFromEnv()
-	if st.PathProfile != nil {
-		prof = extool.NewProfile(st.PathProfile)
-	}
-	ws, err := workspace.OpenWith(root, st.Limits(), nil, st.Workspace(prof.Commands()))
-	return ws, st, prof, err
-}
 
 // cmdSearch is `bash-lsp search [--json] [--root DIR] [--] TEXT`. The text
 // (several words are joined by one space) is one argument to the
@@ -68,19 +51,24 @@ func cmdSearch(args []string, stdout, stderr io.Writer) int {
 	if len(text) > query.MaxText {
 		return usageErrorOf(stderr, searchUsage, fmt.Sprintf("the text is longer than %d bytes", query.MaxText))
 	}
-	ws, st, prof, err := openSettled(searchRoot(root), stderr)
+	ws, st, prof, err := query.Open(searchRoot(root), stderr)
 	if err != nil {
 		return fail(stderr, err)
 	}
+	query.NoteRefused(st, stderr)
 	doc := query.Search(context.Background(), ws.Snapshot(), ws.Root(), text, st, prof)
 	if asJSON {
-		if err := query.Write(stdout, doc); err != nil {
+		b, err := query.Marshal(doc)
+		if err != nil {
+			return fail(stderr, err)
+		}
+		if _, err := stdout.Write(redact.JSON(b)); err != nil {
 			return fail(stderr, err)
 		}
 		return 0
 	}
 	for _, l := range doc.Lines() {
-		fmt.Fprintln(stdout, l)
+		fmt.Fprintln(stdout, redact.String(l))
 	}
 	return 0
 }
