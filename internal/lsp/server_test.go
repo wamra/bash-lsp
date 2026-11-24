@@ -1118,3 +1118,20 @@ func TestUnknownRuleShownOnce(t *testing.T) {
 		t.Fatalf("logs:\n%s", logs)
 	}
 }
+
+// A missing file named by an absolute path into another workspace folder is
+// inside the workspace: a warning, not the information of a path elsewhere.
+func TestSourceIntoOtherFolderIsWarning(t *testing.T) {
+	a, b := t.TempDir(), t.TempDir()
+	src := "source " + filepath.Join(b, "lib", "none.sh") + "\nsource /elsewhere/none.sh\n"
+	if err := os.WriteFile(filepath.Join(a, "m.sh"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := clientWith(t, clientCfg{folders: []string{a, b}})
+	c.root = a
+	c.open("m.sh")
+	d := c.waitDiag("m.sh")
+	if len(d) != 2 || d[0].Severity != 2 || d[1].Severity != 3 {
+		t.Fatalf("%+v", d)
+	}
+}

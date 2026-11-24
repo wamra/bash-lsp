@@ -213,10 +213,12 @@ func TestQuoteFixNeverSafe(t *testing.T) {
 // Item 9 (R67c): in a library, a local whose function calls something that
 // resolves to nothing in view may be read by that callee.
 func TestNoUnusedLocalsInLibraries(t *testing.T) {
-	expectRule(t, map[string]string{"lib.sh": "f(){ local opt_quiet=1; run_step; }\n"}, "lib.sh", "WB1202")
+	// R73 (fix round 2): run_step is defined nowhere in the workspace, so it is an external command
+	expectRule(t, map[string]string{"lib.sh": "f(){ local opt_quiet=1; run_step; }\n"}, "lib.sh", "WB1202", "1:opt_quiet")
 	// the reviewer's v05: run_step is defined in a file lib.sh does not see (a name match, not a resolved call)
 	expectRule(t, map[string]string{"lib.sh": "f(){ local opt_quiet=1; run_step; }\n", "steps.sh": "run_step(){ [ -z \"$opt_quiet\" ] && echo s; }\n"}, "lib.sh", "WB1202")
-	expectRule(t, map[string]string{"lib.sh": "f(){ local verbose=1; log hi; }\n", "steps.sh": "run_step() { echo \"$verbose\"; }\n"}, "lib.sh", "WB1202")
+	expectRule(t, map[string]string{"lib.sh": "f(){ local verbose=1; log hi; }\n", "steps.sh": "log() { echo \"$verbose\"; }\n"}, "lib.sh", "WB1202")
+	expectRule(t, map[string]string{"lib.sh": "f(){ local verbose=1; log hi; }\n", "steps.sh": "run_step() { echo \"$verbose\"; }\n"}, "lib.sh", "WB1202", "1:verbose")
 	// still fires: a library function calling only builtins and functions in view
 	expectRule(t, map[string]string{"lib.sh": "g(){ :; }\nf(){ local unused_l=1; g; echo hi; }\n"}, "lib.sh", "WB1202", "2:unused_l")
 	// and in a script a local is checked as before
@@ -232,7 +234,8 @@ func TestNoUnusedFunctionDualUseAndLoaders(t *testing.T) {
 		expectRule(t, sh(src), "x.sh", "WB1201")
 	}
 	// the reviewer's f23: a glob loader whose pattern matches nothing resolvable
-	expectRule(t, map[string]string{"main.sh": "#!/bin/bash\nfor p in plugins/*.sh; do . \"$p\"; done\n", "a.sh": "#!/bin/bash\nplugin_init(){ :; }\necho x\n"}, "a.sh", "WB1201")
+	// a.sh is not under the loader's pattern: it still reports (fix round 2, item 2)
+	expectRule(t, map[string]string{"main.sh": "#!/bin/bash\nfor p in plugins/*.sh; do . \"$p\"; done\n", "a.sh": "#!/bin/bash\nplugin_init(){ :; }\necho x\n"}, "a.sh", "WB1201", "2:plugin_init")
 	expectRule(t, map[string]string{"main.sh": "#!/bin/bash\nfor p in plugins/*.sh; do . \"$p\"; done\n", "plugins/a.sh": "#!/bin/bash\nplugin_init(){ :; }\necho x\n"}, "plugins/a.sh", "WB1201")
 }
 

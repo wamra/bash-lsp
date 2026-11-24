@@ -135,7 +135,7 @@ func (c *diagCtx) syntax() {
 func (c *diagCtx) directiveIDs() {
 	for _, cm := range c.f.Comments {
 		d, ok := parseDirective(cm.Value)
-		if !ok || d.wb == nil || !aloneOnLine(c.f.Src, cm) {
+		if !ok || d.wb == nil || !placed(c.f.Src, cm) {
 			continue
 		}
 		var unknown []string
@@ -165,17 +165,25 @@ func (c *diagCtx) sources() {
 			text = string(src[a:b])
 		}
 		lit, literal := literalText(e.Ref.Word)
+		named := ""
+		if e.Ref.Directive != "" { // `# shellcheck source=PATH` names the file to follow
+			lit, literal, named = e.Ref.Directive, true, " (named by a shellcheck source= directive)"
+			text = lit
+		}
 		switch {
 		case e.Skipped != "":
-			c.add("WB1101", r, fmt.Sprintf("source file is over the %d MiB analysis limit and was skipped: %s (unresolved/%s)",
+			d := c.add("WB1101", r, fmt.Sprintf("source file is over the %d MiB analysis limit and was skipped: %s (unresolved/%s)",
 				MaxFileBytes>>20, c.s.rel(e.Skipped), ReasonSkippedForSize))
+			d.codes = []string{"SC1091"}
 		case literal:
-			d := c.add("WB1101", r, fmt.Sprintf("source file not found in the workspace: %s (unresolved/%s)", text, ReasonNotFound))
-			if c.outsideWorkspace(lit) || guardedSource(e.Ref, lit, src) {
+			d := c.add("WB1101", r, fmt.Sprintf("source file not found in the workspace: %s%s (unresolved/%s)", text, named, ReasonNotFound))
+			d.codes = []string{"SC1091"} // ShellCheck's code for a file it cannot follow
+			if c.outsideWorkspace(lit, e.Ref) || named == "" && guardedSource(e.Ref, lit, src) {
 				d.Severity = SevInfo
 			}
 		default:
 			d := c.add("WB1101", r, fmt.Sprintf("source path is computed and could not be resolved: %s (unresolved/%s)", text, ReasonNotFound))
+			d.codes = []string{"SC1090"} // ShellCheck's code for a path it cannot compute
 			d.Severity = SevInfo
 		}
 	}
@@ -193,23 +201,24 @@ func notAFile(w *tree.Node) bool {
 }
 
 // outsideWorkspace reports a literal path that cannot be a workspace file:
-// absolute outside the root, under the home directory (`~/`), or a bare name
-// that bash looks up in PATH.
-func (c *diagCtx) outsideWorkspace(lit string) bool {
+// absolute outside every workspace folder, under the home directory (`~/`),
+// or a bare name that bash looks up in PATH (not for bats `load`, which
+// looks beside the test file only).
+func (c *diagCtx) outsideWorkspace(lit string, ref SourceRef) bool {
 	switch {
 	case strings.HasPrefix(lit, "~"):
 		return true
 	case !strings.Contains(lit, "/"):
-		return true
+		return !c.batsLoad(ref)
 	case filepath.IsAbs(lit):
-		root := c.s.root
-		if root == "" {
-			return true
-		}
-		rel, err := filepath.Rel(root, filepath.Clean(lit))
-		return err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
+		return !c.inWorkspace(lit)
 	}
 	return false
+}
+
+// batsLoad reports a bats `load` command.
+func (c *diagCtx) batsLoad(ref SourceRef) bool {
+	return (&resolver{ff: c.ff}).batsLoad(ref)
 }
 
 // fileTestOps are the test operators that check a file exists or is readable.
@@ -224,18 +233,25 @@ func guardedSource(ref SourceRef, lit string, src []byte) bool {
 		case tree.KFuncDecl, tree.KFile:
 			return false
 		case tree.KAndOr:
-			for _, op := range n.Children {
-				if op == child || op.Range.Start.Offset >= child.Range.Start.Offset {
-					break
+			// `T && . P`: the operator just before the source's operand is
+			// `&&` and the test before it is not negated.
+			for k, op := range n.Children {
+				if op != child || k == 0 {
+					continue
 				}
-				if testsPath(op, lit, src) {
-					return true
+				prev := n.Children[k-1]
+				a, b := prev.Range.End.Offset, child.Range.Start.Offset
+				if a < 0 || b > len(src) || a > b || !strings.Contains(string(src[a:b]), "&&") {
+					return false
 				}
+				return testsPath(prev, lit, src)
 			}
 		case tree.KIf:
-			if len(n.Children) > 0 && n.Children[0] != child && testsPath(n.Children[0], lit, src) {
+			// the `then` part of `if T` (not an else or elif branch)
+			if len(n.Children) > 1 && n.Children[1] == child && testsPath(n.Children[0], lit, src) {
 				return true
 			}
+			return false
 		}
 		child = n
 	}
@@ -243,8 +259,15 @@ func guardedSource(ref SourceRef, lit string, src []byte) bool {
 }
 
 // testsPath reports whether n holds a test (`[[ ]]`, `[ ]`, `test`) with a
-// file operator whose operand is lit.
+// file operator whose operand is lit, not negated.
 func testsPath(n *tree.Node, lit string, src []byte) bool {
+	if a, b := n.Range.Start.Offset, n.Range.End.Offset; a >= 0 && a <= b && b <= len(src) {
+		for _, f := range strings.Fields(string(src[a:b])) {
+			if f == "!" { // a negated test guards the other case
+				return false
+			}
+		}
+	}
 	found := false
 	n.Walk(func(k *tree.Node) bool {
 		if found {
@@ -409,7 +432,7 @@ func (c *diagCtx) lostAssignments() {
 // variable it could not resolve.
 func (c *diagCtx) scriptConditions() bool {
 	sc := c.scan
-	if !sc.shebang || !sc.topCommand || c.s.sourced[c.file] || c.s.incomplete[c.file] || c.f.Dialect == tree.Bats || c.s.loopLoader() {
+	if !sc.shebang || !sc.topCommand || c.s.sourced[c.file] || c.s.incomplete[c.file] || c.f.Dialect == tree.Bats || c.loopLoaded() {
 		return false
 	}
 	u := c.visible()
@@ -564,7 +587,8 @@ func (c *diagCtx) scriptShaped() bool { return c.scan.shebang && c.scan.topComma
 
 // unresolvedCallIn reports whether the function holding local (or private)
 // variable d calls a name with no resolved target in view (none, or only a
-// name match in a file outside the closure): in a library
+// name match in a file outside the closure) that some file of the workspace
+// defines as a function: in a library
 // that callee may be a function of a file that sources it, reading d
 // through dynamic scope.
 func (c *diagCtx) unresolvedCallIn(d *Decl) bool {
@@ -581,7 +605,9 @@ func (c *diagCtx) unresolvedCallIn(d *Decl) bool {
 			}
 		}
 		for _, u := range c.ff.Uses {
-			if u.Kind == UseCall && u.Via == ViaNone && !u.ViaAlias && !bound[u] && !IsBuiltin(u.Name) {
+			// R73: a name no file of the workspace defines is an external
+			// command, which cannot read the local.
+			if u.Kind == UseCall && u.Via == ViaNone && !u.ViaAlias && !bound[u] && !IsBuiltin(u.Name) && len(c.s.funcSyms[u.Name]) > 0 {
 				if f := funcBody(u.Scope); f != nil {
 					c.unresolvedFns[f] = true
 				}
@@ -653,12 +679,82 @@ func (c *diagCtx) oneWordAt(bs []Binding, p *tree.Node) bool {
 		if b.Use.Node != p {
 			continue
 		}
-		if b.Sym == nil || b.Res == Unresolved || !c.oneWord(b.Sym) {
+		if b.Sym == nil || b.Res == Unresolved || !c.oneWord(b.Sym) || !c.setBefore(b.Sym, p) {
 			return false
+		}
+		if b.Sym.File == "" && funcBody(b.Use.Scope) != nil && c.localInView(p.Name) {
+			return false // a caller's local of that name may be what the read sees (dynamic scope)
 		}
 		found = true
 	}
+	return found && !c.visibleFlag(func(sc *fileScan) bool { return sc.setsIFS || sc.unsetVars[p.Name] })
+}
+
+// visibleFlag reports whether f holds for the scan of some visible file.
+func (c *diagCtx) visibleFlag(f func(*fileScan) bool) bool {
+	found := false
+	c.s.visible[c.file].each(func(j int) {
+		if !found && c.s.facts[j] != nil {
+			found = f(c.s.scanOf(j))
+		}
+	})
 	return found
+}
+
+// localInView reports whether some function in view declares name local.
+func (c *diagCtx) localInView(name string) bool {
+	return c.visibleFlag(func(sc *fileScan) bool { return sc.localNames[name] })
+}
+
+// setBefore reports whether sym is surely set where p reads it: some
+// assignment in view runs unconditionally (no if, &&, ||, case or loop
+// around it in its function or at file level) and comes before the read,
+// is in another file, or is at file level while the read is in a function.
+// Otherwise the value may come from the environment.
+func (c *diagCtx) setBefore(sym *Symbol, p *tree.Node) bool {
+	s := c.s
+	inFunc := funcBody(scopeAt(c, p)) != nil
+	for _, d := range sym.Decls {
+		if d.Temp || !s.visible[c.file].has(s.declFile[d]) || d.Node == nil || !unconditional(d.Node) {
+			continue
+		}
+		if s.declFile[d] != c.file || d.NameRange.Start.Offset < p.Range.Start.Offset || inFunc && funcBody(d.Scope) == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// scopeAt returns the scope of the read of p (the use Bind recorded).
+func scopeAt(c *diagCtx, p *tree.Node) *Scope {
+	bs := c.s.bindings[c.file]
+	off := p.NameRange.Start.Offset
+	i := sort.Search(len(bs), func(i int) bool { return bs[i].Use.Range.Start.Offset >= off })
+	for ; i < len(bs) && bs[i].Use.Range.Start.Offset == off; i++ {
+		if bs[i].Use.Node == p {
+			return bs[i].Use.Scope
+		}
+	}
+	return nil
+}
+
+// conditionals are the nodes whose parts may not run.
+var conditionals = map[tree.Kind]bool{tree.KIf: true, tree.KAndOr: true, tree.KCase: true, tree.KWhile: true,
+	tree.KCStyleFor: true, tree.KSubshell: true, tree.KPipeline: true}
+
+// unconditional reports whether n runs whenever its function (or the file)
+// does: no conditional construct around it below the function. A `for` is
+// the declaration of its own variable, not a condition on it.
+func unconditional(n *tree.Node) bool {
+	for p := n.Parent; p != nil; p = p.Parent {
+		switch {
+		case p.Kind == tree.KFuncDecl || p.Kind == tree.KFile:
+			return true
+		case conditionals[p.Kind], p.Kind == tree.KFor && p != n:
+			return false
+		}
+	}
+	return true
 }
 
 // oneWord reports whether every assignment of sym in view is one word
@@ -697,7 +793,7 @@ func (c *diagCtx) oneWordUncached(sym *Symbol) bool {
 			if !s.assigns(d) {
 				continue // `local x`: declares, assigns nothing
 			}
-			if !s.plainAssign(d) || !oneWordValue(d.Node) {
+			if !s.plainAssign(d) || !oneWordValue(d.Node, s.src(d)) {
 				return false
 			}
 		default:
@@ -721,7 +817,7 @@ func (s *Snapshot) plainAssign(d *Decl) bool {
 // oneWordValue reports whether the value of assignment n is a non-empty
 // literal without whitespace or glob characters, or one arithmetic
 // expansion.
-func oneWordValue(n *tree.Node) bool {
+func oneWordValue(n *tree.Node, src []byte) bool {
 	var w *tree.Node
 	for _, k := range n.Children {
 		if k.Kind == tree.KWord {
@@ -734,8 +830,14 @@ func oneWordValue(n *tree.Node) bool {
 	if len(w.Children) == 1 && w.Children[0].Kind == tree.KArithExp {
 		return true
 	}
+	for _, p := range w.Children {
+		// `$'a\tb'` is stored undecoded: its value may hold any byte
+		if a := p.Range.Start.Offset; p.Kind == tree.KSglQuoted && a >= 0 && a+1 < len(src) && src[a] == '$' {
+			return false
+		}
+	}
 	t, ok := literalText(w)
-	return ok && safeWord(t)
+	return ok && safeWord(t) && !strings.Contains(t, "\\")
 }
 
 // forOverWords reports a `for` loop over literal words, each safeWord.

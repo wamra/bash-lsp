@@ -26,6 +26,7 @@ var (
 	scCodeRe      = regexp.MustCompile(`^SC(\d{4})$`)
 	bareCodeRe    = regexp.MustCompile(`^\d{4}$`)
 	listSepRe     = regexp.MustCompile(`[,\s]+`)
+	ruleIDShapeRe = regexp.MustCompile(`^[A-Za-z]{2}\d{4}$`)
 )
 
 type directive struct {
@@ -35,12 +36,15 @@ type directive struct {
 	start, end int   // covered offsets [start, end)
 }
 
-// silences reports whether the directive turns rule off.
-func (d *directive) silences(rule string) bool {
+// silences reports whether the directive turns off a finding of rule whose
+// ShellCheck codes are codes (the rule's map when nil).
+func (d *directive) silences(rule string, codes []string) bool {
 	if d.wb[rule] {
 		return true
 	}
-	codes := ruleByID[rule].ShellCheck
+	if codes == nil {
+		codes = ruleByID[rule].ShellCheck
+	}
 	if len(codes) == 0 {
 		return false
 	}
@@ -89,11 +93,18 @@ func codeSpan(c string) (lo, hi int, ok bool) {
 // parseDirective reads one comment; ok is false when it is not a directive.
 func parseDirective(text string) (d directive, ok bool) {
 	if m := wbDirectiveRe.FindStringSubmatch(text); m != nil {
+		// The ids run until the first word that is not shaped like a rule id
+		// (two letters and four digits): the rest is the author's comment
+		// (`# bash-lsp disable=WB1401 -- the list splits on purpose`).
 		d.wb = map[string]bool{}
 		for _, id := range listSepRe.Split(strings.TrimSpace(m[1]), -1) {
-			if id != "" {
-				d.wb[id] = true
+			if id == "" {
+				continue
 			}
+			if !ruleIDShapeRe.MatchString(id) {
+				break
+			}
+			d.wb[id] = true
 		}
 		return d, true
 	}
@@ -140,12 +151,12 @@ func suppress(f *tree.File, ds []Diagnostic) []Diagnostic {
 	var dirs []directive
 	for _, c := range f.Comments {
 		d, ok := parseDirective(c.Value)
-		if !ok || !aloneOnLine(f.Src, c) {
+		if !ok || !placed(f.Src, c) {
 			continue
 		}
 		if c.Range.Start.Offset < firstCmd {
 			d.start, d.end = 0, len(f.Src)+1
-		} else if n := nextCommand(c); n != nil {
+		} else if n := nextCommand(c); n != nil && onlyComments(f.Src, c.Range.End.Offset, n.Range.Start.Offset) {
 			d.start, d.end = n.Range.Start.Offset, n.Range.End.Offset
 		} else {
 			continue
@@ -159,9 +170,13 @@ func suppress(f *tree.File, ds []Diagnostic) []Diagnostic {
 	// findings of each rule it silences in its range, jumping over those
 	// already dropped (skip), so nested directives over many findings stay
 	// linear.
-	byRule := map[string][]int{}
+	byRule := map[string][]int{} // by rule and, for a finding with its own codes, those codes
 	for i, d := range ds {
-		byRule[d.Rule] = append(byRule[d.Rule], i)
+		k := d.Rule
+		if d.codes != nil {
+			k += "\x00" + strings.Join(d.codes, ",")
+		}
+		byRule[k] = append(byRule[k], i)
 	}
 	type bucket struct {
 		idx  []int
@@ -187,8 +202,8 @@ func suppress(f *tree.File, ds []Diagnostic) []Diagnostic {
 	drop := make([]bool, len(ds))
 	for k := range dirs {
 		d := &dirs[k]
-		for r, b := range buckets {
-			if !d.silences(r) {
+		for _, b := range buckets {
+			if f := ds[b.idx[0]]; !d.silences(f.Rule, f.codes) {
 				continue
 			}
 			i := sort.Search(len(b.idx), func(i int) bool { return ds[b.idx[i]].Range.Start.Offset >= d.start })
@@ -207,13 +222,51 @@ func suppress(f *tree.File, ds []Diagnostic) []Diagnostic {
 	return out
 }
 
-// aloneOnLine reports whether comment c is the only thing on its line: a
-// directive after a command applies to nothing (ShellCheck refuses one
-// there, SC1126).
-func aloneOnLine(src []byte, c *tree.Node) bool {
+// openers are the words after which a directive on the same line still
+// stands before the command that follows (`do # shellcheck disable=…`).
+var openers = map[string]bool{"then": true, "do": true, "else": true, "{": true, "(": true}
+
+var (
+	funcHeaderRe  = regexp.MustCompile(`^(?:function\s+)?[^\s()=;&|<>]+\s*\(\s*\)$|^function\s+[^\s()=;&|<>]+$`)
+	casePatternRe = regexp.MustCompile(`^\(?[^()]*\)$`)
+)
+
+// placed reports whether comment c stands where a directive applies: alone
+// on its line, or after an opener on it (`then`, `do`, `else`, `{`, `(`, a
+// function header, a case pattern), as ShellCheck 0.11.0 takes it. After a
+// command it applies to nothing (ShellCheck refuses it there, SC1126).
+func placed(src []byte, c *tree.Node) bool {
 	o := c.Range.Start.Offset
-	for i := o - 1; i >= 0 && i < len(src) && src[i] != '\n'; i-- {
-		if src[i] != ' ' && src[i] != '\t' {
+	if o < 0 || o > len(src) {
+		return false
+	}
+	i := o
+	for i > 0 && src[i-1] != '\n' {
+		i--
+	}
+	before := strings.TrimSpace(string(src[i:o]))
+	if before == "" {
+		return true
+	}
+	fields := strings.Fields(before)
+	if last := fields[len(fields)-1]; openers[last] || strings.HasSuffix(last, ";then") || strings.HasSuffix(last, ";do") {
+		return true
+	}
+	if funcHeaderRe.MatchString(before) {
+		return true
+	}
+	return casePatternRe.MatchString(before) && c.Enclosing(tree.KCase) != nil
+}
+
+// onlyComments reports whether src[a:b] holds nothing but blank space and
+// comment lines: a directive before `else`, `elif` or a case pattern stands
+// before no command (ShellCheck refuses it: SC1123, SC1124).
+func onlyComments(src []byte, a, b int) bool {
+	if a < 0 || b > len(src) || a > b {
+		return false
+	}
+	for _, line := range strings.Split(string(src[a:b]), "\n") {
+		if t := strings.TrimSpace(line); t != "" && t[0] != '#' {
 			return false
 		}
 	}

@@ -537,13 +537,20 @@ func (s *server) publish(be backend, d *document, path string) {
 const diagnosticTagUnnecessary = 1
 
 // diagOptions returns the diagnostic settings of the folder be serves.
+// Roots names every workspace folder, so that a `source` into another
+// folder counts as inside the workspace.
 func (s *server) diagOptions(be backend) analysis.DiagOptions {
+	opt := s.looseDiag
 	for _, f := range s.folders {
 		if backend(f.ws) == be {
-			return f.diag
+			opt = f.diag
 		}
 	}
-	return s.looseDiag
+	opt.Roots = make([]string, 0, 2*len(s.folders))
+	for _, f := range s.folders { // as the client spells it and as resolved: a script may use either
+		opt.Roots = append(opt.Roots, f.client, f.ws.Root())
+	}
+	return opt
 }
 
 // settings loads the settings of a folder root ("" for documents outside

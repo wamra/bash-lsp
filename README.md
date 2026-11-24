@@ -25,6 +25,30 @@ published binaries and no stable interface yet, and CI has not run.
 
 Licence: MIT (see `LICENSE`). Third-party attribution is in `NOTICE`.
 
+## Turning a diagnostic off
+
+A comment directive silences findings:
+
+```bash
+# bash-lsp disable=WB1401,WB1202 -- why, in your words
+# shellcheck disable=SC2086
+```
+
+- `# bash-lsp disable=` takes rule ids (two letters and four digits, such as
+  `WB1401`), separated by commas or spaces. The list ends at the first word
+  that is not shaped like a rule id; the rest of the line is your comment. An
+  id that names no rule is reported (WB1008).
+- `# shellcheck disable=` takes ShellCheck codes (`SC2086` or `2086`), ranges
+  (`SC3000-SC4000`) and `all`, and silences the native rules that report the
+  same problem as one of the codes.
+- Placement follows ShellCheck: before the first command, a directive applies
+  to the whole file; otherwise to the next command or compound command (a
+  whole `if`, loop or function). It may stand alone on its line or after an
+  opener on it (`then`, `do`, `else`, `{`, `(`, a case pattern, a function
+  header). After a command on the same line, before `else` or `elif`, between
+  case arms, or with no command after it in its block, it applies to nothing.
+- The settings key `diagnostics.disable` turns a rule off everywhere.
+
 ## Command line
 
 ```

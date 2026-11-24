@@ -3,6 +3,8 @@ package analysis
 import (
 	"bytes"
 	"fmt"
+	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -36,6 +38,8 @@ type Diagnostic struct {
 	Origin      string
 	Unnecessary bool
 	Fixes       []Fix
+
+	codes []string // the ShellCheck codes of this finding when narrower than its rule's map
 }
 
 // RuleInfo describes a native rule. ShellCheck lists the ShellCheck codes
@@ -54,6 +58,7 @@ type RuleInfo struct {
 // carried but no rule reads it yet, and is kept for rules about what newer
 // bash changes or removes.
 type DiagOptions struct {
+	Roots    []string // every workspace folder (absolute); the snapshot's root counts too
 	Target   VersionRange
 	Disabled map[string]bool
 	Severity map[string]Severity
@@ -75,7 +80,7 @@ func (s *Snapshot) Diagnostics(path string, opt DiagOptions) []Diagnostic {
 	if ff == nil || ff.File == nil {
 		return out
 	}
-	c := &diagCtx{s: s, file: file, ff: ff, f: ff.File, target: opt.Target, disabled: opt.Disabled}
+	c := &diagCtx{s: s, file: file, ff: ff, f: ff.File, target: opt.Target, disabled: opt.Disabled, extraRoots: opt.Roots}
 	if c.target == (VersionRange{}) {
 		c.target = DefaultTarget // no target given: the default range (D-8)
 	}
@@ -137,10 +142,14 @@ func Merge(native, sc []Diagnostic) []Diagnostic {
 	out = append(out, sc...)
 	for _, n := range native {
 		info, ok := ruleByID[n.Rule]
+		codes := info.ShellCheck
+		if n.codes != nil {
+			codes = n.codes
+		}
 		dup := false
-		if ok && len(info.ShellCheck) > 0 {
+		if ok && len(codes) > 0 {
 			for _, d := range sc {
-				if mapsTo(info.ShellCheck, d.Rule) && overlaps(n.Range, d.Range) {
+				if mapsTo(codes, d.Rule) && overlaps(n.Range, d.Range) {
 					dup = true
 					break
 				}
@@ -184,8 +193,9 @@ type diagCtx struct {
 	scan *fileScan
 	out  []Diagnostic
 
-	target   VersionRange    // the bash versions the file must run on (WB1301)
-	disabled map[string]bool // rules turned off: they do not run
+	target     VersionRange    // the bash versions the file must run on (WB1301)
+	disabled   map[string]bool // rules turned off: they do not run
+	extraRoots []string        // workspace folders besides the snapshot's root
 
 	oneWords      map[*Symbol]bool    // WB1401: symbols whose every value is one word, on first need
 	unresolvedFns map[*tree.Node]bool // functions of the file that call a name resolving to nothing in view, on first need
@@ -268,6 +278,8 @@ type fileScan struct {
 	nameref    bool            // some declaration is a nameref
 	lastpipe   bool            // `lastpipe` appears (shopt -s lastpipe): the last pipeline stage may run in the shell
 	localNames map[string]bool // names some function of the file declares local
+	unsetVars  map[string]bool // names an `unset` of the file names (as a variable or function)
+	setsIFS    bool            // the file assigns IFS (not only for one command)
 	version    versionScan     // evidence for the version rules (versionrules.go)
 }
 
@@ -286,9 +298,6 @@ type fileMentions struct {
 // shares for every file that did not change: Build carries the entries of
 // those files over (carryDiag), so an edit rescans only the edited file.
 type diagState struct {
-	loaderOnce sync.Once
-	loader     bool // some file sources through a loop variable and that source is unresolved (loopLoader)
-
 	diagMu   sync.Mutex
 	scans    map[*FileFacts]*fileScan
 	mentions map[*FileFacts]*fileMentions
@@ -318,21 +327,94 @@ func (s *Snapshot) carryDiag(prev *Snapshot) {
 	}
 }
 
-// loopLoader reports whether some file has an unresolved `source` of a
-// loop variable (`for p in plugins/*.sh; do . "$p"; done` whose pattern
-// matched nothing analysable): any script may be one it loads.
-func (s *Snapshot) loopLoader() bool {
-	s.loaderOnce.Do(func() {
-		for _, es := range s.edges {
-			for _, e := range es {
-				if e.Status == SourceUnresolved && e.Ref.loop != nil {
-					s.loader = true
-					return
+// loopLoaded reports whether this file may be one that an unresolved
+// `source` of a loop variable loads (`for p in plugins/*.sh; do . "$p";
+// done` whose pattern matched nothing analysable). Per loop word: a
+// directory outside every workspace folder (`$HOME`, `~`, an absolute path
+// elsewhere, such as /etc/profile.d) loads none of them; a literal pattern
+// loads the files it matches, taken from the loading script's directory and
+// from each folder; anything computed may load any script.
+func (c *diagCtx) loopLoaded() bool {
+	s := c.s
+	path := s.paths[c.file]
+	for i, es := range s.edges {
+		var src []byte
+		var dir string
+		for _, e := range es {
+			if e.Status != SourceUnresolved || e.Ref.loop == nil {
+				continue
+			}
+			if src == nil {
+				src, dir = s.facts[i].File.Src, filepath.Dir(s.paths[i])
+			}
+			words := 0
+			for _, w := range e.Ref.loop.Children {
+				if w.Kind != tree.KWord {
+					continue
+				}
+				words++
+				if c.loopWordLoads(w, src, dir, path) {
+					return true
 				}
 			}
+			if words == 0 { // `for p; do`: the arguments, anything
+				return true
+			}
 		}
-	})
-	return s.loader
+	}
+	return false
+}
+
+func (c *diagCtx) loopWordLoads(w *tree.Node, src []byte, dir, path string) bool {
+	text := ""
+	if a, b := w.Range.Start.Offset, w.Range.End.Offset; a >= 0 && a <= b && b <= len(src) {
+		text = strings.TrimLeft(string(src[a:b]), `"'`)
+	}
+	if strings.HasPrefix(text, "~") || strings.HasPrefix(text, "$HOME") || strings.HasPrefix(text, "${HOME}") {
+		return false
+	}
+	lit, ok := literalText(w)
+	if !ok {
+		return true
+	}
+	var pats []string
+	if filepath.IsAbs(lit) {
+		if !c.inWorkspace(lit) {
+			return false
+		}
+		pats = []string{filepath.Clean(lit)}
+	} else {
+		pats = append(pats, filepath.Join(dir, lit))
+		for _, r := range c.roots() {
+			pats = append(pats, filepath.Join(r, lit))
+		}
+	}
+	for _, p := range pats {
+		if m, _ := filepath.Match(p, path); m {
+			return true
+		}
+	}
+	return false
+}
+
+// roots are the workspace folders: the snapshot's root and DiagOptions.Roots.
+func (c *diagCtx) roots() []string {
+	out := make([]string, 0, 1+len(c.extraRoots))
+	if c.s.root != "" {
+		out = append(out, c.s.root)
+	}
+	return append(out, c.extraRoots...)
+}
+
+// inWorkspace reports whether absolute path p lies in a workspace folder.
+func (c *diagCtx) inWorkspace(p string) bool {
+	p = filepath.Clean(p)
+	for _, r := range c.roots() {
+		if rel, err := filepath.Rel(r, p); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // scanOf returns the scan of file, made on first use.
@@ -365,10 +447,11 @@ func (s *Snapshot) mentionsOf(file int) *fileMentions {
 	}
 	m = &fileMentions{dollar: map[string]bool{}}
 	if ff != nil && ff.File != nil {
-		// Every `$name` in the text, read or inside a string: an over-count
-		// (a read bound elsewhere counts too) that needs no walk. The forms
-		// only a walk finds are rare; walk only when their text appears.
-		addDollarNames(m.dollar, ff.File.Src)
+		// Every `$name` of the code, read or inside a string a command may
+		// evaluate: an over-count (a read bound elsewhere counts too) that
+		// needs no walk. The forms only a walk finds are rare; walk only when
+		// their text appears.
+		codeDollarNames(m.dollar, ff.File)
 		if mentionWalkNeeded(ff.File.Src) {
 			walkMentions(ff, &scanWalker{m: m})
 		}
@@ -394,25 +477,26 @@ func (s *Snapshot) mentionsOf(file int) *fileMentions {
 }
 
 // mentionWalkNeeded reports text that the forms only a walk recognises
-// contain: `-v name`, `declare -p name`, `$[ ]`, an arithmetic comparison in
-// `[[ ]]` (`-eq` and the others), `set -a` and `set -o allexport`. One pass
-// over the dashes, and two searches.
+// contain: an option cluster holding v, p or a (`-v`, `-xp`, `set -ea`), an
+// arithmetic comparison in `[[ ]]` (`-eq` and the others), `$[ ]` and
+// `allexport`. One pass over the dashes, and two searches.
 func mentionWalkNeeded(src []byte) bool {
 	if bytes.Contains(src, []byte("$[")) || bytes.Contains(src, []byte("allexport")) {
 		return true
 	}
 	for i := bytes.IndexByte(src, '-'); i >= 0 && i+1 < len(src); {
-		switch c := src[i+1]; {
-		case c == 'v' || c == 'p' || c == 'a':
-			return true
-		case i+2 < len(src) && arithOps[string(src[i:i+3])]:
+		j := i + 1
+		for j < len(src) && ('a' <= src[j] && src[j] <= 'z' || 'A' <= src[j] && src[j] <= 'Z') {
+			j++
+		}
+		if run := src[i+1 : j]; len(run) > 0 && (bytes.ContainsAny(run, "vpa") || arithOps[string(src[i:j])]) {
 			return true
 		}
-		j := bytes.IndexByte(src[i+1:], '-')
-		if j < 0 {
+		k := bytes.IndexByte(src[i+1:], '-')
+		if k < 0 {
 			break
 		}
-		i += 1 + j
+		i += 1 + k
 	}
 	return false
 }
@@ -488,6 +572,7 @@ func scanFile(ff *FileFacts) *fileScan {
 			sc.funcs = append(sc.funcs, d.Node)
 		case d.Kind == DeclVariable:
 			sc.nameref = sc.nameref || d.Attrs.Nameref
+			sc.setsIFS = sc.setsIFS || d.Name == "IFS" && !d.Temp
 			if d.Attrs.Local {
 				if sc.localNames == nil {
 					sc.localNames = map[string]bool{}
@@ -547,7 +632,7 @@ func dualUse(src []byte) bool {
 // inspected are the command names scanFile looks into: the file-changing
 // commands and the prefixes before them, and builtin wrappers.
 var inspected = func() map[string]bool {
-	m := map[string]bool{"sudo": true, "command": true, "builtin": true, "shopt": true, "wait": true}
+	m := map[string]bool{"sudo": true, "command": true, "builtin": true, "shopt": true, "wait": true, "unset": true}
 	for k := range mutating {
 		m[k] = true
 	}
@@ -558,6 +643,17 @@ var inspected = func() map[string]bool {
 // of a builtin (`cd() { builtin cd "$@"; }`).
 func (sc *fileScan) command(u *Use, words []*tree.Node, src []byte) {
 	name := u.Name
+	if name == "unset" { // variables removed: their values are not proven (WB1401)
+		for _, w := range words[1:] {
+			if t, ok := literalText(w); ok && identRe.MatchString(t) {
+				if sc.unsetVars == nil {
+					sc.unsetVars = map[string]bool{}
+				}
+				sc.unsetVars[t] = true
+			}
+		}
+		return
+	}
 	if name == "shopt" || name == "wait" {
 		sc.version.command(name, words)
 		return
@@ -675,8 +771,6 @@ func (w *scanWalker) visit(n *tree.Node, fn *tree.Node, cmdWord bool) {
 			for _, f := range strings.Fields(n.Value) { // `ns::work`, `lib.cleanup`, `x@y`: a whole word may name a function
 				w.words[f] = true
 			}
-		case w.m != nil && strings.IndexByte(n.Value, '$') >= 0:
-			addDollarNames(w.m.dollar, n.Value)
 		}
 	case tree.KArithExp:
 		// `$[ expr ]`, the old form of `$(( ))`, which the binder does not read
@@ -870,28 +964,169 @@ func addTokens(m map[string]bool, v string) {
 	}
 }
 
-// addDollarNames adds every name that follows `$` or `${` in v: text the
-// shell may expand later (an eval or trap string, an escaped `\$x`).
-func addDollarNames[T string | []byte](m map[string]bool, v T) {
-	for i := 0; i < len(v); i++ {
-		if v[i] != '$' {
+
+// evalCommands run a string argument as shell code, now or later: a
+// single-quoted `$name` in their arguments is a read.
+var evalCommands = map[string]bool{"eval": true, "trap": true, "bash": true, "sh": true, "dash": true, "ksh": true,
+	"zsh": true, "su": true, "sudo": true, "ssh": true, "xargs": true, "env": true, "nohup": true, "timeout": true,
+	"watch": true, "parallel": true, "exec": true, "find": true, "script": true, "complete": true, "bind": true}
+
+// codeDollarNames adds every name after `$`, `${`, `${!` or `${#` in f's text
+// except in comments, in single-quoted strings that no command evaluates
+// (`echo '$x is literal'`, not `trap 'rm "$tmp"' EXIT` or `x='$y'`), and in
+// the body of a heredoc whose tag is quoted.
+func codeDollarNames(m map[string]bool, f *tree.File) {
+	src := f.Src
+	cmts := f.Comments
+	var loc *tree.Locator
+	ask := func(i int) bool { // the tree decides: is the `$` at i inert text?
+		if f.Root == nil {
+			return false
+		}
+		if loc == nil {
+			loc = f.NewLocator()
+		}
+		return inertText(loc.At(i), src)
+	}
+	// A quoted heredoc body can hold any quote; with one in the file, ask
+	// the tree about every `$` outside single quotes too.
+	quotedHeredoc := quotedHeredocRe.Match(src)
+	// One pass of quote states, as a filter: a `$` this lexer sees inside
+	// single quotes is checked against the tree; one it sees outside is
+	// code. A lexer confused by a heredoc can only over-count (or ask more).
+	const (
+		normal = iota
+		single
+		double
+	)
+	state, ci := normal, 0
+	for i := 0; i < len(src); i++ {
+		// jump to the next byte that can change the state or start a name
+		stops := "\\'\"$"
+		if state == single {
+			stops = "'$"
+		}
+		next := bytes.IndexAny(src[i:], stops)
+		if next < 0 {
+			break
+		}
+		if state == normal && ci < len(cmts) && cmts[ci].Range.Start.Offset >= i && cmts[ci].Range.Start.Offset < i+next {
+			next = cmts[ci].Range.Start.Offset - i
+		}
+		i += next
+		for ci < len(cmts) && cmts[ci].Range.End.Offset <= i {
+			ci++
+		}
+		if state == normal && ci < len(cmts) && cmts[ci].Range.Start.Offset <= i {
+			i = cmts[ci].Range.End.Offset - 1
+			continue
+		}
+		c := src[i]
+		switch state {
+		case single:
+			if c == '\'' {
+				state = normal
+				continue
+			}
+		case double:
+			switch c {
+			case '\\':
+				if i+1 < len(src) && src[i+1] != '$' { // `\$x` stays a mention: eval may expand it later
+					i++
+				}
+				continue
+			case '"':
+				state = normal
+				continue
+			}
+		default:
+			switch c {
+			case '\\':
+				if i+1 < len(src) && src[i+1] != '$' { // `\$x` stays a mention: eval may expand it later
+					i++
+				}
+				continue
+			case '\'':
+				state = single
+				continue
+			case '"':
+				state = double
+				continue
+			}
+		}
+		if c != '$' {
 			continue
 		}
 		j := i + 1
-		if j < len(v) && v[j] == '{' {
+		if j < len(src) && src[j] == '\'' && state == normal { // $'...': ANSI-C quoting, text
+			state = single
+			i = j
+			continue
+		}
+		if j < len(src) && src[j] == '{' {
 			j++
-			if j < len(v) && (v[j] == '!' || v[j] == '#') {
+			if j < len(src) && (src[j] == '!' || src[j] == '#') {
 				j++
 			}
 		}
 		k := j
-		for k < len(v) && isIdentChar(v[k]) {
+		for k < len(src) && isIdentChar(src[k]) {
 			k++
 		}
-		if k > j && isIdentStart(v[j]) {
-			m[string(v[j:k])] = true
+		if k == j || !isIdentStart(src[j]) {
+			continue
+		}
+		if (state == single || quotedHeredoc) && ask(i) {
+			continue
+		}
+		m[string(src[j:k])] = true
+	}
+}
+
+// quotedHeredocRe finds a heredoc whose tag is quoted (`<<'EOF'`, `<<-"X"`,
+// `<<\EOF`): its body is text.
+var quotedHeredocRe = regexp.MustCompile(`<<-?\s*['"\\]`)
+
+// inertText reports whether node n (the deepest at a `$`) is text the
+// shell never expands: a single-quoted string outside an evaluating command
+// or assignment, or a quoted heredoc's body.
+func inertText(n *tree.Node, src []byte) bool {
+	switch {
+	case n == nil:
+		return false
+	case n.Kind == tree.KSglQuoted:
+		for p := n.Parent; p != nil; p = p.Parent {
+			switch p.Kind {
+			case tree.KAssign:
+				return false
+			case tree.KCall:
+				for _, w := range p.Children {
+					if w.Kind == tree.KWord {
+						name, ok := wordName(w)
+						return !ok || !evalCommands[name] && !isShell(name)
+					}
+				}
+				return true
+			case tree.KStmt, tree.KFile:
+				return true
+			}
+		}
+		return true
+	case n.Kind == tree.KLit:
+		if h := n.Enclosing(tree.KHeredoc); h != nil && h.Parent != nil {
+			for _, w := range h.Parent.Children {
+				if w.Kind == tree.KWord {
+					for _, q := range w.Children {
+						if q.Kind == tree.KSglQuoted || q.Kind == tree.KDblQuoted || q.Kind == tree.KLit && strings.Contains(q.Value, "\\") {
+							return true
+						}
+					}
+					return false
+				}
+			}
 		}
 	}
+	return false
 }
 
 // nameUnion is what the files visible from a file read or mention by name,
