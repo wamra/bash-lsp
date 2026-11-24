@@ -282,6 +282,13 @@ func FormatWith(path string, src []byte, o FormatOptions, fallback Dialect) ([]b
 	if err != nil {
 		return nil, err
 	}
+	if p.d == POSIX {
+		// The next pass reads the printed text again, and an sh file must be
+		// read the same way by both grammars then too.
+		if _, _, err := strictParse(path, out, p.d, o); err != nil {
+			return nil, unsupported("the formatted sh text would be read differently by the two grammars; not applied")
+		}
+	}
 	if DetectWith(path, out, fallback) != p.d {
 		// A comment printed without its leading space can become a shebang or
 		// a directive; the next read would use another grammar.

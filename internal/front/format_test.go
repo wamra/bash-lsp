@@ -574,3 +574,17 @@ func TestFormatNoFinalNewlineIsFixedPoint(t *testing.T) {
 		}
 	}
 }
+
+// An sh file is formatted only when both grammars read it the same way; that
+// must hold for the printed text too, since the next pass reads it again.
+func TestFormatShOutputIsReadTheSameByBothGrammars(t *testing.T) {
+	src := []byte("#!sh\n$[00; ]")
+	out, err := Format("x.sh", src, FormatOptions{})
+	if err != nil {
+		return
+	}
+	again, err := Format("x.sh", out, FormatOptions{})
+	if err != nil || !bytes.Equal(again, out) {
+		t.Fatalf("%q -> %q -> %q (%v)", src, out, again, err)
+	}
+}
