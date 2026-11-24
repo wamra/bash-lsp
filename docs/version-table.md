@@ -87,24 +87,31 @@ behind `env` (its options `-i`, `-v`, `-0`, `-C dir`, `-P path`, `-u name`,
 - **WB1301 only for bash files** (dialect `bash`). A file with an `sh`, `zsh`,
   `ksh`/`mksh` or bats dialect gets none. WB1302 only for `sh` files.
 - **A version check silences the features after it, not the whole file.**
-  A read of `BASH_VERSION` or `BASH_VERSINFO` in code (an `if ((...))`, a
-  `[[ ... ]] || exit`, a `case`, an assignment that is later compared) silences
-  every feature at or after the first such read, in source order. Not a read:
-  a comment, a single-quoted string, a heredoc body, and an argument of `echo`,
-  `printf` or `log` outside a test or arithmetic (`echo "running on
-  $BASH_VERSION"` only prints). A feature written before the first read is
-  still reported.
+  A read of `BASH_VERSION` or `BASH_VERSINFO` in code that checks something
+  (an `if ((...))`, a `[[ ... ]] || exit`, a `case`, arithmetic) silences every
+  feature at or after the first such read, in source order. A check at the top
+  level (outside every function) also silences the features inside every
+  function body of the file, wherever the function is defined: `f() { declare
+  -A m; }` above `((BASH_VERSINFO[0] >= 4)) || exit 1` is silent, as is a
+  `main` called from `if ((BASH_VERSINFO[0] >= 4)); then main; fi`. Top-level
+  code before the check is still reported. A check inside a function guards
+  only what follows it in source order. Not a check: a comment, a
+  single-quoted string, a heredoc body, a standalone argument of `echo`,
+  `printf` or `log` (`echo "running on $BASH_VERSION"` only prints), and an
+  assignment (`v=$BASH_VERSION`) unless the variable is later read in a test,
+  arithmetic or a `case` word of the same file. A print piped into a command
+  that decides an `||`, an `&&` or an `if` (`echo "$BASH_VERSION" | grep -q ^4
+  || exit 1`) is a check.
 - **Tolerated uses.** A feature is not reported when its command is the left
-  side of `||` (`shopt -s globstar 2>/dev/null || true`), or sends standard
-  error to `/dev/null` (`2>/dev/null`, `2>>/dev/null`, `&>/dev/null`), or is
-  the right side of `&&` after a test (`[ -n "$x" ] && shopt -s globstar`), or
-  is a statement of the then-body of an `if`/`elif` whose condition holds a
-  test. A test is `[[ ]]`, `[ ]`, `test` or `(( ))`. **Known gap:** what the
-  test checks cannot be told apart from a version probe, so any test counts,
-  including `[ $# -gt 0 ] && declare -A m`: a feature behind an unrelated test
-  is missed. Still reported: top-level code, code after `;`, behind a command
-  that is not a test, in an else branch, in a loop or a function, deeper than
-  the then-body's own statements, and the right side of `||`.
+  side of `||` (`shopt -s globstar 2>/dev/null || true`) or sends standard
+  error to `/dev/null` (`2>/dev/null`, `2>>/dev/null`, `&>/dev/null`). A test
+  in front of a feature does **not** tolerate it: what a test checks cannot be
+  told from a version probe, and treating every test as one hid real findings
+  (`[ $# -gt 0 ] && declare -A m`, `if [ -f x ]; then declare -A m; fi`,
+  `[[ -n $HOME ]] && shopt -s globstar`, `test -d /tmp && declare -A m`, a
+  `case` arm, a whole `if [[ $x == y ]]` body, and `[ -n "$x" ] && shopt -s
+  globstar`) and these are reported. The right side of `||` is reported too.
+  Only a version variable guards.
 - **`EPOCHSECONDS`/`EPOCHREALTIME` inside a test** (`[[ -z $EPOCHSECONDS ]]`,
   `[ "$EPOCHSECONDS" -gt 5 ]`, `test -n ...`, a `(( ))` condition) is how a
   script finds out whether it has the variable, so it is not reported.
@@ -150,6 +157,20 @@ behind `env` (its options `-i`, `-v`, `-0`, `-C dir`, `-P path`, `-u name`,
   `${EPOCHSECONDS+x}`).
 - **Calls through wrappers** (`builtin shopt -s globstar`, `command wait -n`)
   and `shopt`/`wait` inside strings that are evaluated later are not seen.
+
+## Known gaps (no code change)
+
+- A mixed sh file where the POSIX and the bash parse have the same number of
+  errors keeps the POSIX parse: its tree, its syntax errors and the symbols
+  after the error are POSIX's, and the bash-only evidence is lost (no WB1302).
+- A clean POSIX file whose bash parse has errors reports no WB1302: the
+  features are taken only from a bash parse without errors.
+- `select`, `time` and brace expansion (`{a,b}`) in an sh file are not in the
+  WB1302 table.
+- A byte order mark before the shebang makes the first line no shebang, so the
+  file is classed bash.
+- A version check in a sourced file does not guard the sourcing file (and the
+  other way round).
 
 ## Target range
 
