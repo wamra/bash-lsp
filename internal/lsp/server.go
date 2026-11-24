@@ -276,6 +276,14 @@ func (s *server) handle(m message) (any, *rpcError) {
 		return s.incomingCalls(m.Params)
 	case "callHierarchy/outgoingCalls":
 		return s.outgoingCalls(m.Params)
+	case "textDocument/foldingRange":
+		return s.foldingRange(m.Params)
+	case "textDocument/selectionRange":
+		return s.selectionRange(m.Params)
+	case "textDocument/documentHighlight":
+		return s.documentHighlight(m.Params)
+	case "textDocument/documentLink":
+		return s.documentLink(m.Params)
 	}
 	if len(m.ID) > 0 {
 		return nil, &rpcError{codeMethodNotFound, "method not found: " + m.Method}

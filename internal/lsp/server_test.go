@@ -473,8 +473,9 @@ func TestInitializeCapabilities(t *testing.T) {
 	}
 	want := `{"callHierarchyProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix"]},"definitionProvider":true,` +
 		`"diagnosticProvider":{"interFileDependencies":true,"workspaceDiagnostics":false},"documentFormattingProvider":true,` +
-		`"documentRangeFormattingProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"implementationProvider":true,` +
-		`"positionEncoding":"utf-16","referencesProvider":true,"textDocumentSync":{"change":2,"openClose":true,"save":{"includeText":false}},` +
+		`"documentHighlightProvider":true,"documentLinkProvider":{"resolveProvider":false},` +
+		`"documentRangeFormattingProvider":true,"documentSymbolProvider":true,"foldingRangeProvider":true,"hoverProvider":true,"implementationProvider":true,` +
+		`"positionEncoding":"utf-16","referencesProvider":true,"selectionRangeProvider":true,"textDocumentSync":{"change":2,"openClose":true,"save":{"includeText":false}},` +
 		`"workspace":{"workspaceFolders":{"changeNotifications":"workspace/didChangeWorkspaceFolders","supported":true}},"workspaceSymbolProvider":true}`
 	have, _ := json.Marshal(resp.Result.Capabilities) // map keys marshal sorted
 	if string(have) != want {
