@@ -23,7 +23,9 @@ benchmark, failing only C24 (rename); C28 (the unquoted variable diagnostic)
 is green (`docs/m3-acceptance.md`). Rename is a later milestone, and known gaps
 are listed in `docs/m3-acceptance.md` and `docs/m1-deferred.md`. Linking into
 code-index (AC-14, AC-21) needs a patch in code-index first
-(`docs/code-index-integration.md`). There are no published binaries and no
+(`docs/code-index-integration.md`). `check --hook` (the plugin's optional `PostToolUse` fallback, off unless
+`hook.enabled` is set in the user settings) is in; SARIF output is not built yet.
+There are no published binaries and no
 stable interface yet, and CI has not run.
 
 Licence: MIT (see `LICENSE`). Third-party attribution is in `NOTICE`.
@@ -63,6 +65,7 @@ bash-lsp ast FILE [--json]        print the syntax tree of one file
 bash-lsp symbols [PATH...] [--json]   functions, aliases and variables; default PATH is .
 bash-lsp doctor [PATH]            workspace report: files, dialects, limits, syntax errors, unresolved sources
 bash-lsp check [paths] [--format text|json] [--shellcheck auto|off] [--fail-on error|warning|info|hint] [--root DIR]
+bash-lsp check --hook             PostToolUse hook of the plugin: JSON on stdin; off unless hook.enabled
 bash-lsp fmt [-w] [--root DIR] [--] FILE...   format with the in-process printer
 bash-lsp search [--json] [--root DIR] [--] TEXT   native name matches plus code-index hits
 bash-lsp mcp [--root DIR]         MCP server on stdio (docs/mcp.md)
