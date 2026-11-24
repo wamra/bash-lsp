@@ -16,12 +16,17 @@
 //     it false;
 //   - the repo's diagnostics.disable is added to the user's list and never
 //     removes from it;
-//   - a repo [severity] entry may raise or lower a rule's severity, but not for
-//     a rule the user disabled.
+//   - shellcheck.timeout_seconds applies from a repo file only when lower than
+//     the effective value (the built-in 10 s, or the user's);
+//   - a repo [severity] entry cannot change a rule the user disabled or gave a
+//     severity of its own; rules the user did not mention may be set.
 //
 // Each ignored repo value is reported in Settings.Warnings with the key and
-// the line. Other lists (files.include, files.exclude, sources.paths) are
-// replaced by the later layer; [severity] and [format] merge per key.
+// the line. The keys that describe the repository (bash.target, bash.dialect,
+// files.include, files.exclude, sources.paths, the [format] options) are
+// replaced by the repo file: they cannot run code or widen a bound, and the
+// repo knows its own layout. Lists are replaced by the later layer; [severity]
+// and [format] merge per key.
 //
 // The initialization option for references.resolved_only is spelled
 // references.resolved_only; references.resolvedOnly is accepted as an alias.
@@ -311,15 +316,17 @@ func typeOf(v any) kind {
 func (s *Settings) apply(l layer) {
 	// Rules the user disabled before this layer: a repo file cannot undo that.
 	var userDisabled map[string]bool
+	var userSeverity map[string]analysis.Severity
 	if l.src == SrcRepo {
 		userDisabled = s.Disabled
+		userSeverity = maps.Clone(s.Severity)
 	}
 	var canon, alias *entry
 	for i := range l.entries {
 		e := l.entries[i]
 		name := entryName(e)
 		if e.section == "severity" {
-			s.applySeverity(l, e, userDisabled)
+			s.applySeverity(l, e, userDisabled, userSeverity)
 			continue
 		}
 		sp, ok := known[name]
@@ -363,8 +370,12 @@ func (s *Settings) apply(l layer) {
 	}
 }
 
-func (s *Settings) applySeverity(l layer, e entry, userDisabled map[string]bool) {
+func (s *Settings) applySeverity(l layer, e entry, userDisabled map[string]bool, userSeverity map[string]analysis.Severity) {
 	name := entryName(e)
+	if _, set := userSeverity[e.key]; set {
+		s.warn(l, e, "%s: the user settings set this severity; a repo file cannot change it (ignored)", name)
+		return
+	}
 	if userDisabled[e.key] {
 		s.warn(l, e, "%s: the user settings disable this rule; a repo file cannot re-enable it (ignored)", name)
 		return
@@ -422,6 +433,10 @@ func (s *Settings) set(l layer, e entry, name string) {
 		n := e.val.(int64)
 		if n < 1 || n > maxShellCheckSeconds {
 			s.warn(l, e, "shellcheck.timeout_seconds must be 1 to %d, not %d (ignored)", maxShellCheckSeconds, n)
+			return
+		}
+		if d := time.Duration(n) * time.Second; l.src == SrcRepo && d >= s.ShellCheck.Timeout {
+			s.warn(l, e, "shellcheck.timeout_seconds %d is not lower than %d; a repo file may only lower it (ignored)", n, int64(s.ShellCheck.Timeout/time.Second))
 			return
 		}
 		s.ShellCheck.Timeout = time.Duration(n) * time.Second

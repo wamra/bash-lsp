@@ -64,10 +64,12 @@ func parseEntries(data []byte) (entries []entry, sections []string, err error) {
 	section := ""
 	seenSection := map[string]bool{}
 	seenKey := map[string]bool{}
-	for i, raw := range strings.Split(text, "\n") {
+	lines := strings.Split(text, "\n")
+	last := len(lines) - 1
+	for i, raw := range lines {
 		n := i + 1
 		line := trimWS(strings.TrimSuffix(raw, "\r"))
-		if strings.Contains(line, "\r") {
+		if strings.Contains(line, "\r") || (i == last && strings.HasSuffix(raw, "\r")) {
 			return nil, nil, &ParseError{n, "bare carriage return (lines end with LF or CRLF)"}
 		}
 		if line == "" {

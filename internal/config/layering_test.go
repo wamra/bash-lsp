@@ -80,7 +80,7 @@ func TestRepoSeverityCannotReEnable(t *testing.T) {
 	if _, ok := s.Severity["WB1"]; ok || !hasWarning(s, "severity.WB1", ".bash-lsp.toml:2") {
 		t.Fatalf("%v %q", s.Severity, s.Warnings)
 	}
-	if s.Severity["WB2"] != analysis.SevError || s.Severity["WB3"] != analysis.SevHint {
+	if s.Severity["WB2"] != analysis.SevInfo || !hasWarning(s, "severity.WB2") || s.Severity["WB3"] != analysis.SevHint {
 		t.Fatalf("%v", s.Severity)
 	}
 	// The repo's own disable list does not block its own severity line.

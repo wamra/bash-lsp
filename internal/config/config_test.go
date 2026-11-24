@@ -181,7 +181,7 @@ func TestListsAndSections(t *testing.T) {
 		t.Fatalf("%+v %q", s, s.Warnings)
 	}
 	// Later layers win per format field; severity merges per rule.
-	s = Merge([]byte("[format]\nindent = 4\nsimplify = true\n[severity]\nWB1001 = \"info\"\nWB1401 = \"info\"\n"), repo, json.RawMessage(`{"format":{"indent":8},"severity":{"WB1001":"warning"}}`))
+	s = Merge([]byte("[format]\nindent = 4\nsimplify = true\n[severity]\nWB1001 = \"info\"\n"), repo, json.RawMessage(`{"format":{"indent":8},"severity":{"WB1001":"warning"}}`))
 	if *s.Format.Indent != 8 || !*s.Format.Simplify || s.Severity["WB1001"] != analysis.SevWarning || s.Severity["WB1401"] != analysis.SevError {
 		t.Fatalf("%+v", s)
 	}
