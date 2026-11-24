@@ -218,6 +218,9 @@ func FuzzDiagnostics(f *testing.F) {
 		"A=$((0 A\nf() { :; }\n",
 		"tmp=$(mktemp); trap 'rm -f \"$tmp\"' EXIT\neval \"echo \\$u\"\n[[ -v z ]]\ndeclare -p w\nset -a\n",
 		"a() { echo hi; }\n) ) fi done\n" + strings.Repeat("echo ${x\n", 60) + "z() { :; }\n",
+		"declare -A m; echo ${m[-1]} ${a[-1]} ${v,,} $EPOCHSECONDS\nshopt -s globstar lastpipe; wait -n -p v\ndeclare -gn r=x\n",
+		"#!/bin/sh\n[[ -n $x ]] && cat <<< hi <(a) $'x'; function f { a=(1); source y; }\ncoproc c\na |& b &> f\n",
+		"((BASH_VERSINFO[0] >= 4)) && declare -A m\necho ${EPOCHSECONDS:-1} ${EPOCHSECONDS+x}\nEPOCHREALTIME=1; echo $EPOCHREALTIME\n",
 	} {
 		f.Add([]byte(s))
 	}
@@ -227,6 +230,8 @@ func FuzzDiagnostics(f *testing.F) {
 		fillTo(n, "", "( y=1 ); echo \"$y\"\n", ""),
 		fillTo(n, strings.Repeat("{\n# shellcheck disable=SC2086\n", 200), "rm $f\n", strings.Repeat("}\n", 200)),
 		fillTo(n, "#!/bin/bash\necho hi\n", "f() { :; }\nx=1\n", ""),
+		fillTo(n, "declare -a a\n", "echo \"${a[-1]} ${v,,}\"; wait -n\n", ""),
+		fillTo(n, "#!/bin/sh\n", "[[ -n $x ]] && cat <<< hi\n", ""),
 	} {
 		f.Add([]byte(s))
 	}
@@ -235,37 +240,45 @@ func FuzzDiagnostics(f *testing.F) {
 			return
 		}
 		p := "/ws/f.sh"
-		var file *tree.File
-		withinBudget(t, "Parse", parseBudget(len(src)), len(src), func() { file = front.Parse(p, src, front.Bash) })
-		s := Build(map[string]*FileFacts{p: Bind(file)}, Options{Root: "/ws"}, 1)
-		var ds []Diagnostic
-		withinBudget(t, "Diagnostics", fuzzBudget(len(src)), len(src), func() {
-			s.scans, s.mentions = nil, nil
-			ds = s.Diagnostics(p, DiagOptions{})
-		})
-		check := func(what string, r tree.Range) {
-			a, b := r.Start.Offset, r.End.Offset
-			if a < 0 || b > len(src) || a > b {
-				t.Fatalf("%s: range [%d,%d) outside file of %d bytes", what, a, b, len(src))
-			}
-			if r.Start != file.PosAt(a) || r.End != file.PosAt(b) {
-				t.Fatalf("%s: range %+v disagrees with its offsets", what, r)
-			}
+		// Once as a bash file, once as an sh file (the dialect rules).
+		for _, dialect := range []front.Dialect{front.Bash, front.POSIX} {
+			fuzzDiagnostics(t, p, src, dialect)
 		}
-		for i, d := range ds {
-			check(d.Rule, d.Range)
-			if i > 0 && (ds[i-1].Range.Start.Offset > d.Range.Start.Offset ||
-				ds[i-1].Range.Start.Offset == d.Range.Start.Offset && ds[i-1].Rule > d.Rule) {
-				t.Fatalf("not sorted at %d: %+v then %+v", i, ds[i-1], d)
-			}
-			for _, fx := range d.Fixes {
-				for _, e := range fx.Edits {
-					check(d.Rule+" fix", e.Range)
-					if old := string(src[e.Range.Start.Offset:e.Range.End.Offset]); e.NewText != "\""+old+"\"" {
-						t.Fatalf("fix %q for %q", e.NewText, old)
-					}
+	})
+}
+
+func fuzzDiagnostics(t *testing.T, p string, src []byte, dialect front.Dialect) {
+	t.Helper()
+	var file *tree.File
+	withinBudget(t, "Parse", parseBudget(len(src)), len(src), func() { file = front.Parse(p, src, dialect) })
+	s := Build(map[string]*FileFacts{p: Bind(file)}, Options{Root: "/ws"}, 1)
+	var ds []Diagnostic
+	withinBudget(t, "Diagnostics", fuzzBudget(len(src)), len(src), func() {
+		s.scans, s.mentions = nil, nil
+		ds = s.Diagnostics(p, DiagOptions{})
+	})
+	check := func(what string, r tree.Range) {
+		a, b := r.Start.Offset, r.End.Offset
+		if a < 0 || b > len(src) || a > b {
+			t.Fatalf("%s: range [%d,%d) outside file of %d bytes", what, a, b, len(src))
+		}
+		if r.Start != file.PosAt(a) || r.End != file.PosAt(b) {
+			t.Fatalf("%s: range %+v disagrees with its offsets", what, r)
+		}
+	}
+	for i, d := range ds {
+		check(d.Rule, d.Range)
+		if i > 0 && (ds[i-1].Range.Start.Offset > d.Range.Start.Offset ||
+			ds[i-1].Range.Start.Offset == d.Range.Start.Offset && ds[i-1].Rule > d.Rule) {
+			t.Fatalf("not sorted at %d: %+v then %+v", i, ds[i-1], d)
+		}
+		for _, fx := range d.Fixes {
+			for _, e := range fx.Edits {
+				check(d.Rule+" fix", e.Range)
+				if old := string(src[e.Range.Start.Offset:e.Range.End.Offset]); e.NewText != "\""+old+"\"" {
+					t.Fatalf("fix %q for %q", e.NewText, old)
 				}
 			}
 		}
-	})
+	}
 }

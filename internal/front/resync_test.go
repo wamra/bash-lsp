@@ -59,6 +59,30 @@ func checkInvariants(t *testing.T, f *tree.File) {
 			t.Errorf("error range %+v outside [0,%d]", e.Range, size)
 		}
 	}
+	// Features are inside the file, in source order, never inside a gap.
+	var gaps []tree.Range
+	for _, n := range f.Root.Children {
+		if n.Kind == tree.KErrorGap {
+			gaps = append(gaps, n.Range)
+		}
+	}
+	for i, ft := range f.Features {
+		if !inside(ft.Range) || ft.Key == "" {
+			t.Errorf("feature %+v outside [0,%d]", ft, size)
+			continue
+		}
+		if i > 0 && f.Features[i-1].Range.Start.Offset > ft.Range.Start.Offset {
+			t.Errorf("features out of order at %d: %+v then %+v", i, f.Features[i-1], ft)
+		}
+		if ft.Range.Start != f.PosAt(ft.Range.Start.Offset) || ft.Range.End != f.PosAt(ft.Range.End.Offset) {
+			t.Errorf("feature %+v disagrees with its offsets", ft)
+		}
+		for _, g := range gaps {
+			if g.Start.Offset <= ft.Range.Start.Offset && ft.Range.Start.Offset < g.End.Offset {
+				t.Errorf("feature %+v inside the gap %+v", ft, g)
+			}
+		}
+	}
 }
 
 func TestResync(t *testing.T) {
@@ -216,6 +240,10 @@ func FuzzParse(f *testing.F) {
 		"echo $((1+1+1+1))\n", "echo $((a=b=c=1))\n", "echo $((2**2**2))\n", "echo $((- - !!1))\n",
 		"[[ a && a && a ]]\n", "$( '))' $( '))'\n", "$(case x in a) $(case x in a)\n",
 		"$( # ))\n$( # ))\n", "$(cat <<'E'\n)))\nE\n$(cat <<E\n$(\nE\n",
+		// features: each kind the lowerer records, alone and broken.
+		"echo ${v,,} ${v@Q} ${a[-1]} $'x'\ncase x in a) :;& b) :;;& esac\na |& b &>> f &> g <<< h <(c)\n",
+		"[[ -n $x ]]\nfunction f { :; }\na=(1 2)\ncoproc cat\nsource x\n", "echo ${v,,\n[[ -n\ncase x in a) :;&\n",
+		"a |& b |& c |& d\nf() { echo \"${a[-1]}\"\n) ) fi\n[[ x ]] <<< y\n",
 	} {
 		f.Add([]byte(seed))
 	}
