@@ -67,6 +67,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case "doctor":
 		return cmdDoctor(args[1:], stdout, stderr)
 	case "check":
+		if len(args) == 2 && args[1] == "--hook" {
+			rw := redact.Writer(stderr)
+			defer rw.(interface{ Flush() error }).Flush()
+			return cmdHook(stdin, rw)
+		}
 		return cmdCheck(args[1:], stdout, stderr)
 	case "fmt":
 		return cmdFmt(args[1:], stdout, stderr)

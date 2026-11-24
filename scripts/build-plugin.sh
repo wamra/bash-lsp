@@ -36,5 +36,6 @@ done
 cp "$ROOT/scripts/plugin-launcher.sh" "$OUT/bin/bash-lsp"
 cp "$P/.claude-plugin/plugin.json" "$OUT/.claude-plugin/"
 cp "$P/.lsp.json" "$OUT/"
+cp -R "$P/hooks" "$OUT/hooks"
 cp "$ROOT/LICENSE" "$ROOT/NOTICE" "$P/README.md" "$OUT/"
 chmod +x "$OUT"/bin/*

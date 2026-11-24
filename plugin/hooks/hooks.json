@@ -1,0 +1,18 @@
+{
+  "description": "Optional fallback: check an edited shell file and return warnings and errors to Claude. Does nothing unless hook.enabled is true in the user settings file.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/bash-lsp",
+            "args": ["check", "--hook"],
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

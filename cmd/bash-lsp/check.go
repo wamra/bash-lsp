@@ -20,7 +20,7 @@ import (
 	"github.com/wamra/bash-lsp/tree"
 )
 
-const checkUsage = "usage: bash-lsp check [paths] [--format text|json] [--shellcheck auto|off] [--fail-on error|warning|info|hint] [--root DIR]"
+const checkUsage = "usage: bash-lsp check [paths] [--format text|json] [--shellcheck auto|off] [--fail-on error|warning|info|hint] [--root DIR]\n       bash-lsp check --hook (PostToolUse hook: JSON on stdin)"
 
 // Exit codes of check: 0 no finding at or above --fail-on, 1 findings, 2 usage,
 // 3 runtime failure (a path that cannot be read, a workspace that cannot be
