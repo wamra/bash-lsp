@@ -667,3 +667,33 @@ func TestRefsLabelOfQueriedTarget(t *testing.T) {
 		t.Errorf("refs f:\n%s", out)
 	}
 }
+
+// A function redefined in one file: one record per (site, target
+// definition), each naming its definition, so the two are told apart.
+func TestCallersOfRedefinedFunction(t *testing.T) {
+	root := writeRoot(t, map[string]string{"main.sh": "redef() { echo 1; }\nredef() { echo 2; }\nredef\n"})
+	for _, cmd := range []string{"callers", "callees"} {
+		spec := "redef"
+		if cmd == "callees" {
+			spec = "main.sh"
+		}
+		out := strings.Split(strings.TrimSpace(runOK(t, cmd, "--root", root, spec)), "\n")
+		if len(out) != 2 || out[0] == out[1] || !strings.Contains(out[0], "main.sh:1:1") || !strings.Contains(out[1], "main.sh:2:1") {
+			t.Errorf("%s %s: want two lines naming definitions main.sh:1:1 and main.sh:2:1:\n%s", cmd, spec, strings.Join(out, "\n"))
+		}
+		var doc struct {
+			Results []jsonEdge `json:"results"`
+		}
+		mustJSON(t, runOK(t, cmd, "--root", root, "--json", spec), &doc)
+		var defs []string
+		for _, e := range doc.Results {
+			if e.Definition == nil {
+				t.Fatalf("%s --json: record without definition: %+v", cmd, e)
+			}
+			defs = append(defs, e.Definition.Path+":"+strconv.Itoa(e.Definition.Line)+":"+strconv.Itoa(e.Definition.Col))
+		}
+		if strings.Join(defs, ",") != "main.sh:1:1,main.sh:2:1" {
+			t.Errorf("%s --json definitions %v", cmd, defs)
+		}
+	}
+}

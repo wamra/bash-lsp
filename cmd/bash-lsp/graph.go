@@ -156,7 +156,9 @@ type jsonEdge struct {
 	Resolution string    `json:"resolution"`
 	Reason     string    `json:"reason"`
 	Site       jsonSite  `json:"site"`
+	Definition *jsonSite `json:"definition,omitempty"` // the callee's definition this edge goes to
 	Text       string    `json:"text,omitempty"`
+	manyDefs   bool      // the callee has several definitions: the text line names Definition
 }
 
 func (c *graphCtx) rel(p string) string { return relSlash(c.root, p) }
@@ -208,9 +210,17 @@ func (c *graphCtx) callerNode(f analysis.Caller) *jsonNode {
 	return c.node(analysis.Node{Path: f.Path, Func: f.Func})
 }
 
+// stepEdge renders a step. A call's definition is the one of the callee
+// the edge goes to (Edge.ToDecl, in the file of s.To); the text line names
+// it only when the callee has several definitions, to tell them apart.
 func (c *graphCtx) stepEdge(s analysis.Step) jsonEdge {
 	e := c.edge(s.Edge)
 	e.Caller, e.Callee = c.node(s.From), c.node(s.To)
+	if d := s.Edge.ToDecl; d != nil {
+		site := c.site(analysis.Location{Path: s.To.Path, Range: d.NameRange})
+		e.Definition = &site
+		e.manyDefs = s.To.Func != nil && len(s.To.Func.Decls) > 1
+	}
 	return e
 }
 
@@ -233,7 +243,11 @@ func (e jsonEdge) line() string {
 	case e.Text != "":
 		callee = e.Text
 	}
-	return fmt.Sprintf("%s:%d:%d  %s -> %s  %s/%s", e.Site.Path, e.Site.Line, e.Site.Col, nodeText(e.Caller), callee, e.Resolution, e.Reason)
+	l := fmt.Sprintf("%s:%d:%d  %s -> %s  %s/%s", e.Site.Path, e.Site.Line, e.Site.Col, nodeText(e.Caller), callee, e.Resolution, e.Reason)
+	if e.manyDefs && e.Definition != nil {
+		l += fmt.Sprintf("  definition %s:%d:%d", e.Definition.Path, e.Definition.Line, e.Definition.Col)
+	}
+	return l
 }
 
 // emit prints the results: one JSON object with generation and results, or
@@ -349,10 +363,20 @@ func (c *graphCtx) steps(cmd, spec string, o graphOpts, stdout, stderr io.Writer
 func (c *graphCtx) emitSteps(st []analysis.Step, o graphOpts, stdout, stderr io.Writer) int {
 	edges := []jsonEdge{}
 	var lines []string
+	seen := map[string]bool{}
 	for _, s := range st {
 		e := c.stepEdge(s)
+		line := e.line()
+		k := line
+		if e.Definition != nil {
+			k += fmt.Sprintf(" %v", *e.Definition)
+		}
+		if seen[k] { // one record per (site, target definition)
+			continue
+		}
+		seen[k] = true
 		edges = append(edges, e)
-		lines = append(lines, e.line())
+		lines = append(lines, line)
 	}
 	return c.emit(o, stdout, stderr, edges, lines)
 }
