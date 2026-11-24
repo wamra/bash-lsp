@@ -102,6 +102,25 @@ behind `env` (its options `-i`, `-v`, `-0`, `-C dir`, `-P path`, `-u name`,
   arithmetic or a `case` word of the same file. A print piped into a command
   that decides an `||`, an `&&` or an `if` (`echo "$BASH_VERSION" | grep -q ^4
   || exit 1`) is a check.
+  A guard inside a function guards what follows it inside that function, and
+  the scope that calls the function from the call on (`check() { ... || exit 1;
+  }; check` guards the code after `check`); a function that holds a check and is
+  never called guards only itself.
+- **A check that compares the major version with an integer** guards only the
+  features that major version has: `[ "${BASH_VERSINFO[0]}" -ge 3 ] || exit 1`
+  does not guard `declare -A` (4.0), `-ge 4` does. Decided for one mention of
+  `BASH_VERSINFO[0]`, `$BASH_VERSINFO` or `${BASH_VERSION%%.*}` in a test or
+  arithmetic expression, compared by `-ge`, `-gt`, `-eq`, `>=`, `>`, `==`, or by
+  `-lt`, `-le`, `<`, `<=` when the statement also exits or returns. Every other
+  form (minor or patch numbers, string comparison, `case`, several mentions)
+  silences everything after it, as before; a major check also silences
+  features of a later minor of the same major (`>= 4` silences `declare -n`,
+  4.3).
+- **Known gaps of the guard.** A top-level version test used only to choose a
+  message, and `echo "$BASH_VERSION" | tee log || exit 1`, count as guards and
+  hide later features. `[ "$(echo "$BASH_VERSION" | cut -d. -f1)" -ge 4 ] ||
+  exit 1` is not recognised as a guard (the read is a print inside a command
+  substitution), so the features after it are reported.
 - **Tolerated uses.** A feature is not reported when its command is the left
   side of `||` (`shopt -s globstar 2>/dev/null || true`) or sends standard
   error to `/dev/null` (`2>/dev/null`, `2>>/dev/null`, `&>/dev/null`). A test

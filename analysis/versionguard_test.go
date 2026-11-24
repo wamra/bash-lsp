@@ -29,39 +29,42 @@ func TestWB1301ToleratedAndGuarded(t *testing.T) {
 			}
 		})
 	}
-	reported := []struct{ name, src string }{
-		{"unrelated test and &&", "[ -n \"$x\" ] && shopt -s globstar\n"},
-		{"$# test and &&", "[ $# -gt 0 ] && declare -A m\n"},
-		{"[[ and &&", "[[ -n $HOME ]] && shopt -s globstar\n"},
-		{"test -d and &&", "test -d /tmp && declare -A m\n"},
-		{"(( and &&", "(( n > 1 )) && declare -A m\n"},
-		{"two tests and &&", "[ -f a ] && [ -f b ] && declare -A m\n"},
-		{"negated test and &&", "! [ -f a ] && declare -A m\n"},
-		{"if body on a test", "if [ -f x ]; then declare -A m; fi\n"},
-		{"if [[ body", "if [[ $x == y ]]; then\n  readarray -t a < f\n  declare -A m\n  echo ${a[-1]} ${x,,}\nfi\n"},
-		{"elif body", "if false; then :; elif [ -f a ]; then declare -A m; fi\n"},
-		{"if (( body", "if (( $# > 1 )); then declare -n r=x; fi\n"},
-		{"case arm with test", "case $1 in a) [ -f x ] && declare -A m;; esac\n"},
-		{"plain", "declare -A m\n"},
-		{"after ;", "true; declare -A m\n"},
-		{"after && of a command", "true && declare -A m\n"},
-		{"after && of a command, then a test", "true && [ -n x ] || declare -A m\n"},
-		{"right of ||", "[ -n x ] || declare -A m\n"},
-		{"if on a command", "if grep -q x f; then declare -A m; fi\n"},
-		{"else of a test", "if [ -n x ]; then :; else declare -A m; fi\n"},
-		{"nested deeper than the if body", "if [ -n x ]; then for i in 1; do declare -A m; done; fi\n"},
-		{"stderr to a file", "shopt -s globstar 2>err.log\n"},
-		{"stdout to null", "shopt -s globstar >/dev/null\n"},
-		{"function body", "f() { shopt -s globstar; }\n"},
-		{"loop body", "while read l; do declare -A m; done\n"},
-		{"EPOCHSECONDS printed", "echo \"$EPOCHSECONDS\"\n"},
-		{"EPOCHSECONDS assigned from", "now=$EPOCHSECONDS\n"},
-		{"test on another name", "[ -n \"$x\" ]; echo $EPOCHSECONDS\n"},
+	reported := []struct {
+		name, src string
+		want      int
+	}{
+		{"unrelated test and &&", "[ -n \"$x\" ] && shopt -s globstar\n", 1},
+		{"$# test and &&", "[ $# -gt 0 ] && declare -A m\n", 1},
+		{"[[ and &&", "[[ -n $HOME ]] && shopt -s globstar\n", 1},
+		{"test -d and &&", "test -d /tmp && declare -A m\n", 1},
+		{"(( and &&", "(( n > 1 )) && declare -A m\n", 1},
+		{"two tests and &&", "[ -f a ] && [ -f b ] && declare -A m\n", 1},
+		{"negated test and &&", "! [ -f a ] && declare -A m\n", 1},
+		{"if body on a test", "if [ -f x ]; then declare -A m; fi\n", 1},
+		{"if [[ body", "if [[ $x == y ]]; then\n  readarray -t a < f\n  declare -A m\n  echo ${a[-1]} ${x,,}\nfi\n", 3},
+		{"elif body", "if false; then :; elif [ -f a ]; then declare -A m; fi\n", 1},
+		{"if (( body", "if (( $# > 1 )); then declare -n r=x; fi\n", 1},
+		{"case arm with test", "case $1 in a) [ -f x ] && declare -A m;; esac\n", 1},
+		{"plain", "declare -A m\n", 1},
+		{"after ;", "true; declare -A m\n", 1},
+		{"after && of a command", "true && declare -A m\n", 1},
+		{"after && of a command, then a test", "true && [ -n x ] || declare -A m\n", 1},
+		{"right of ||", "[ -n x ] || declare -A m\n", 1},
+		{"if on a command", "if grep -q x f; then declare -A m; fi\n", 1},
+		{"else of a test", "if [ -n x ]; then :; else declare -A m; fi\n", 1},
+		{"nested deeper than the if body", "if [ -n x ]; then for i in 1; do declare -A m; done; fi\n", 1},
+		{"stderr to a file", "shopt -s globstar 2>err.log\n", 1},
+		{"stdout to null", "shopt -s globstar >/dev/null\n", 1},
+		{"function body", "f() { shopt -s globstar; }\n", 1},
+		{"loop body", "while read l; do declare -A m; done\n", 1},
+		{"EPOCHSECONDS printed", "echo \"$EPOCHSECONDS\"\n", 1},
+		{"EPOCHSECONDS assigned from", "now=$EPOCHSECONDS\n", 1},
+		{"test on another name", "[ -n \"$x\" ]; echo $EPOCHSECONDS\n", 1},
 	}
 	for _, c := range reported {
 		t.Run("reported "+c.name, func(t *testing.T) {
-			if n := wb1301(t, c.src); n < 1 {
-				t.Fatalf("%d findings for %q, want at least 1", n, c.src)
+			if n := wb1301(t, c.src); n != c.want {
+				t.Fatalf("%d findings for %q, want %d", n, c.src, c.want)
 			}
 		})
 	}
@@ -139,7 +142,14 @@ func TestWB1301GuardScope(t *testing.T) {
 		{"function below the guard", "((BASH_VERSINFO[0]>=4)) || exit 1\nf() { declare -A m; }\n", 0},
 		{"top level before the guard", "declare -A m\nif ((BASH_VERSINFO[0] < 4)); then exit 1; fi\n", 1},
 		{"top level before, function above", "declare -A a\nf() { declare -A b; }\n[[ ${BASH_VERSION%%.*} -ge 4 ]] || exit 1\n", 1},
-		{"guard inside a function only covers after it", "f() { declare -A a; }\ng() { [[ ${BASH_VERSINFO[0]} -ge 4 ]] || exit 1; }\ng\ndeclare -A b\n", 1},
+		{"guard function called at the top covers functions above", "f() { declare -A a; }\ng() { [[ ${BASH_VERSINFO[0]} -ge 4 ]] || exit 1; }\ng\ndeclare -A b\n", 0},
+		{"feature before the call of a guard function", "declare -A a\ng() { [[ ${BASH_VERSINFO[0]} -ge 4 ]] || exit 1; }\ng\ndeclare -A b\n", 1},
+		{"guard function, call before the feature", "check() { [[ ${BASH_VERSINFO[0]} -ge 4 ]] || { echo old; exit 1; }; }\ncheck\ndeclare -A m\n", 0},
+		{"guard function never called", "h() { ((BASH_VERSINFO[0]>=4)) || return; }\ndeclare -A m\n", 1},
+		{"guard inside a function covers the rest of that function", "h() { ((BASH_VERSINFO[0]>=4)) || return; declare -A m; }\n", 0},
+		{"guard inside a function does not cover its sibling", "h() { ((BASH_VERSINFO[0]>=4)) || return; }\nk() { declare -A m; }\n", 1},
+		{"guard function called in another function", "h() { ((BASH_VERSINFO[0]>=4)) || exit 1; }\nmain() { h; declare -A m; }\nmain\n", 0},
+		{"guard function, feature before the call", "h() { ((BASH_VERSINFO[0]>=4)) || exit 1; }\ndeclare -A a\nh\n", 1},
 		{"assignment, never tested", "v=$BASH_VERSION\ndeclare -A m\n", 1},
 		{"assignment, tested in [", "ver=${BASH_VERSION%%.*}\n[ \"$ver\" -ge 4 ] || exit 1\ndeclare -A m\n", 0},
 		{"assignment, tested in [[", "v=$BASH_VERSION\n[[ $v == 4* ]] || exit 1\ndeclare -A m\n", 0},
@@ -152,6 +162,44 @@ func TestWB1301GuardScope(t *testing.T) {
 		{"piped check in if", "if echo \"$BASH_VERSION\" | grep -q ^4; then declare -A m; fi\n", 0},
 		{"piped print, no check", "printf \"%s\\n\" \"$BASH_VERSION\" | tee log\ndeclare -A m\n", 1},
 		{"standalone print left of ||", "echo \"$BASH_VERSION\" || true\ndeclare -A m\n", 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if n := wb1301(t, c.src); n != c.want {
+				t.Fatalf("%d findings for %q, want %d", n, c.src, c.want)
+			}
+		})
+	}
+}
+
+// A check against a major version guarantees that version and no more, when
+// the form is simple enough to decide; any other form silences as before.
+func TestWB1301GuardThreshold(t *testing.T) {
+	cases := []struct {
+		name, src string
+		want      int
+	}{
+		{"-ge 3 does not guard 4.0", "[ \"${BASH_VERSINFO[0]}\" -ge 3 ] || exit 1\ndeclare -A m\n", 1},
+		{"-ge 4 guards 4.0", "[ \"${BASH_VERSINFO[0]}\" -ge 4 ] || exit 1\ndeclare -A m\n", 0},
+		{"-ge 5 guards 4.0", "[ \"${BASH_VERSINFO[0]}\" -ge 5 ] || exit 1\ndeclare -A m\n", 0},
+		{">= 3 in arithmetic", "if ((BASH_VERSINFO[0] >= 3)); then declare -A m; fi\n", 1},
+		{">= 4 in arithmetic", "if ((BASH_VERSINFO[0] >= 4)); then declare -A m; fi\n", 0},
+		{"> 3 guards 4.0", "(( BASH_VERSINFO[0] > 3 )) || exit 1\ndeclare -A m\n", 0},
+		{"> 2 does not", "(( BASH_VERSINFO[0] > 2 )) || exit 1\ndeclare -A m\n", 1},
+		{"-lt 4 with exit guards", "if [ \"${BASH_VERSINFO[0]}\" -lt 4 ]; then echo old; exit 1; fi\ndeclare -A m\n", 0},
+		{"-lt 3 with exit does not", "if [ \"${BASH_VERSINFO[0]}\" -lt 3 ]; then echo old; exit 1; fi\ndeclare -A m\n", 1},
+		{"-lt 4 and return", "f() { [ \"${BASH_VERSINFO[0]}\" -lt 4 ] && return 1; declare -A m; }\n", 0},
+		{"-le 3 with exit guards 4.0", "[[ ${BASH_VERSINFO[0]} -le 3 ]] && exit 1\ndeclare -A m\n", 0},
+		{"-lt 4 without exit stays silent", "if [ \"${BASH_VERSINFO[0]}\" -lt 4 ]; then echo old; fi\ndeclare -A m\n", 0},
+		{"major of BASH_VERSION", "[ \"${BASH_VERSION%%.*}\" -ge 3 ] || exit 1\ndeclare -A m\n", 1},
+		{"major of BASH_VERSION, 4", "[ \"${BASH_VERSION%%.*}\" -ge 4 ] || exit 1\ndeclare -A m\n", 0},
+		{"minor comparison keeps silencing", "(( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3) )) || exit 1\ndeclare -A m\n", 0},
+		{"string comparison keeps silencing", "[[ $BASH_VERSION < 4 ]] && exit 1\ndeclare -A m\n", 0},
+		{"case keeps silencing", "case $BASH_VERSION in 3.*) exit 1;; esac\ndeclare -A m\n", 0},
+		{"4.3 feature under a major 4 guard", "(( BASH_VERSINFO[0] >= 4 )) || exit 1\ndeclare -n r=x\n", 0},
+		{"5.0 feature under a major 4 guard", "(( BASH_VERSINFO[0] >= 4 )) || exit 1\necho $EPOCHSECONDS\n", 1},
+		{"5.0 feature under a major 5 guard", "(( BASH_VERSINFO[0] >= 5 )) || exit 1\necho $EPOCHSECONDS\n", 0},
+		{"guard function with a threshold", "check() { (( BASH_VERSINFO[0] >= 3 )) || exit 1; }\ncheck\ndeclare -A m\n", 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

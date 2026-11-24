@@ -1,7 +1,9 @@
 package analysis
 
 import (
+	"bytes"
 	"fmt"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -105,22 +107,59 @@ type featureHit struct {
 // versionScan is what scanFile collects for the version rules from the
 // facts: no walk of the tree.
 type versionScan struct {
-	hits       []featureHit
-	epoch      []*Use // reads of EPOCHSECONDS and EPOCHREALTIME
-	assoc      map[string]bool
-	guarded    bool // some code reads BASH_VERSION or BASH_VERSINFO other than to print it
-	guardAt    int  // the offset of the first such read; code before it is not guarded
-	topGuarded bool // such a read is outside every function
-	topAt      int  // the offset of the first one
-	pending    []pendingRead
+	hits    []featureHit
+	epoch   []*Use // reads of EPOCHSECONDS and EPOCHREALTIME
+	assoc   map[string]bool
+	src     []byte
+	top     guardSet                 // checks outside every function
+	funcs   map[*tree.Node]*guardSet // checks inside each function
+	pending []pendingRead
 }
+
+// unknownMajor stands for a check whose guarantee cannot be decided: it
+// guards every feature, as a check did before thresholds.
+const unknownMajor = -1
+
+// guardSet holds, for one scope (the top level or one function), the offset of
+// the first check for each bash major version the check guarantees (0 to 10,
+// larger values count as 10) and for the checks of unknown guarantee. An offset
+// is stored plus one; zero means none.
+type guardSet struct{ first [12]int }
+
+func guardIndex(major int) int {
+	if major < 0 {
+		return 11
+	}
+	return min(major, 10)
+}
+
+func (g *guardSet) note(off, major int) {
+	i := guardIndex(major)
+	if g.first[i] == 0 || off+1 < g.first[i] {
+		g.first[i] = off + 1
+	}
+}
+
+// covers reports whether a check at or before off guarantees a feature that
+// needs bash major version need.
+func (g *guardSet) covers(off, need int) bool {
+	for i, f := range g.first {
+		if f != 0 && f-1 <= off && (i == 11 || i >= need) {
+			return true
+		}
+	}
+	return false
+}
+
+// any is covers for every offset.
+func (g *guardSet) any(need int) bool { return g.covers(1<<62, need) }
 
 // pendingRead is a read of a version variable whose value is assigned to
 // name: it is a check only if name is tested later.
 type pendingRead struct {
 	name string
+	n    *tree.Node
 	off  int
-	top  bool
 }
 
 // printers are the commands whose arguments are only shown: a read of the
@@ -141,49 +180,183 @@ const (
 // echo, printf and log only print, unless the print is a stage of a pipeline
 // that decides an `||`, `&&` or `if` (`echo "$BASH_VERSION" | grep -q ^4 ||
 // exit 1`); an assignment (`v=$BASH_VERSION`) counts once the variable is
-// tested (finish). A check guards the features after it in source order, and
-// when it is outside every function, the bodies of all functions.
+// tested (finish). A check guards what follows it in its own scope (the top
+// level or its function); one at the top level also guards every function
+// body, and a function that holds one guards the scope that calls it, from
+// the call on (finish).
 func (vs *versionScan) read(u *Use) {
 	kind, name := versionCheck(u.Node)
-	top := !inFunc(u.Node)
 	switch kind {
 	case readCheck:
-		vs.note(u.Range.Start.Offset, top)
+		vs.note(u.Node, u.Range.Start.Offset, vs.threshold(u.Node))
 	case readAssign:
-		vs.pending = append(vs.pending, pendingRead{name, u.Range.Start.Offset, top})
+		vs.pending = append(vs.pending, pendingRead{name, u.Node, u.Range.Start.Offset})
 	}
 }
 
-func (vs *versionScan) note(off int, top bool) {
-	if !vs.guarded || off < vs.guardAt {
-		vs.guarded, vs.guardAt = true, off
+func (vs *versionScan) note(n *tree.Node, off, major int) {
+	g := &vs.top
+	if fn := enclosingFunc(n); fn != nil {
+		if vs.funcs == nil {
+			vs.funcs = map[*tree.Node]*guardSet{}
+		}
+		if vs.funcs[fn] == nil {
+			vs.funcs[fn] = &guardSet{}
+		}
+		g = vs.funcs[fn]
 	}
-	if top && (!vs.topGuarded || off < vs.topAt) {
-		vs.topGuarded, vs.topAt = true, off
-	}
+	g.note(off, major)
 }
 
-// finish settles the assignments from version variables: one is a check when
+// finish settles the assignments from version variables (one is a check when
 // the assigned variable is read after it in a test, an arithmetic expression
-// or the word of a `case`.
+// or the word of a `case`) and the calls of functions that hold a check.
 func (vs *versionScan) finish(uses []*Use) {
-	if len(vs.pending) == 0 {
+	if len(vs.pending) == 0 && len(vs.funcs) == 0 {
 		return
 	}
-	for _, u := range uses {
-		if u.Kind != UseVarRead || !testContext(u.Node) {
+	var byName map[string]*guardSet
+	for fn, g := range vs.funcs {
+		if fn.Name == "" {
 			continue
 		}
+		if byName == nil {
+			byName = map[string]*guardSet{}
+		}
+		if byName[fn.Name] == nil {
+			byName[fn.Name] = &guardSet{}
+		}
+		for i, f := range g.first {
+			if f != 0 {
+				byName[fn.Name].first[i] = 1
+			}
+		}
+	}
+	for _, u := range uses {
 		off := u.Range.Start.Offset
-		for i := 0; i < len(vs.pending); i++ {
-			if p := vs.pending[i]; p.name == u.Name && off > p.off {
-				vs.note(p.off, p.top)
-				vs.pending = slices.Delete(vs.pending, i, i+1)
-				i--
+		switch u.Kind {
+		case UseVarRead:
+			if len(vs.pending) == 0 || !testContext(u.Node) {
+				continue
+			}
+			for i := 0; i < len(vs.pending); i++ {
+				if p := vs.pending[i]; p.name == u.Name && off > p.off {
+					vs.note(p.n, p.off, unknownMajor)
+					vs.pending = slices.Delete(vs.pending, i, i+1)
+					i--
+				}
+			}
+		case UseCall:
+			if g := byName[u.Name]; g != nil && u.Node != nil {
+				for i, f := range g.first {
+					if f == 0 {
+						continue
+					}
+					major := i
+					if i == 11 {
+						major = unknownMajor
+					}
+					vs.note(u.Node, off, major)
+				}
 			}
 		}
 	}
 	vs.pending = nil
+}
+
+// covered reports whether a feature of bash major version need at node at,
+// offset off, sits behind a check.
+func (vs *versionScan) covered(at *tree.Node, off, need int) bool {
+	if vs.top.covers(off, need) || inFunc(at) && vs.top.any(need) {
+		return true
+	}
+	for p := at; p != nil; p = p.Parent {
+		if p.Kind == tree.KFuncDecl && vs.funcs[p] != nil && vs.funcs[p].covers(off, need) {
+			return true
+		}
+	}
+	return false
+}
+
+// majorExpr is the major version of bash as a test or an arithmetic
+// expression reads it.
+const majorExpr = `(?:"?\$\{BASH_VERSINFO(?:\[0\])?\}"?|"?\$BASH_VERSINFO"?|BASH_VERSINFO\[0\]|"?\$\{BASH_VERSION%%\.\*\}"?)`
+
+var majorCompare = regexp.MustCompile(majorExpr + `\s*(-ge|-gt|-le|-lt|-eq|>=|>|<=|<|==|=)\s*"?(\d{1,3})"?`)
+var exitWord = regexp.MustCompile(`\b(exit|return)\b`)
+
+// threshold is the bash major version a check at n guarantees, or
+// unknownMajor. Decided only for the simple form: the test or the
+// arithmetic expression around the read holds exactly one mention of a
+// version variable, compared with an integer literal by -ge, -gt, -eq, >=,
+// >, == (the major is at least N, N+1, N), or by -lt, -le, <, <= when the
+// statement around it also exits or returns (the major is at least N, N+1
+// after it). Anything else, minor and patch numbers and string comparisons
+// included, is unknown.
+func (vs *versionScan) threshold(n *tree.Node) int {
+	var box *tree.Node
+	for p := n; p != nil && box == nil; p = p.Parent {
+		switch p.Kind {
+		case tree.KTest, tree.KArith:
+			box = p
+		case tree.KCall:
+			if name, ok := callWord(p); ok && (name == "[" || name == "test") {
+				box = p
+			}
+			if box == nil {
+				return unknownMajor
+			}
+		case tree.KStmt:
+			return unknownMajor
+		}
+	}
+	if box == nil {
+		return unknownMajor
+	}
+	a, b := box.Range.Start.Offset, box.Range.End.Offset
+	if a < 0 || b > len(vs.src) || a >= b {
+		return unknownMajor
+	}
+	text := vs.src[a:b]
+	if bytes.Count(text, []byte("BASH_VERSINFO"))+bytes.Count(text, []byte("BASH_VERSION")) != 1 {
+		return unknownMajor
+	}
+	m := majorCompare.FindSubmatch(text)
+	if m == nil {
+		return unknownMajor
+	}
+	var v int
+	fmt.Sscanf(string(m[2]), "%d", &v)
+	switch string(m[1]) {
+	case "-ge", ">=", "-eq", "==", "=":
+		return v
+	case "-gt", ">":
+		return v + 1
+	}
+	// -lt, -le, <, <=: a guard only when the statement leaves the script.
+	st := box
+	for p := box.Parent; p != nil; p = p.Parent {
+		if p.Kind != tree.KStmt {
+			continue
+		}
+		switch g := p.Parent; {
+		case g != nil && g.Kind == tree.KAndOr:
+			st = g
+		case g != nil && g.Kind == tree.KBlock && g.Parent != nil && g.Parent.Kind == tree.KIf && g.Parent.Children[0] == g:
+			st = g.Parent
+		default:
+			st = p
+		}
+		break
+	}
+	c, d := st.Range.Start.Offset, st.Range.End.Offset
+	if c < 0 || d > len(vs.src) || c >= d || !exitWord.Match(vs.src[c:d]) {
+		return unknownMajor
+	}
+	if string(m[1]) == "-le" || string(m[1]) == "<=" {
+		return v + 1
+	}
+	return v
 }
 
 // versionCheck classifies a read at n; for an assignment it names the
@@ -250,6 +423,16 @@ func testContext(n *tree.Node) bool {
 		}
 	}
 	return false
+}
+
+// enclosingFunc is the nearest function declaration around n, nil at the top level.
+func enclosingFunc(n *tree.Node) *tree.Node {
+	for p := n; p != nil; p = p.Parent {
+		if p.Kind == tree.KFuncDecl {
+			return p
+		}
+	}
+	return nil
 }
 
 // inFunc reports whether n is inside a function body.
@@ -397,14 +580,11 @@ func (c *diagCtx) bashVersions() {
 		if info.MinBash == (BashVersion{}) || !min.Less(info.MinBash) {
 			return
 		}
-		if vs.guarded && r.Start.Offset >= vs.guardAt {
-			return
-		}
 		if loc == nil {
 			loc = c.f.NewLocator()
 		}
 		at := loc.At(r.Start.Offset)
-		if vs.topGuarded && inFunc(at) {
+		if vs.covered(at, r.Start.Offset, info.MinBash.Major) {
 			return
 		}
 		if tolerated(c.f.Src, at) {

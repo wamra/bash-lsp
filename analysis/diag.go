@@ -624,6 +624,7 @@ func scanFile(ff *FileFacts) *fileScan {
 			sc.setsIFS = true
 		}
 	}
+	sc.version.src = src
 	var words []*tree.Node
 	for _, u := range ff.Uses {
 		if u.Kind == UseVarRead {
