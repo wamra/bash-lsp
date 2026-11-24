@@ -423,8 +423,18 @@ func TestParseCodesLevelsAndFiles(t *testing.T) {
 
 // --- against the installed ShellCheck ---
 
+// isolateHome points HOME and XDG_CONFIG_HOME at an empty directory: a test
+// that runs the real ShellCheck must not read the developer's own rc.
+func isolateHome(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+}
+
 func realRunner(t *testing.T) *Runner {
 	t.Helper()
+	isolateHome(t)
 	tool, ref, ok := extool.Find("shellcheck", "", extool.ProfileFromEnv(), nil)
 	if !ok {
 		t.Skipf("shellcheck is not installed (refusal: %v)", ref)
@@ -584,10 +594,38 @@ func TestCheckNoWorkspaceProgramThroughPath(t *testing.T) {
 	}
 }
 
+// The root as a case variant on PATH is still the root.
+func TestCheckNoWorkspaceProgramThroughCaseVariantPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the planted programs are /bin/sh and env scripts")
+	}
+	base := t.TempDir()
+	ws := filepath.Join(base, "WS")
+	os.MkdirAll(ws, 0o755)
+	a, errA := os.Stat(ws)
+	b, errB := os.Stat(filepath.Join(base, "ws"))
+	if errA != nil || errB != nil || !os.SameFile(a, b) {
+		t.Skip("the volume is case-sensitive")
+	}
+	exe, _ := os.Executable()
+	marker := filepath.Join(base, "marker")
+	wrapper := writeFile(t, base, "tools/shellcheck", "#!/usr/bin/env bash\nexec '"+exe+"' \"$@\"\n", 0o755)
+	writeFile(t, ws, "bash", "#!/bin/sh\necho ran > '"+marker+"'\nexec /bin/bash \"$@\"\n", 0o755)
+	t.Setenv("PATH", filepath.Join(base, "ws")+":/usr/bin:/bin")
+	r := New(extool.Tool{Name: "shellcheck", Path: wrapper}, Options{Roots: []string{ws}})
+	r.extraEnv = []string{"WB_FAKE_TOOL=clean"}
+	if _, err := r.Check(context.Background(), bashFile(filepath.Join(ws, "a.sh"), "echo hi\n")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("the workspace's bash ran")
+	}
+}
+
 func TestReadRC(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, root, ".shellcheckrc", "# comment\nshell=sh\nexternal-sources=true\nsource-path=/etc\ndisable=SC2086, SC2000-SC2002\nenable=require-variable-braces\n", 0o644)
-	writeFile(t, root, "sub/.shellcheckrc", "disable=2154\nenable=all,Bad Name,-x\nfoo=bar\ndisable=junk\n", 0o644)
+	writeFile(t, root, ".shellcheckrc", "# comment\nshell=sh\nexternal-sources=true\nsource-path=/etc\ndisable=SC2086,SC2000-SC2002\nenable=require-variable-braces\n", 0o644)
+	writeFile(t, root, "sub/.shellcheckrc", "disable=2154\nenable=all,Bad;Name,-x\nfoo=bar\n", 0o644)
 	rc := readRC(filepath.Join(root, "sub", "deep", "a.sh"), []string{root})
 	for _, code := range []int{2086, 2000, 2001, 2002, 2154} {
 		if !rc.disabled(code) {
@@ -601,14 +639,10 @@ func TestReadRC(t *testing.T) {
 		t.Errorf("enable = %v, want %v", rc.enable, want)
 	}
 	joined := strings.Join(rc.notes, "\n")
-	for _, w := range []string{"Bad Name", "-x", "junk"} {
+	for _, w := range []string{"Bad;Name", "-x"} {
 		if !strings.Contains(joined, w) {
 			t.Errorf("no notice about %q: %v", w, rc.notes)
 		}
-	}
-	// A file outside every root reads no rc.
-	if rc := readRC(filepath.Join(t.TempDir(), "a.sh"), []string{root}); rc.disabled(2086) || len(rc.enable) != 0 {
-		t.Error("an rc was read for a file outside the roots")
 	}
 	// A rc that is not a regular file is not read (a FIFO would block).
 	if runtime.GOOS != "windows" {
@@ -616,6 +650,164 @@ func TestReadRC(t *testing.T) {
 		if err := mkfifo(filepath.Join(d, ".shellcheckrc")); err == nil {
 			readRC(filepath.Join(d, "a.sh"), []string{d}) // must return
 		}
+	}
+}
+
+// The rc grammar as ShellCheck 0.11.0 reads it, for the keys the server uses
+// (checked with --rcfile on files of these shapes): a # starts a comment,
+// values may be quoted, several key=value words may share a line, disable=all
+// disables everything. A line it rejects (spaces around = or after a comma, an
+// empty entry, a bad code, upper-case ALL, an unbalanced quote) makes it ignore
+// the whole file, so the server applies nothing from such a file.
+func TestReadRCGrammar(t *testing.T) {
+	for _, c := range []struct {
+		text    string
+		off     []int // codes that must be disabled
+		on      []int // codes that must not be
+		all     bool
+		invalid bool
+	}{
+		{text: "disable=SC2086\n", off: []int{2086}, on: []int{2154}},
+		{text: "disable=SC2086 # why\n", off: []int{2086}, on: []int{2154}},
+		{text: "disable=SC2086#why\n", off: []int{2086}, on: []int{2154}},
+		{text: "disable=\"SC2086\"\n", off: []int{2086}},
+		{text: "disable='SC2086,SC2154' # x\n", off: []int{2086, 2154}},
+		{text: "disable=SC2086 disable=SC2154\n", off: []int{2086, 2154}},
+		{text: "disable=SC2086\ndisable=SC2154\n", off: []int{2086, 2154}},
+		{text: "  disable=SC2086   \n", off: []int{2086}},
+		{text: "disable=SC2086\r\n", off: []int{2086}},
+		{text: "disable=2086,SC2000-SC2002\n", off: []int{2086, 2000, 2002}, on: []int{2003}},
+		{text: "disable=all\n", all: true},
+		{text: "disable=SC2154-SC2000\n", on: []int{2154}}, // an inverted range disables nothing
+		{text: "foo=bar\ndisable=SC2086\n", off: []int{2086}},
+		{text: "disable=ALL\n", invalid: true},
+		{text: "disable=sc2086x\n", invalid: true},
+		{text: "disable = SC2086\n", invalid: true},
+		{text: "disable=SC2086, SC2154\n", invalid: true},
+		{text: "disable=SC2086,\n", invalid: true},
+		{text: "disable=SC2086,,SC2154\n", invalid: true},
+		{text: "disable=SC2086 junk\n", invalid: true},
+		{text: "disable=\"SC2086\n", invalid: true},
+		{text: "disable=junk\ndisable=SC2154\n", invalid: true},
+		{text: "enable=a,b c\ndisable=SC2154\n", invalid: true},
+	} {
+		root := t.TempDir()
+		writeFile(t, root, ".shellcheckrc", c.text, 0o644)
+		rc := readRC(filepath.Join(root, "a.sh"), []string{root})
+		for _, code := range c.off {
+			if !rc.disabled(code) {
+				t.Errorf("%q: SC%d not disabled", c.text, code)
+			}
+		}
+		for _, code := range c.on {
+			if rc.disabled(code) {
+				t.Errorf("%q: SC%d disabled", c.text, code)
+			}
+		}
+		if c.all && !(rc.disabled(1) && rc.disabled(2086) && rc.disabled(9999)) {
+			t.Errorf("%q: not everything disabled", c.text)
+		}
+		if c.invalid && (rc.disabled(2154) || rc.disabled(2086) || len(rc.notes) == 0) {
+			t.Errorf("%q: an invalid file was applied or went unnoticed (%v)", c.text, rc.notes)
+		}
+	}
+}
+
+// The file's path may be spelled differently from the root (a symlinked
+// root, a case variant); the rc is still found. A file outside every root
+// says so.
+func TestReadRCPathSpelling(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	writeFile(t, real, ".shellcheckrc", "disable=SC2086\n", 0o644)
+	writeFile(t, real, "sub/a.sh", "x\n", 0o644)
+	if runtime.GOOS != "windows" {
+		alias := filepath.Join(base, "alias")
+		if err := os.Symlink(real, alias); err != nil {
+			t.Fatal(err)
+		}
+		if rc := readRC(filepath.Join(real, "sub", "a.sh"), []string{alias}); !rc.disabled(2086) {
+			t.Error("a symlinked root hides the rc")
+		}
+		if rc := readRC(filepath.Join(alias, "sub", "a.sh"), []string{real}); !rc.disabled(2086) {
+			t.Error("a file reached through a link hides the rc")
+		}
+	}
+	if up := strings.ToUpper(real); up != real {
+		if _, err := os.Stat(up); err == nil {
+			if rc := readRC(filepath.Join(up, "sub", "a.sh"), []string{real}); !rc.disabled(2086) {
+				t.Error("a case variant hides the rc")
+			}
+		}
+	}
+	out := readRC(filepath.Join(t.TempDir(), "a.sh"), []string{real})
+	if out.disabled(2086) || len(out.notes) != 1 || !strings.Contains(out.notes[0], "outside") {
+		t.Errorf("a file outside the roots: %+v", out)
+	}
+	if none := readRC(filepath.Join(t.TempDir(), "a.sh"), nil); len(none.notes) != 0 {
+		t.Errorf("no roots, yet notes: %v", none.notes)
+	}
+}
+
+// A .shellcheckrc that is a link leading outside the root is not followed and
+// its text is never echoed; one that is not a regular file is skipped without
+// blocking.
+func TestReadRCSymlinksAndFIFO(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("links and FIFOs")
+	}
+	base := t.TempDir()
+	root := filepath.Join(base, "ws")
+	writeFile(t, base, "outside/rc", "disable=SC2086\nenable=Secret Token 123\nenable=Secret;Token\n", 0o644)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(base, "outside", "rc"), filepath.Join(root, ".shellcheckrc")); err != nil {
+		t.Fatal(err)
+	}
+	rc := readRC(filepath.Join(root, "a.sh"), []string{root})
+	if rc.disabled(2086) || len(rc.enable) != 0 {
+		t.Error("an rc outside the root was followed")
+	}
+	if all := strings.Join(rc.notes, "\n"); strings.Contains(all, "Secret") || !strings.Contains(all, "link") {
+		t.Errorf("notes = %q", rc.notes)
+	}
+	// A link that stays inside the root is read.
+	writeFile(t, root, "conf/real.rc", "disable=SC2154\n", 0o644)
+	os.MkdirAll(filepath.Join(root, "in"), 0o755)
+	if err := os.Symlink(filepath.Join(root, "conf", "real.rc"), filepath.Join(root, "in", ".shellcheckrc")); err != nil {
+		t.Fatal(err)
+	}
+	if rc := readRC(filepath.Join(root, "in", "a.sh"), []string{root}); !rc.disabled(2154) {
+		t.Error("an rc linked inside the root was not read")
+	}
+	// openRC never blocks on a FIFO and refuses it.
+	fifo := filepath.Join(base, "fifo")
+	if err := mkfifo(fifo); err != nil {
+		t.Skip(err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := openRC(fifo); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("a FIFO was opened as an rc")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("openRC blocked on a FIFO")
+	}
+}
+
+func TestParseHugeColumnOnASCIILine(t *testing.T) {
+	f := bashFile("/x/a.sh", "echo hello\necho $a\n")
+	js := `{"comments":[{"file":"-","line":2,"endLine":2,"column":9223372036854775807,"endColumn":9223372036854775807,"level":"info","code":1,"message":"m","fix":null}]}`
+	ds, err := Parse(f, []byte(js))
+	if err != nil || len(ds) != 1 {
+		t.Fatalf("%v %v", ds, err)
+	}
+	wantEnd := strings.Index(string(f.Src), "\n") + 1 + len("echo $a")
+	if ds[0].Range.Start.Offset != wantEnd || ds[0].Range.End.Offset != wantEnd {
+		t.Errorf("range %+v, want both at %d (the end of the line)", ds[0].Range, wantEnd)
 	}
 }
 
@@ -654,6 +846,7 @@ func TestCheckAppliesRCDisableAfterParsing(t *testing.T) {
 
 func realChecker(t *testing.T, roots ...string) *Runner {
 	t.Helper()
+	isolateHome(t)
 	tool, _, ok := extool.Find("shellcheck", "", extool.ProfileFromEnv(), nil)
 	if !ok {
 		t.Skip("shellcheck is not installed")
@@ -678,6 +871,9 @@ func TestCheckRepoRCCannotReachOutside(t *testing.T) {
 	outside := filepath.Join(base, "outside")
 	writeFile(t, outside, "defs.sh", "probe_vax=1\n", 0o644)
 	writeFile(t, ws, ".shellcheckrc", "external-sources=true\nsource-path="+outside+"\n", 0o644)
+	if err := os.MkdirAll(filepath.Join(ws, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	r := realChecker(t, ws)
 	f := bashFile(filepath.Join(ws, "sub", "a.sh"), "#!/bin/bash\nsource defs.sh\necho \"$probe_var\"\n")
 	ds, err := r.Check(context.Background(), f)

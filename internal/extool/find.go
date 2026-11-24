@@ -64,9 +64,13 @@ func Find(name, configured string, prof *Profile, roots []string) (Tool, *Refusa
 	return Tool{Name: name, Path: resolved}, nil, true
 }
 
-// insideRoot reports whether path is root or below it. root is compared as
-// given and with its links resolved; a case variant on a case-insensitive
-// volume is caught by comparing each ancestor of path with root on disk.
+// Inside reports whether path (a file or a directory) is root or below it,
+// by spelling, with links resolved, or by being the same file on disk (a case
+// variant on a case-insensitive volume).
+func Inside(path, root string) bool { return insideRoot(path, root) }
+
+// insideRoot is Inside: path and each of its ancestors is compared with root
+// on disk, so a directory that is the root itself counts.
 func insideRoot(path, root string) bool {
 	if root == "" {
 		return false
@@ -84,7 +88,7 @@ func insideRoot(path, root string) bool {
 	if err != nil {
 		return false
 	}
-	for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {
+	for dir := path; ; dir = filepath.Dir(dir) {
 		if fi, err := os.Stat(dir); err == nil && os.SameFile(fi, rootInfo) {
 			return true
 		}

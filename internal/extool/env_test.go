@@ -76,3 +76,25 @@ func TestNeutralDir(t *testing.T) {
 		t.Errorf("NeutralDir = %q, want /", d)
 	}
 }
+
+// A case variant of the root itself (and of a directory below it) is the root
+// on a case-insensitive volume.
+func TestSafePathCaseVariantOfRoot(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "WS")
+	os.MkdirAll(filepath.Join(root, "sub"), 0o755)
+	variant := filepath.Join(base, "ws")
+	a, errA := os.Stat(root)
+	b, errB := os.Stat(variant)
+	if errA != nil || errB != nil || !os.SameFile(a, b) {
+		t.Skip("the volume is case-sensitive")
+	}
+	for _, dir := range []string{variant, filepath.Join(base, "ws", "sub"), filepath.Join(variant, "SUB")} {
+		if got := SafePath(dir+string(os.PathListSeparator)+base, []string{root}); got != base {
+			t.Errorf("SafePath(%s) = %q, want %q", dir, got, base)
+		}
+	}
+	if got := SafePath(root, []string{variant}); got != "" {
+		t.Errorf("root spelled as a case variant: PATH = %q", got)
+	}
+}
