@@ -1,0 +1,4 @@
+exit 1
+--- stdout
+--- stderr
+bash-lsp: ../../etc/passwd: outside the root CORPUS

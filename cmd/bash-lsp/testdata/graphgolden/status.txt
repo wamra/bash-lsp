@@ -1,0 +1,11 @@
+exit 0
+--- stdout
+generation: 1
+root: CORPUS
+files: 9
+bash: 8
+sh: 1
+skipped: 0
+nesting errors: 0
+cache: none
+--- stderr

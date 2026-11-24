@@ -1,0 +1,8 @@
+exit 0
+--- stdout
+dyn.sh:4:1  dyn.sh -> lib/util.sh:build_release  resolved/direct
+main.sh:6:3  main.sh:deploy -> lib/util.sh:build_release  resolved/direct
+main.sh:7:3  main.sh:deploy -> lib/util.sh:build_release  resolved/alias
+main.sh:9:3  main.sh:deploy -> lib/util.sh:build_release  candidate/variable-constant
+main.sh:10:9  main.sh:deploy -> lib/util.sh:build_release  candidate/string-eval
+--- stderr

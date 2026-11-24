@@ -1,0 +1,56 @@
+exit 0
+--- stdout
+{
+  "generation": 1,
+  "results": [
+    {
+      "caller": {
+        "path": "a.sh",
+        "function": null
+      },
+      "callee": null,
+      "relation": "sources",
+      "resolution": "unresolved",
+      "reason": "not-found",
+      "site": {
+        "path": "a.sh",
+        "line": 1,
+        "col": 8
+      },
+      "text": "./missing.sh"
+    },
+    {
+      "caller": {
+        "path": "a.sh",
+        "function": "run"
+      },
+      "callee": null,
+      "relation": "calls",
+      "resolution": "dynamic",
+      "reason": "variable-unknown",
+      "site": {
+        "path": "a.sh",
+        "line": 2,
+        "col": 9
+      },
+      "text": "$1"
+    },
+    {
+      "caller": {
+        "path": "a.sh",
+        "function": null
+      },
+      "callee": null,
+      "relation": "calls",
+      "resolution": "dynamic",
+      "reason": "variable-unknown",
+      "site": {
+        "path": "a.sh",
+        "line": 6,
+        "col": 1
+      },
+      "text": "\"$cmd\""
+    }
+  ]
+}
+--- stderr

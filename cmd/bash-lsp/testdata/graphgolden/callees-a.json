@@ -1,0 +1,72 @@
+exit 0
+--- stdout
+{
+  "generation": 1,
+  "results": [
+    {
+      "caller": {
+        "path": "a.sh",
+        "function": null
+      },
+      "callee": {
+        "path": "b.sh",
+        "function": null
+      },
+      "relation": "sources",
+      "resolution": "resolved",
+      "reason": "direct",
+      "site": {
+        "path": "a.sh",
+        "line": 3,
+        "col": 8
+      }
+    },
+    {
+      "caller": {
+        "path": "a.sh",
+        "function": null
+      },
+      "callee": {
+        "path": "b.sh",
+        "function": "f"
+      },
+      "relation": "calls",
+      "resolution": "resolved",
+      "reason": "direct",
+      "site": {
+        "path": "a.sh",
+        "line": 4,
+        "col": 1
+      },
+      "definition": {
+        "path": "b.sh",
+        "line": 2,
+        "col": 1
+      }
+    },
+    {
+      "caller": {
+        "path": "a.sh",
+        "function": null
+      },
+      "callee": {
+        "path": "c.sh",
+        "function": "g"
+      },
+      "relation": "calls",
+      "resolution": "candidate",
+      "reason": "name-match-outside-closure",
+      "site": {
+        "path": "a.sh",
+        "line": 7,
+        "col": 7
+      },
+      "definition": {
+        "path": "c.sh",
+        "line": 2,
+        "col": 1
+      }
+    }
+  ]
+}
+--- stderr

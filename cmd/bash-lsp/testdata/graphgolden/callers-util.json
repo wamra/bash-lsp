@@ -1,0 +1,123 @@
+exit 0
+--- stdout
+{
+  "generation": 1,
+  "results": [
+    {
+      "caller": {
+        "path": "dyn.sh",
+        "function": null
+      },
+      "callee": {
+        "path": "lib/util.sh",
+        "function": "build_release"
+      },
+      "relation": "calls",
+      "resolution": "resolved",
+      "reason": "direct",
+      "site": {
+        "path": "dyn.sh",
+        "line": 4,
+        "col": 1
+      },
+      "definition": {
+        "path": "lib/util.sh",
+        "line": 4,
+        "col": 1
+      }
+    },
+    {
+      "caller": {
+        "path": "main.sh",
+        "function": "deploy"
+      },
+      "callee": {
+        "path": "lib/util.sh",
+        "function": "build_release"
+      },
+      "relation": "calls",
+      "resolution": "resolved",
+      "reason": "direct",
+      "site": {
+        "path": "main.sh",
+        "line": 6,
+        "col": 3
+      },
+      "definition": {
+        "path": "lib/util.sh",
+        "line": 4,
+        "col": 1
+      }
+    },
+    {
+      "caller": {
+        "path": "main.sh",
+        "function": "deploy"
+      },
+      "callee": {
+        "path": "lib/util.sh",
+        "function": "build_release"
+      },
+      "relation": "calls",
+      "resolution": "resolved",
+      "reason": "alias",
+      "site": {
+        "path": "main.sh",
+        "line": 7,
+        "col": 3
+      },
+      "definition": {
+        "path": "lib/util.sh",
+        "line": 4,
+        "col": 1
+      }
+    },
+    {
+      "caller": {
+        "path": "main.sh",
+        "function": "deploy"
+      },
+      "callee": {
+        "path": "lib/util.sh",
+        "function": "build_release"
+      },
+      "relation": "calls",
+      "resolution": "candidate",
+      "reason": "variable-constant",
+      "site": {
+        "path": "main.sh",
+        "line": 9,
+        "col": 3
+      },
+      "definition": {
+        "path": "lib/util.sh",
+        "line": 4,
+        "col": 1
+      }
+    },
+    {
+      "caller": {
+        "path": "main.sh",
+        "function": "deploy"
+      },
+      "callee": {
+        "path": "lib/util.sh",
+        "function": "build_release"
+      },
+      "relation": "calls",
+      "resolution": "candidate",
+      "reason": "string-eval",
+      "site": {
+        "path": "main.sh",
+        "line": 10,
+        "col": 9
+      },
+      "definition": {
+        "path": "lib/util.sh",
+        "line": 4,
+        "col": 1
+      }
+    }
+  ]
+}
+--- stderr

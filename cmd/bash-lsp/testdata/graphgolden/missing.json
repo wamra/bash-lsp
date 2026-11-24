@@ -1,0 +1,4 @@
+exit 1
+--- stdout
+--- stderr
+bash-lsp: analysis: no function or file matches "no_such_function"

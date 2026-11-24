@@ -1,0 +1,44 @@
+exit 0
+--- stdout
+{
+  "generation": 1,
+  "results": [
+    {
+      "caller": {
+        "path": "dyn.sh",
+        "function": null
+      },
+      "callee": {
+        "path": "lib/util.sh",
+        "function": null
+      },
+      "relation": "sources",
+      "resolution": "resolved",
+      "reason": "direct",
+      "site": {
+        "path": "dyn.sh",
+        "line": 3,
+        "col": 8
+      }
+    },
+    {
+      "caller": {
+        "path": "main.sh",
+        "function": null
+      },
+      "callee": {
+        "path": "lib/util.sh",
+        "function": null
+      },
+      "relation": "sources",
+      "resolution": "resolved",
+      "reason": "direct",
+      "site": {
+        "path": "main.sh",
+        "line": 2,
+        "col": 8
+      }
+    }
+  ]
+}
+--- stderr

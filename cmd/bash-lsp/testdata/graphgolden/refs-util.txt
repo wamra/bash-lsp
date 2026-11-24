@@ -1,0 +1,10 @@
+exit 0
+--- stdout
+dyn.sh:4:1  build_release  calls  resolved/direct
+main.sh:3:10  build_release  aliases  resolved/direct
+main.sh:6:3  build_release  calls  resolved/direct
+main.sh:7:3  build_release  calls  resolved/alias
+main.sh:8:13  build_release
+main.sh:9:3  build_release  calls  candidate/variable-constant
+main.sh:10:9  build_release  calls  candidate/string-eval
+--- stderr

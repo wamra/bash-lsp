@@ -1,0 +1,6 @@
+exit 0
+--- stdout
+a.sh:1:8  a.sh -> ./missing.sh  unresolved/not-found
+a.sh:2:9  a.sh:run -> $1  dynamic/variable-unknown
+a.sh:6:1  a.sh -> "$cmd"  dynamic/variable-unknown
+--- stderr

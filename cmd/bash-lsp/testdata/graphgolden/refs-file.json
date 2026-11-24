@@ -1,0 +1,4 @@
+exit 1
+--- stdout
+--- stderr
+bash-lsp: main.sh: refs wants a function, not a file

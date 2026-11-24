@@ -1,0 +1,5 @@
+exit 0
+--- stdout
+dyn.sh:3:8  dyn.sh -> lib/util.sh  resolved/direct
+main.sh:2:8  main.sh -> lib/util.sh  resolved/direct
+--- stderr

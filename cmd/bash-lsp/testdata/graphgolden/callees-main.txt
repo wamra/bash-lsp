@@ -1,0 +1,5 @@
+exit 0
+--- stdout
+main.sh:2:8  main.sh -> lib/util.sh  resolved/direct
+main.sh:21:1  main.sh -> main.sh:deploy  resolved/direct
+--- stderr
