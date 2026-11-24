@@ -46,3 +46,27 @@ func TestNestedOverride(t *testing.T) {
 		t.Error("nested pattern must only apply below its directory")
 	}
 }
+
+func TestParseFold(t *testing.T) {
+	cases := []struct {
+		name, base, pat, rel string
+		dir, fold, want      bool
+	}{
+		{"star fold", "", "*.LOG\n", "a.log", false, true, true},
+		{"star exact", "", "*.LOG\n", "a.log", false, false, false},
+		{"dir base fold", "Sub", "Build/\n", "sub/build", true, true, true},
+		{"dir base exact", "Sub", "Build/\n", "sub/build", true, false, false},
+		{"base other dir", "Sub", "Build/\n", "subx/build", true, true, false},
+		{"base itself", "Sub", "Build/\n", "SUB", true, true, false},
+	}
+	for _, c := range cases {
+		s := &Set{}
+		s.Add(ParseFold(c.base, []byte(c.pat), c.fold))
+		if got := s.Ignored(c.rel, c.dir); got != c.want {
+			t.Errorf("%s: Ignored(%q) = %v, want %v", c.name, c.rel, got, c.want)
+		}
+	}
+	if a, b := Parse("x", []byte("*.log\n")), ParseFold("x", []byte("*.log\n"), false); a.Base != b.Base || a.fold != b.fold {
+		t.Error("Parse differs from ParseFold(false)")
+	}
+}
