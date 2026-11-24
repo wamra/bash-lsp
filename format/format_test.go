@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/wamra/bash-lsp/tree"
 )
 
 func u(n uint) *uint { return &n }
@@ -345,5 +347,35 @@ func TestRangeEverywhere(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// bash.dialect names the grammar of a file that names none itself: the With
+// variants take it, Source and Range keep detecting bash.
+func TestFormatWithFallbackDialect(t *testing.T) {
+	src := []byte("[[ $a<$b ]]\n")
+	if out, err := Source("x.sh", src, Options{}); err != nil || string(out) != "[[ $a < $b ]]\n" {
+		t.Fatalf("default: %q %v", out, err)
+	}
+	if out, err := SourceWith("x.sh", src, Options{}, tree.Bash); err != nil || string(out) != "[[ $a < $b ]]\n" {
+		t.Fatalf("bash fallback: %q %v", out, err)
+	}
+	if out, err := SourceWith("x.sh", src, Options{}, 0); err != nil || string(out) != "[[ $a < $b ]]\n" {
+		t.Fatalf("zero fallback is bash: %q %v", out, err)
+	}
+	out, err := SourceWith("x.sh", src, Options{}, tree.POSIX)
+	if !errors.Is(err, ErrUnsupported) || out != nil || !strings.Contains(err.Error(), "grammar-dependent") {
+		t.Fatalf("sh fallback: %q %v", out, err)
+	}
+	if _, _, _, err := RangeWith("x.sh", src, 0, len(src), Options{}, tree.POSIX); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("range with sh fallback: %v", err)
+	}
+	if _, _, text, err := RangeWith("x.sh", src, 0, len(src), Options{}, tree.Bash); err != nil || string(text) != "[[ $a < $b ]]" {
+		t.Fatalf("range with bash fallback: %q %v", text, err)
+	}
+	// A file that names its dialect keeps it whatever the fallback says.
+	named := []byte("#!/bin/bash\n[[ $a<$b ]]\n")
+	if out, err := SourceWith("x.sh", named, Options{}, tree.POSIX); err != nil || string(out) != "#!/bin/bash\n[[ $a < $b ]]\n" {
+		t.Fatalf("shebang wins: %q %v", out, err)
 	}
 }

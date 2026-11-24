@@ -10,6 +10,7 @@ import (
 
 	"github.com/wamra/bash-lsp/internal/editorconfig"
 	"github.com/wamra/bash-lsp/internal/front"
+	"github.com/wamra/bash-lsp/tree"
 )
 
 // Options are the printer's options, as shfmt's.
@@ -56,6 +57,18 @@ func Source(path string, src []byte, o Options) ([]byte, error) {
 // with any parse error, even outside the range.
 func Range(path string, src []byte, start, end int, o Options) (editStart, editEnd int, text []byte, err error) {
 	return front.FormatRange(path, src, start, end, o.front())
+}
+
+// SourceWith is Source with fallback as the dialect of a file that names none
+// itself (no directive, no shebang that names one, and an extension that says
+// nothing): the bash.dialect setting. 0 means Bash, which is what Source uses.
+func SourceWith(path string, src []byte, o Options, fallback tree.Dialect) ([]byte, error) {
+	return front.FormatWith(path, src, o.front(), fallback)
+}
+
+// RangeWith is Range with a fallback dialect, as SourceWith is for Source.
+func RangeWith(path string, src []byte, start, end int, o Options, fallback tree.Dialect) (editStart, editEnd int, text []byte, err error) {
+	return front.FormatRangeWith(path, src, start, end, o.front(), fallback)
 }
 
 // Edit returns one replacement that turns old into new: the bytes
