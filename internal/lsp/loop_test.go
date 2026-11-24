@@ -271,7 +271,7 @@ func TestInboundQueueBounded(t *testing.T) {
 		}
 	}()
 	time.Sleep(300 * time.Millisecond)
-	limit := int64((inboundCap+2)*size + 64<<10)
+	limit := int64((2*inboundCap+3)*size + 64<<10)
 	got := accepted.Load()
 	t.Logf("accepted %d bytes (%d frames of %d bytes), limit %d", got, got/int64(size), size, limit)
 	if got > limit {
@@ -487,4 +487,271 @@ func FuzzCancelFrameID(f *testing.F) {
 			t.Fatalf("id %q, decoder reads %q", id, p.ID)
 		}
 	})
+}
+
+// ---- fix round 1: held requests and notifications ----
+
+// A cancel read while the loop is busy, for a request the loop then holds,
+// still answers at once (the wake-up was consumed before the request was held).
+func TestCancelOfRequestAboutToBeHeld(t *testing.T) {
+	for i := 0; i < 10; i++ {
+		func() {
+			var srv *server
+			job, park := newGate(), newGate()
+			var parkOn atomic.Bool
+			setHooks(t, nil, job, func(m string) {
+				if m == "textDocument/didChange" && parkOn.Load() {
+					park.wait()
+				}
+			})
+			root := oneFileRoot(t, "a.sh", "a_fn() { :; }\n")
+			second := folderRoot(t, "b.sh", "b_fn() { :; }\n")
+			c := clientWith(t, clientCfg{root: root, onServer: func(s *server) { srv = s }})
+			c.open("a.sh")
+			c.symbols("")
+			c.folders([]string{second}, nil)
+			job.waitEntered(t)
+			parkOn.Store(true)
+			c.change("a.sh", fullText("a2_fn() { :; }\n"))
+			park.waitEntered(t) // the loop is inside the didChange handler
+			c.sendReq(`700`, "workspace/symbol", map[string]any{"query": ""})
+			c.cancel(`700`)
+			deadline := time.Now().Add(5 * time.Second)
+			for !srv.isCancelled("700") {
+				if time.Now().After(deadline) {
+					t.Fatal("the cancel was not seen")
+				}
+				time.Sleep(time.Millisecond)
+			}
+			park.release()
+			done := make(chan *rpcReply, 1)
+			go func() { done <- c.waitReply(`700`) }()
+			select {
+			case r := <-done:
+				if r.Error == nil || r.Error.Code != -32800 {
+					t.Fatalf("reply %+v, want -32800", r)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("the cancelled request was held until the folder job ended")
+			}
+		}()
+	}
+}
+
+// A request held during a folder job is answered from the state it was sent
+// into: an edit sent after it waits behind it.
+func TestHeldRequestSeesStateAtItsArrival(t *testing.T) {
+	g := newGate()
+	setHooks(t, nil, g, nil)
+	root := oneFileRoot(t, "a.sh", "a_fn() { :; }\n")
+	second := folderRoot(t, "b.sh", "b_fn() { :; }\n")
+	c := clientWith(t, clientCfg{root: root})
+	c.open("a.sh")
+	c.symbols("")
+	c.folders([]string{second}, nil)
+	g.waitEntered(t)
+	c.sendReq(`9001`, docSymbolMethod, docSymbolParams(c, "a.sh"))
+	c.change("a.sh", fullText("zzz_new_fn() { :; }\n"))
+	time.Sleep(100 * time.Millisecond)
+	g.release()
+	r := c.waitReply(`9001`)
+	if r.Error != nil || !strings.Contains(string(r.Result), "a_fn") || strings.Contains(string(r.Result), "zzz_new_fn") {
+		t.Fatalf("reply %+v, want the text from before the edit", r)
+	}
+	if got := c.symbolNames("a.sh"); len(got) != 1 || got[0] != "zzz_new_fn" {
+		t.Fatalf("after the edit: %v", got)
+	}
+}
+
+// Held items run in arrival order.
+func TestHeldRunInArrivalOrder(t *testing.T) {
+	g := newGate()
+	var mu sync.Mutex
+	var order []string
+	setHooks(t, nil, g, func(m string) { mu.Lock(); order = append(order, m); mu.Unlock() })
+	root := oneFileRoot(t, "a.sh", "a_fn() { :; }\n")
+	second := folderRoot(t, "b.sh", "b_fn() { :; }\n")
+	c := clientWith(t, clientCfg{root: root})
+	c.symbols("")
+	c.folders([]string{second}, nil)
+	g.waitEntered(t)
+	mu.Lock()
+	order = nil
+	mu.Unlock()
+	c.sendReq(`1`, "workspace/symbol", map[string]any{"query": ""})
+	c.sendReq(`2`, docSymbolMethod, docSymbolParams(c, "a.sh"))
+	c.sendReq(`3`, "textDocument/hover", map[string]any{"textDocument": map[string]any{"uri": c.uri("a.sh")}, "position": Position{}})
+	c.sendReq(`4`, "workspace/symbol", map[string]any{"query": ""})
+	g.release()
+	for _, id := range []string{`1`, `2`, `3`, `4`} {
+		c.waitReply(id)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := "workspace/symbol textDocument/documentSymbol textDocument/hover workspace/symbol"
+	if got := strings.Join(order, " "); got != want {
+		t.Fatalf("order %q, want %q", got, want)
+	}
+}
+
+// A panic in a closure posted to the loop is logged, the session goes on, and
+// a folder result that panics while applied still counts as applied.
+func TestPostedPanicRecovered(t *testing.T) {
+	var srv *server
+	root := oneFileRoot(t, "a.sh", "a_fn() { :; }\n")
+	c := clientWith(t, clientCfg{root: root, onServer: func(s *server) { srv = s }})
+	c.symbols("")
+	srv.post(func() { panic("boom") })
+	if got := c.symbols(""); len(got) == 0 {
+		t.Fatal("the session did not go on")
+	}
+	if !strings.Contains(c.logs.String(), "boom") {
+		t.Fatalf("panic not logged: %q", c.logs.String())
+	}
+	srv.post(func() {
+		saved := srv.folders
+		defer func() { srv.folders = saved }()
+		srv.folderPending = 1
+		srv.folders = append(srv.folders[:len(srv.folders):len(srv.folders)], nil) // applyFolders panics on it
+		srv.applyFolders(nil)
+	})
+	if got := c.symbols(""); len(got) == 0 {
+		t.Fatal("the session did not go on after a failing apply")
+	}
+	pending := make(chan int, 1)
+	srv.post(func() { pending <- srv.folderPending })
+	if n := <-pending; n != 0 {
+		t.Fatalf("folderPending %d after a panicking apply, want 0", n)
+	}
+}
+
+// shutdown held behind a folder job is answered first; a request after it is
+// refused as after any shutdown.
+func TestShutdownHeldThenRequestRefused(t *testing.T) {
+	g := newGate()
+	setHooks(t, nil, g, nil)
+	root := oneFileRoot(t, "a.sh", "a_fn() { :; }\n")
+	second := folderRoot(t, "b.sh", "b_fn() { :; }\n")
+	c := clientWith(t, clientCfg{root: root})
+	c.symbols("")
+	c.folders([]string{second}, nil)
+	g.waitEntered(t)
+	c.sendReq(`9100`, "shutdown", nil)
+	c.sendReq(`9101`, "workspace/symbol", map[string]any{"query": ""})
+	g.release()
+	if r := c.waitReply(`9100`); r.Error != nil {
+		t.Fatalf("shutdown: %+v", r)
+	}
+	if r := c.waitReply(`9101`); r.Error == nil || r.Error.Code != codeInvalidRequest {
+		t.Fatalf("request after shutdown: %+v, want -32600", r)
+	}
+}
+
+// exit behind a held shutdown waits for it: the session ends cleanly.
+func TestExitBehindHeldShutdown(t *testing.T) {
+	g := newGate()
+	setHooks(t, nil, g, nil)
+	root := oneFileRoot(t, "a.sh", "a_fn() { :; }\n")
+	second := folderRoot(t, "b.sh", "b_fn() { :; }\n")
+	c := clientWith(t, clientCfg{root: root})
+	c.symbols("")
+	c.folders([]string{second}, nil)
+	g.waitEntered(t)
+	c.sendReq(`9100`, "shutdown", nil)
+	c.notify("exit", nil)
+	time.Sleep(100 * time.Millisecond)
+	g.release()
+	select {
+	case err := <-c.done:
+		if err != nil {
+			t.Fatalf("Serve returned %v, want nil after shutdown and exit", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return")
+	}
+	if r := c.waitReply(`9100`); r.Error != nil {
+		t.Fatalf("shutdown: %+v", r)
+	}
+}
+
+// ---- fix round 1: bounds ----
+
+func TestQueueSizesPinned(t *testing.T) {
+	if inboundCap != 256 {
+		t.Fatalf("inboundCap is %d, want 256", inboundCap)
+	}
+	s := newServer(strings.NewReader(""), &syncBuffer{}, nil, "t")
+	if cap(s.inbound) != 256 || cap(s.stage) != 256 {
+		t.Fatalf("queue capacities %d and %d, want 256", cap(s.inbound), cap(s.stage))
+	}
+}
+
+// exit sent behind a full queue during the first build is still read.
+func TestExitBehindFullQueueDuringFirstBuild(t *testing.T) {
+	g := newGate()
+	setHooks(t, g, nil, nil)
+	root := oneFileRoot(t, "a.sh", "a_fn() { :; }\n")
+	c := clientWith(t, clientCfg{root: root})
+	g.waitEntered(t)
+	go func() {
+		for i := 0; i < 400; i++ {
+			b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": "textDocument/didChange", "params": map[string]any{
+				"textDocument": map[string]any{"uri": c.uri("a.sh"), "version": i + 2}, "contentChanges": []any{fullText("x\n")}}})
+			c.in.Write(append([]byte(fmt.Sprintf("Content-Length: %d\r\n\r\n", len(b))), b...))
+		}
+		b := []byte(`{"jsonrpc":"2.0","method":"exit"}`)
+		c.in.Write(append([]byte(fmt.Sprintf("Content-Length: %d\r\n\r\n", len(b))), b...))
+	}()
+	select {
+	case err := <-c.done:
+		if err == nil || !strings.Contains(err.Error(), "exit before shutdown") {
+			t.Fatalf("Serve returned %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return while the first build was held")
+	}
+}
+
+// Held requests are bounded too: a flood during a folder job backs up the
+// client's writes.
+func TestHeldRequestsBounded(t *testing.T) {
+	g := newGate()
+	setHooks(t, nil, g, nil)
+	root := oneFileRoot(t, "a.sh", "a_fn() { :; }\n")
+	second := folderRoot(t, "b.sh", "b_fn() { :; }\n")
+	c := clientWith(t, clientCfg{root: root})
+	c.symbols("")
+	c.folders([]string{second}, nil)
+	g.waitEntered(t)
+	pad := strings.Repeat("x", 4000)
+	frame := func(i int) []byte {
+		b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 100000 + i, "method": "workspace/symbol", "params": map[string]any{"query": pad}})
+		return append([]byte(fmt.Sprintf("Content-Length: %d\r\n\r\n", len(b))), b...)
+	}
+	size := len(frame(0))
+	const total = 3000
+	var accepted atomic.Int64
+	written := make(chan struct{})
+	go func() {
+		defer close(written)
+		for i := 0; i < total; i++ {
+			n, err := c.in.Write(frame(i))
+			accepted.Add(int64(n))
+			if err != nil {
+				return
+			}
+		}
+	}()
+	time.Sleep(400 * time.Millisecond)
+	limit := int64((3*inboundCap+4)*size + 64<<10)
+	if got := accepted.Load(); got > limit {
+		t.Fatalf("accepted %d bytes during the job, limit %d", got, limit)
+	}
+	g.release()
+	select {
+	case <-written:
+	case <-time.After(60 * time.Second):
+		t.Fatal("the writer did not finish")
+	}
+	c.waitReply(fmt.Sprint(100000 + total - 1))
 }

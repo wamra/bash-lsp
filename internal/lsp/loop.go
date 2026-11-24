@@ -61,14 +61,38 @@ func idKey(raw json.RawMessage) string { return string(raw) }
 
 // post runs fn on the message loop. It may be called from any goroutine
 // except the loop itself (it would wait on its own queue).
-func (s *server) post(fn func()) { s.enqueue(inbound{fn: fn}) }
-
-// enqueue queues an item, waiting while the queue is full, and gives up when
-// Serve has returned.
-func (s *server) enqueue(it inbound) {
+func (s *server) post(fn func()) {
 	select {
-	case s.inbound <- it:
+	case s.posted <- fn:
 	case <-s.done:
+	}
+}
+
+// stageItem hands an item to the reader's second stage, waiting while it is
+// full, and gives up when Serve has returned.
+func (s *server) stageItem(it inbound) {
+	select {
+	case s.stage <- it:
+	case <-s.done:
+	}
+}
+
+// forward moves items from the stage to the bounded queue. Together the two
+// hold up to 2*inboundCap frames, so an `exit` or a cancel that follows a
+// full queue is still read; beyond that the reader stops and the client's
+// writes back up.
+func (s *server) forward() {
+	for {
+		select {
+		case it := <-s.stage:
+			select {
+			case s.inbound <- it:
+			case <-s.done:
+				return
+			}
+		case <-s.done:
+			return
+		}
 	}
 }
 
@@ -104,11 +128,12 @@ func cancelledError() *rpcError {
 // ---- reader ----
 
 func (s *server) readLoop() {
+	enqueue := s.stageItem
 	var scratch []byte
 	for {
 		body, err := s.c.readBuf(scratch)
 		if err != nil {
-			s.enqueue(inbound{err: err})
+			enqueue(inbound{err: err})
 			return
 		}
 		if cap(body) <= scratchMax && cap(body) > cap(scratch) {
@@ -125,9 +150,9 @@ func (s *server) readLoop() {
 		if err := json.Unmarshal(body, &m); err != nil {
 			var syn *json.SyntaxError
 			if errors.As(err, &syn) {
-				s.enqueue(inbound{bad: &rpcError{codeParseError, "parse error: invalid JSON"}})
+				enqueue(inbound{bad: &rpcError{codeParseError, "parse error: invalid JSON"}})
 			} else {
-				s.enqueue(inbound{bad: &rpcError{codeInvalidRequest, "invalid request: " + err.Error()}})
+				enqueue(inbound{bad: &rpcError{codeInvalidRequest, "invalid request: " + err.Error()}})
 			}
 			continue
 		}
@@ -144,14 +169,14 @@ func (s *server) readLoop() {
 			// Closing quit frees a handler stuck in wait(); queuing the
 			// message makes the loop stop once it has taken what came before.
 			s.quitOnce.Do(func() { close(s.quit) })
-			s.enqueue(inbound{msg: m})
+			enqueue(inbound{msg: m})
 			return
 		case m.Method != "" && len(m.ID) > 0:
 			s.liveMu.Lock()
 			s.live[idKey(m.ID)] = &liveReq{done: make(chan struct{})}
 			s.liveMu.Unlock()
 		}
-		s.enqueue(inbound{msg: m})
+		enqueue(inbound{msg: m})
 	}
 }
 
@@ -200,8 +225,8 @@ func (s *server) finish(key string) {
 
 // answer replies to a request and ends its life in the live set.
 func (s *server) answer(id json.RawMessage, result any, rerr *rpcError) {
+	s.finish(idKey(id)) // before the reply: a client may reuse the id the moment it reads it
 	s.c.reply(id, result, rerr)
-	s.finish(idKey(id))
 }
 
 var cancelMethod = []byte("$/cancelRequest")
@@ -348,14 +373,21 @@ func valueEnd(b []byte, i int) int {
 // serve runs the message loop until `exit` or the end of input.
 func (s *server) serve() error {
 	go s.readLoop()
+	go s.forward()
 	defer close(s.done)
 	defer s.baseCancel() // kills the ShellCheck runs still going
 	for !s.exit {
+		in := s.inbound
+		if len(s.held) >= inboundCap {
+			in = nil // enough is held: stop taking input until a folder job ends
+		}
 		select {
-		case it := <-s.inbound:
+		case it := <-in:
 			if err := s.step(it); err != nil {
 				return err
 			}
+		case fn := <-s.posted:
+			s.runPosted(fn)
 		case <-s.wake:
 			s.dropCancelledHeld()
 		}
@@ -378,7 +410,7 @@ func (s *server) step(it inbound) error {
 		}
 		return fmt.Errorf("lsp: reading input: %w", it.err)
 	case it.fn != nil:
-		it.fn()
+		s.runPosted(it.fn)
 	case it.bad != nil:
 		s.c.reply(nil, nil, it.bad)
 	default:
@@ -387,11 +419,55 @@ func (s *server) step(it inbound) error {
 	return nil
 }
 
+// runPosted runs a closure posted to the loop; a panic is logged and the loop
+// goes on.
+func (s *server) runPosted(fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.log.Printf("panic in a closure posted to the loop: %v\n%s", r, debug.Stack())
+		}
+	}()
+	fn()
+}
+
+// dispatch takes one message. While a folder job is pending, requests wait in
+// held, in arrival order; once something is held, notifications wait behind it,
+// so an answer comes from the state its request arrived into and never from a
+// later edit. With nothing held an edit goes through at once. An `exit` goes
+// through at once too, unless a held `shutdown` is ahead of it.
 func (s *server) dispatch(m message) {
 	if m.Method == "" {
 		s.response(m)
 		return
 	}
+	isReq := len(m.ID) > 0
+	if m.Method == "exit" {
+		if len(s.held) > 0 && s.heldShutdown() {
+			s.held = append(s.held, m)
+			return
+		}
+	} else if len(s.held) > 0 || isReq && s.folderPending > 0 {
+		if isReq && s.isCancelled(idKey(m.ID)) {
+			s.answer(m.ID, nil, cancelledError()) // its cancel was read, and its wake-up used, already
+			return
+		}
+		s.held = append(s.held, m)
+		return
+	}
+	s.dispatchNow(m)
+}
+
+func (s *server) heldShutdown() bool {
+	for _, m := range s.held {
+		if m.Method == "shutdown" {
+			return true
+		}
+	}
+	return false
+}
+
+// dispatchNow runs a message that is not held (or no longer is).
+func (s *server) dispatchNow(m message) {
 	isReq := len(m.ID) > 0
 	if m.Method == "exit" {
 		s.exit = true
@@ -412,10 +488,6 @@ func (s *server) dispatch(m message) {
 		if isReq {
 			s.answer(m.ID, nil, &rpcError{codeInvalidRequest, "server is shut down"})
 		}
-		return
-	}
-	if isReq && s.folderPending > 0 {
-		s.held = append(s.held, m) // answered, in order, when the folder jobs are done
 		return
 	}
 	s.run(m)
@@ -456,7 +528,7 @@ func (s *server) run(m message) {
 func (s *server) dropCancelledHeld() {
 	kept := s.held[:0]
 	for _, m := range s.held {
-		if s.isCancelled(idKey(m.ID)) {
+		if len(m.ID) > 0 && s.isCancelled(idKey(m.ID)) {
 			s.answer(m.ID, nil, cancelledError())
 			continue
 		}
@@ -466,13 +538,14 @@ func (s *server) dropCancelledHeld() {
 	s.held = kept
 }
 
-// releaseHeld runs the held requests in arrival order.
+// releaseHeld runs the held items in arrival order. Each meets the state its
+// predecessors left: a request after a held shutdown is refused.
 func (s *server) releaseHeld() {
-	for len(s.held) > 0 && s.folderPending == 0 {
+	for len(s.held) > 0 && s.folderPending == 0 && !s.exit {
 		m := s.held[0]
 		s.held[0] = message{}
 		s.held = s.held[1:]
-		s.run(m)
+		s.dispatchNow(m)
 	}
 }
 
@@ -555,6 +628,11 @@ func (s *server) runFolderJob(declared []declaredFolder, existing []*folder) (ou
 // served folders and, when the set changed, re-homes the open documents (see
 // rehome). The last job's result releases the held requests.
 func (s *server) applyFolders(res []*folder) {
+	defer func() { // counted as applied even if re-homing panics
+		if s.folderPending--; s.folderPending == 0 {
+			s.releaseHeld()
+		}
+	}()
 	old := s.folders
 	s.folders = res
 	s.dropTools() // the roots the ShellCheck programs are checked against changed
@@ -568,8 +646,5 @@ func (s *server) applyFolders(res []*folder) {
 	}
 	if !same {
 		s.rehome(dropped)
-	}
-	if s.folderPending--; s.folderPending == 0 {
-		s.releaseHeld()
 	}
 }

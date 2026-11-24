@@ -152,6 +152,8 @@ type server struct {
 	// request whose handler is running (nil for a notification). held are the
 	// requests that arrived while folder jobs were pending, in arrival order.
 	inbound  chan inbound
+	stage    chan inbound // between the reader and inbound: room for exit and cancels to be read behind a full queue
+	posted   chan func()  // closures posted by other goroutines, read even when inbound is not
 	quit     chan struct{}
 	quitOnce sync.Once
 	done     chan struct{}
@@ -189,6 +191,8 @@ func newServer(in io.Reader, out io.Writer, logw io.Writer, version string) *ser
 		pending: map[string]string{},
 
 		inbound:   make(chan inbound, inboundCap),
+		stage:     make(chan inbound, inboundCap),
+		posted:    make(chan func(), inboundCap),
 		quit:      make(chan struct{}),
 		done:      make(chan struct{}),
 		wake:      make(chan struct{}, 1),
