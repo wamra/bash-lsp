@@ -535,3 +535,28 @@ func TestBackslashQuotedCommandName(t *testing.T) {
 	)
 	wantEq(t, q.def("m.sh", "\\f", 0, 1), "m.sh:1")
 }
+
+// A backslash-quoted builtin is the builtin (bash runs `\source x` as
+// `source x`): the quote removal reaches source, eval, trap, shell -c,
+// unset -f, read, mapfile, getopts and printf -v as for the plain spelling.
+func TestBackslashQuotedBuiltins(t *testing.T) {
+	q := buildMem(t, map[string]string{
+		"lib.sh": "lib_fn() { :; }\n",
+		"m.sh": "\\source ./lib.sh\n" + // 1
+			"lib_fn\n" + // 2
+			"\\eval \"lib_fn\"\n" + // 3
+			"k() { :; }\n" + // 4
+			"\\unset -f k\n" + // 5
+			"k\n" + // 6
+			"\\read -r v\n" + // 7
+			"echo \"$v\"\n", // 8
+	})
+	wantSame(t, q.fileEdges("m.sh"),
+		"m.sh:2 calls resolved/direct «lib_fn» -> lib_fn@lib.sh:1",
+		"m.sh:3 calls candidate/string-eval «lib_fn» -> lib_fn@lib.sh:1",
+		"m.sh:6 calls candidate/unset-in-view «k» -> k@m.sh:4",
+	)
+	if got := q.resReason("m.sh", "$v", 0, 1); got != "resolved/direct" {
+		t.Fatalf("$v after `\\read -r v` = %s", got)
+	}
+}
