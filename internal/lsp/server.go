@@ -120,6 +120,7 @@ type server struct {
 	baseCancel   context.CancelFunc
 	loggedMsg    map[string]bool // window/logMessage texts sent once (logMessageOnce)
 	fmtSem       chan struct{}   // bounds the formatter runs going at once (lint.go)
+	epoch        int             // settings reloads so far (part of a pull result id)
 	profileOnce  sync.Once
 	profile      *extool.Profile // the PATH profile, read once per session (pathProfile)
 
@@ -552,6 +553,9 @@ func (s *server) reportSettings(st config.Settings) {
 	for _, w := range st.CheckRules(analysis.KnownRule) {
 		s.log.Printf("settings: %s", w)
 		s.warnOnce("settings: " + w)
+	}
+	for _, r := range st.Refused { // a repo file naming a key only the user may set
+		s.logMessageOnce(messageTypeWarning, fmt.Sprintf("settings: %s: %s: %s", r.File, r.Key, r.Reason))
 	}
 }
 

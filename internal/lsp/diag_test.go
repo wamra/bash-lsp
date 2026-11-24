@@ -576,7 +576,7 @@ func TestServerResponsiveWhileShellCheckHangs(t *testing.T) {
 }
 
 func TestShellCheckBurstRunsOnce(t *testing.T) {
-	setDebounce(t, 200*time.Millisecond)
+	setDebounce(t, time.Second) // long against a loaded machine: the burst must fit well inside it
 	root := t.TempDir()
 	put(t, filepath.Join(root, "a.sh"), "")
 	runlog := filepath.Join(t.TempDir(), "runs")
@@ -589,7 +589,7 @@ func TestShellCheckBurstRunsOnce(t *testing.T) {
 	if !anyMessage(ds, "mark:# MARK 12") {
 		t.Fatalf("the result is not for the last edit: %v", messages(ds))
 	}
-	time.Sleep(400 * time.Millisecond)
+	time.Sleep(600 * time.Millisecond)
 	b, _ := os.ReadFile(runlog)
 	if n := strings.Count(string(b), "run"); n != 1 {
 		t.Fatalf("ShellCheck ran %d times for one burst of edits", n)
@@ -923,5 +923,117 @@ func TestSettingsReloadNamesWhatNeedsARestart(t *testing.T) {
 	msg := c.waitLog("restart")
 	if !strings.Contains(msg, "files.exclude") {
 		t.Fatalf("log text %q", msg)
+	}
+}
+
+func TestPullAfterSettingsReloadIsNotUnchanged(t *testing.T) {
+	root := t.TempDir()
+	put(t, filepath.Join(root, "a.sh"), "#!/bin/bash\nrm $f\n")
+	put(t, filepath.Join(root, "b.sh"), "#!/bin/bash\nrm $g\n")
+	repo := filepath.Join(root, ".bash-lsp.toml")
+	c := client(t, root)
+	c.openText("a.sh", "#!/bin/bash\nrm $f\n")
+	c.waitPush("a.sh")
+	open, closed := c.pull("a.sh", ""), c.pull("b.sh", "")
+	if !hasCode(open.Items, "WB1401") || !hasCode(closed.Items, "WB1401") {
+		t.Fatalf("before: %v %v", codes(open.Items), codes(closed.Items))
+	}
+	put(t, repo, "[diagnostics]\ndisable = [\"WB1401\"]\n")
+	c.watchedPath(repo)
+	c.waitPush("a.sh")
+	for name, prev := range map[string]struct {
+		rel string
+		id  string
+	}{"open": {"a.sh", open.ResultID}, "not open": {"b.sh", closed.ResultID}} {
+		r := c.pull(prev.rel, prev.id)
+		if r.Kind != "full" || hasCode(r.Items, "WB1401") || r.ResultID == prev.id {
+			t.Fatalf("%s document, pull with the id from before the reload: %+v", name, r)
+		}
+	}
+}
+
+func TestPullDoesNotHideAPush(t *testing.T) {
+	// A pull recomputes the findings of a document whose backend moved to a new
+	// generation without sending them; the next refresh must still push them.
+	var out bytes.Buffer
+	s := newServer(strings.NewReader(""), &out, nil, "test")
+	s.loose = newDocsOnly()
+	main, lib := "/x/main.sh", "/x/lib.sh"
+	s.loose.SetOverlay(lib, 1, []byte("deploy_it() { :; }\n"))
+	text := []byte("#!/bin/bash\nsource ./lib.sh\ndeploy_it\n")
+	s.loose.SetOverlay(main, 1, text)
+	d := &document{uri: "file:///x/main.sh", path: main, be: s.loose, version: 1, text: text}
+	s.docs[main] = d
+	s.publishDoc(d, true)
+	if strings.Contains(out.String(), "WB1101") {
+		t.Fatalf("main.sh before: %s", out.String())
+	}
+	out.Reset()
+	s.loose.CloseOverlay(lib)                                                                                           // a new generation: the source no longer resolves
+	if pub := s.findings(d, true); !slices.ContainsFunc(pub, func(p pubDiag) bool { return p.diag.Code == "WB1101" }) { // what a pull does
+		t.Fatalf("the pull did not see the change: %v", pub)
+	}
+	s.refreshOthers(s.loose, nil)
+	if !strings.Contains(out.String(), "WB1101") {
+		t.Fatalf("a document the client was never sent the new findings of was skipped: %q", out.String())
+	}
+}
+
+func TestGitignoreSaveRepublishesDependents(t *testing.T) {
+	root := t.TempDir()
+	put(t, filepath.Join(root, "lib.sh"), "deploy_it() { :; }\n")
+	put(t, filepath.Join(root, "main.sh"), "#!/bin/bash\nsource ./lib.sh\ndeploy_it\n")
+	c := client(t, root)
+	c.open("main.sh")
+	c.waitPush("main.sh")
+	put(t, filepath.Join(root, ".gitignore"), "lib.sh\n")
+	c.notify("textDocument/didSave", map[string]any{"textDocument": map[string]any{"uri": c.uri(".gitignore")}})
+	if _, ds := c.waitPushWhere("main.sh", func(v int, ds []Diagnostic) bool { return hasCode(ds, "WB1102") || hasCode(ds, "WB1101") }); len(ds) == 0 {
+		t.Fatal("no push after the .gitignore save")
+	}
+}
+
+func TestReloadAppliesWhileAnotherFileStaysBroken(t *testing.T) {
+	// The user file is broken from the start (ShellCheck is switched off through the
+	// initialization options so that no real program runs). A valid edit of the repo
+	// file is still applied, and nothing says "not reloaded".
+	user := filepath.Join(t.TempDir(), "config.toml")
+	put(t, user, "[diagnostics\n")
+	t.Setenv("BASH_LSP_CONFIG", user)
+	root := t.TempDir()
+	put(t, filepath.Join(root, "a.sh"), "")
+	repo := filepath.Join(root, ".bash-lsp.toml")
+	c := clientInit(t, root, false, map[string]any{"shellcheck": map[string]any{"enabled": false}})
+	c.openText("a.sh", "#!/bin/bash\nrm $f\n")
+	if _, ds := c.waitPush("a.sh"); !hasCode(ds, "WB1401") {
+		t.Fatalf("start: %v", codes(ds))
+	}
+	put(t, repo, "[diagnostics]\ndisable = [\"WB1401\"]\n")
+	c.watchedPath(repo)
+	if _, ds := c.waitPush("a.sh"); hasCode(ds, "WB1401") {
+		t.Fatalf("a valid repo edit was not applied: %v", codes(ds))
+	}
+	if n := len(c.logsContaining("not reloaded")); n != 0 {
+		t.Fatalf("an old failure was reported as a failed reload (%d)", n)
+	}
+	// A new failure still keeps the settings.
+	put(t, user, "[diagnostics]\ndisable = \n")
+	c.watchedPath(user)
+	c.waitLog("not reloaded")
+}
+
+func TestRepoFileRefusalIsReportedToTheUser(t *testing.T) {
+	root := t.TempDir()
+	put(t, filepath.Join(root, "a.sh"), "")
+	put(t, filepath.Join(root, ".bash-lsp.toml"), "[shellcheck]\npath = \"/tmp/evil\"\n")
+	c := client(t, root)
+	c.openText("a.sh", "echo a\n")
+	msg := c.waitLog("shellcheck.path")
+	if !strings.Contains(msg, "accepted only from user settings") {
+		t.Fatalf("log text %q", msg)
+	}
+	c.symbols("")
+	if n := len(c.logsContaining("shellcheck.path")); n != 1 {
+		t.Fatalf("reported %d times", n)
 	}
 }

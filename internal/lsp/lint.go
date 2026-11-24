@@ -55,7 +55,8 @@ type docLint struct {
 
 	pub     []pubDiag // the findings as last sent
 	sent    bool
-	sentVer int // the document version they were sent for
+	sentVer int    // the document version they were sent for
+	pubGen  uint64 // the generation the client has the findings of (a pull moves gen without sending)
 
 	// ShellCheck (see scheduleCheck): the findings of the run for scVer, once
 	// scDone; scSeq numbers the runs scheduled; timer and cancel belong to the
@@ -142,9 +143,10 @@ func (s *server) publishDoc(d *document, force bool) {
 	l := &d.lint
 	pub := s.findings(d, !force)
 	if !force && l.sent && l.sentVer == d.version && reflect.DeepEqual(pub, l.pub) {
+		l.pubGen = l.gen
 		return
 	}
-	l.pub, l.sent, l.sentVer = pub, true, d.version
+	l.pub, l.sent, l.sentVer, l.pubGen = pub, true, d.version, l.gen
 	v := d.version
 	s.c.notify("textDocument/publishDiagnostics", publishDiagnosticsParams{URI: d.uri, Version: &v, Diagnostics: diagnosticsOf(pub)})
 }
@@ -157,7 +159,7 @@ func (s *server) refreshOthers(be backend, except *document) {
 	gen := be.Snapshot().Generation()
 	var docs []*document
 	for _, d := range s.docs {
-		if d != except && d.be == be && !(d.lint.have && d.lint.gen == gen) {
+		if d != except && d.be == be && !(d.lint.sent && d.lint.pubGen == gen) {
 			docs = append(docs, d)
 		}
 	}
@@ -203,7 +205,10 @@ func (s *server) diagnostic(raw json.RawMessage) (any, *rpcError) {
 	}
 	id := fmt.Sprintf("%d.%d", gen, version)
 	if d != nil && d.lint.scDone && d.lint.scVer == d.version {
-		id += fmt.Sprintf(".%d", d.lint.scSeq) // ShellCheck findings are merged in: the set moved without a new generation or version
+		id += fmt.Sprintf(".s%d", d.lint.scSeq) // ShellCheck findings are merged in: the set moved without a new generation or version
+	}
+	if s.epoch > 0 {
+		id += fmt.Sprintf(".e%d", s.epoch) // the settings were reloaded: the same snapshot gives other findings
 	}
 	if p.PreviousResultID == id {
 		return unchangedDiagnosticReport{Kind: "unchanged", ResultID: id}, nil
@@ -716,14 +721,16 @@ func (s *server) reloadSettings() {
 }
 
 // reloaded loads the settings of root and returns them when they differ from
-// old and every file could be used; otherwise ok is false and old stays.
+// old and no file fails that did not already fail when old was loaded (a file
+// broken from the start does not stop the others from being reloaded);
+// otherwise ok is false and old stays.
 func (s *server) reloaded(root string, old config.Settings) (st config.Settings, ok bool) {
 	st = config.Load(root, s.initOpts)
-	if len(st.Failed) > 0 {
-		for _, w := range st.Failed {
+	if fresh := slices.DeleteFunc(slices.Clone(st.Failed), func(w string) bool { return slices.Contains(old.Failed, w) }); len(fresh) > 0 {
+		for _, w := range fresh {
 			s.log.Printf("settings: %s", w)
 		}
-		s.logMessageOnce(messageTypeWarning, "settings not reloaded, the previous ones stay: "+strings.Join(st.Failed, "; "))
+		s.logMessageOnce(messageTypeWarning, "settings not reloaded, the previous ones stay: "+strings.Join(fresh, "; "))
 		return old, false
 	}
 	if reflect.DeepEqual(st, old) {
@@ -759,6 +766,7 @@ func restartKeys(old, st config.Settings) []string {
 // is dropped and rescheduled only when its settings changed; otherwise its
 // findings stay and a document whose findings did not change is not sent.
 func (s *server) applySettings(be backend, old, st config.Settings) {
+	s.epoch++
 	scChanged := old.ShellCheck != st.ShellCheck
 	var docs []*document
 	for _, d := range s.docs {

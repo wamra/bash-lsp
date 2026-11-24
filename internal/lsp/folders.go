@@ -461,6 +461,7 @@ func (s *server) didSave(raw json.RawMessage) *rpcError {
 	if f, _ := s.folderOfClient(path); f != nil {
 		if isGitignore(path, f.ws.CaseInsensitive()) {
 			f.ws.Refresh()
+			s.refreshOthers(f.ws, nil)
 			s.queueFolderJob()
 			return nil
 		}
