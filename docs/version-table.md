@@ -103,8 +103,9 @@ behind `env` (its options `-i`, `-v`, `-0`, `-C dir`, `-P path`, `-u name`,
   - At a call of a function that holds a check, the calling scope from the
     call on (`check() { ... || exit 1; }; check` guards the code after
     `check`). The same holds for a wrapper: a function that calls a guard
-    function as a statement of its own body (not inside an `if`, a loop or a
-    list) is itself a guard function, through any number of wrappers
+    function as a statement of its own body, or as the first operand of an
+    `&&`/`||` list there (`g || return 1`), and not inside an `if` or a loop,
+    is itself a guard function, through any number of wrappers
     (`helper() { g; }; helper; declare -A m` is silent). A wrapper's own
     statements before its call of the guard function are reported.
   - A guard function called at the top level also covers every other
@@ -112,7 +113,10 @@ behind `env` (its options `-i`, `-v`, `-0`, `-C dir`, `-P path`, `-u name`,
     at the top level: `f() { declare -A m; }; h() { <check> }; f; h` is
     silent although `f` runs before `h`. It does not cover the guard
     function's own body or the bodies of the wrappers its guard comes
-    through: those are covered from their own check or call on.
+    through: those are covered from their own check or call on. A function
+    the guard does not have to pass through stays covered: in `main() { req;
+    maybe; }; main`, the body of `maybe` is covered by `req`'s check even if
+    `maybe` holds a check of its own.
 
   Not a check: a comment, a
   single-quoted string, a heredoc body, a standalone argument of `echo`,
@@ -127,12 +131,14 @@ behind `env` (its options `-i`, `-v`, `-0`, `-C dir`, `-P path`, `-u name`,
   `BASH_VERSINFO[0]`, `$BASH_VERSINFO` or `${BASH_VERSION%%.*}` in a test or
   arithmetic expression, compared with a plain decimal number (no leading
   zero) by `-ge`, `-gt`, `>=`, `>`; by `-eq`, `==`, `=` only where the code
-  after it runs when the test holds (the condition of an `if` whose body does
-  not exit or return, of a `while`, or the left side of `||`); or by `-lt`,
+  after it runs when the test holds (a test, not negated, that is the
+  condition of an `if` without `else` or `elif` whose body does not exit or
+  return, of a `while`, or the left side of `||`); or by `-lt`,
   `-le`, `<`, `<=` when the statement also exits or returns. Every other form
   (minor or patch numbers, string comparison, `case`, several mentions, a
   number in another base such as `0x4`, `010` or `2#100`, an expansion such as
-  `$min`, and `[[ ${BASH_VERSINFO[0]} == 3 ]] && exit 1`) silences everything
+  `$min`, `[[ ${BASH_VERSINFO[0]} == 3 ]] && exit 1` and `! [[ ... == 3 ]] ||
+  exit 1`) silences everything
   after it, as before; a major check also silences features of a later minor
   of the same major (`>= 4` silences `declare -n`, 4.3).
 - **Known gaps of the guard.** A top-level version test used only to choose a
@@ -143,7 +149,11 @@ behind `env` (its options `-i`, `-v`, `-0`, `-C dir`, `-P path`, `-u name`,
   in a subshell or by `trap` (`x=$(g)`, `( g )`, `trap g EXIT`), or called
   inside an `if` at the top level, counts as a guard although it does not stop
   the caller. Functions of the same name are merged: a check in any
-  definition counts for every call of that name. A guard in a sourced file
+  definition counts for every call of that name. The search for whether a
+  top-level guard call has to pass through a function has a step budget per
+  file (proportional to its calls); past it, in a long chain of wrappers that
+  each use a feature before their call, a top-level guard call covers the
+  remaining function bodies. A guard in a sourced file
   does not guard the sourcing file (see "Known gaps").
 - **Tolerated uses.** A feature is not reported when its command is the left
   side of `||` (`shopt -s globstar 2>/dev/null || true`) or sends standard

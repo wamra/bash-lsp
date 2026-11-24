@@ -163,6 +163,8 @@ func TestWB1301GuardScope(t *testing.T) {
 		{"wrapper of a wrapper", "g() { ((BASH_VERSINFO[0]>=4)) || exit 1; }\nw1() { g; }\nw2() { w1; declare -A m; }\nw2\n", 0},
 		{"wrapper body before its guard call", "g() { ((BASH_VERSINFO[0]>=4)) || exit 1; }\nmain() { declare -A m; g; declare -A p; }\nmain\ndeclare -A n\n", 1},
 		{"conditional call in a wrapper does not make a guard", "g() { ((BASH_VERSINFO[0]>=4)) || exit 1; }\nhelper() { if [ -n \"$1\" ]; then g; fi; }\nhelper\ndeclare -A m\n", 1},
+		{"wrapper calling the guard function left of ||", "g() { ((BASH_VERSINFO[0]>=4)) || exit 1; }\nhelper() { g || return 1; }\nhelper\ndeclare -A m\n", 0},
+		{"top-level wrapper covers a sibling it calls after the guard", "req() { ((BASH_VERSINFO[0]>=4)) || exit 1; }\nmaybe() { declare -A x; ((BASH_VERSINFO[0]>=5)) && echo new; }\nmain() { req; maybe; }\nmain\n", 0},
 		{"assignment, never tested", "v=$BASH_VERSION\ndeclare -A m\n", 1},
 		{"assignment, tested in [", "ver=${BASH_VERSION%%.*}\n[ \"$ver\" -ge 4 ] || exit 1\ndeclare -A m\n", 0},
 		{"assignment, tested in [[", "v=$BASH_VERSION\n[[ $v == 4* ]] || exit 1\ndeclare -A m\n", 0},
@@ -221,6 +223,9 @@ func TestWB1301GuardThreshold(t *testing.T) {
 		{"-eq in an if that exits keeps silencing", "if [ \"${BASH_VERSINFO[0]}\" -eq 3 ]; then echo old; exit 1; fi\ndeclare -A m\n", 0},
 		{"== or exit is a bound", "[[ ${BASH_VERSINFO[0]} == 4 ]] || exit 1\necho $EPOCHSECONDS\n", 1},
 		{"-eq in an if body is a bound", "if [ \"${BASH_VERSINFO[0]}\" -eq 3 ]; then declare -A m; fi\n", 1},
+		{"== in an if with else keeps silencing", "if [[ ${BASH_VERSINFO[0]} == 3 ]]; then :; else declare -A m; fi\n", 0},
+		{"negated == or exit keeps silencing", "! [[ ${BASH_VERSINFO[0]} == 3 ]] || exit 1; declare -A m\n", 0},
+		{"negated == in an if keeps silencing", "if ! [[ ${BASH_VERSINFO[0]} == 3 ]]; then declare -A m; fi\n", 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -277,9 +282,10 @@ func TestWB1301WrapperChainGrowth(t *testing.T) {
 		}
 		return d
 	}
-	prev := best(1000)
-	for _, n := range []int{2000, 4000} {
+	prev := best(4000)
+	for _, n := range []int{8000, 16000} {
 		cur := best(n)
+		t.Logf("%d wrappers: %v (%.2fx)", n, cur, float64(cur)/float64(prev))
 		if r := float64(cur) / float64(prev); r > 2.5 {
 			t.Fatalf("chain of %d wrappers: %v, %.2fx the time of half as many", n, cur, r)
 		}
