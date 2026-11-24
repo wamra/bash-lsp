@@ -199,3 +199,36 @@ func TestDynamicScopeInBoundedTime(t *testing.T) {
 		withinBound(t, name, b, func() { Build(map[string]*FileFacts{"/ws/a.sh": ff}, Options{Root: "/ws"}, 1) })
 	}
 }
+
+// "$cmd" with n constant values on n call lines (n functions, cmd=f0 ...
+// cmd=f(n-1)): the use has n symbols, each with n call bindings, each site n
+// edges. ResolvedReferences listed every edge at a site for every binding of
+// every symbol: O(n^3), 9.3 s at n = 1,000 (32 KB) and 76 s at 2,000. It must
+// cost no more than the n^2 edges there are.
+func TestResolvedReferencesOnVariableProductInBoundedTime(t *testing.T) {
+	n, bound := 1000, 2*time.Second
+	if raceBuild {
+		n, bound = 500, 20*time.Second
+	}
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&b, "f%d() { :; }\n", i)
+	}
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&b, "cmd=f%d\n", i)
+	}
+	b.WriteString(strings.Repeat("\"$cmd\" x\n", n))
+	src := b.String()
+	ff := parseClean(t, "variable product", src)
+	s := Build(map[string]*FileFacts{"/ws/a.sh": ff}, Options{Root: "/ws"}, 1)
+	off := len(src) - len("\"$cmd\" x\n") + 1
+	var got []Location
+	if !withinBound(t, "ResolvedReferences on the last \"$cmd\"", bound, func() { got = s.ResolvedReferences("/ws/a.sh", off, true) }) {
+		return
+	}
+	// Every site is candidate/variable-constant: only the n definitions and
+	// the n `cmd=fi` literals (ruling: literal values are left out) remain.
+	if len(got) != n {
+		t.Errorf("%d resolved references, want the %d definitions", len(got), n)
+	}
+}

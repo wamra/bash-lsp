@@ -157,6 +157,11 @@ func (s *Snapshot) references(path string, offset int, includeDecl, resolvedOnly
 		return nil
 	}
 	var ls locSet
+	// resolvedTo caches, per use, the symbols a resolved edge at that site
+	// goes to: a "$cmd" site with n constant values has n edges and is
+	// reached from each of its n symbols, so scanning its edges per binding
+	// cost O(n^3) for the use; once per use it is the n^2 edges there are.
+	resolvedTo := map[*Use]map[*Symbol]bool{}
 	for _, sym := range s.hitSyms(h) {
 		declAt := map[[2]interface{}]bool{}
 		for _, d := range sym.Decls {
@@ -170,8 +175,15 @@ func (s *Snapshot) references(path string, offset int, includeDecl, resolvedOnly
 			if !includeDecl && declAt[[2]interface{}{b.File, b.Use.Range.Start.Offset}] {
 				continue
 			}
-			if filter && !s.resolvedSite(b, sym) {
-				continue
+			if filter {
+				to, ok := resolvedTo[b.Use]
+				if !ok {
+					to = s.resolvedTargets(b)
+					resolvedTo[b.Use] = to
+				}
+				if !to[sym] {
+					continue
+				}
 			}
 			ls.add(Location{Path: b.File, Range: b.Use.Range})
 		}
@@ -179,19 +191,23 @@ func (s *Snapshot) references(path string, offset int, includeDecl, resolvedOnly
 	return ls.sorted()
 }
 
-// resolvedSite reports whether a calls or aliases edge from the use of b to
-// sym is resolved.
-func (s *Snapshot) resolvedSite(b Binding, sym *Symbol) bool {
+// resolvedTargets returns the symbols that a resolved calls or aliases edge
+// from the use of b goes to; nil when none.
+func (s *Snapshot) resolvedTargets(b Binding) map[*Symbol]bool {
 	file, ok := s.idx[b.File]
 	if !ok {
-		return false
+		return nil
 	}
+	var out map[*Symbol]bool
 	for _, r := range s.edgesAt(file, b.Use) {
-		if r.res == Resolved && s.declSym[r.to] == sym {
-			return true
+		if r.res == Resolved {
+			if out == nil {
+				out = map[*Symbol]bool{}
+			}
+			out[s.declSym[r.to]] = true
 		}
 	}
-	return false
+	return out
 }
 
 // edgesAt returns the calls and aliases edge records of file whose site is
