@@ -13,6 +13,7 @@ import (
 
 	"github.com/wamra/bash-lsp/analysis"
 	"github.com/wamra/bash-lsp/internal/lsp"
+	"github.com/wamra/bash-lsp/internal/redact"
 	"github.com/wamra/bash-lsp/parse"
 	"github.com/wamra/bash-lsp/tree"
 )
@@ -24,7 +25,7 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
-const usage = "usage: bash-lsp [serve|version|ast FILE [--json]|symbols [PATH...] [--json]|doctor [PATH]|fmt [-w] FILE...|extract [--root DIR] [--list-file FILE]|status|callers|callees|refs|impact|trace|unresolved|cycles]"
+const usage = "usage: bash-lsp [serve|version|ast FILE [--json]|symbols [PATH...] [--json]|doctor [PATH]|fmt [-w] FILE...|extract [--root DIR] [--list-file FILE]|status|callers|callees|refs|impact|trace|unresolved|cycles|search TEXT|mcp]"
 
 // Exit codes: 0 success, 1 runtime failure, 2 usage error.
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -38,7 +39,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "bash-lsp: serve takes no arguments\n%s\n", usage)
 			return 2
 		}
-		if err := lsp.Serve(stdin, stdout, stderr, version); err != nil {
+		logw := redact.Writer(stderr) // credential-looking text never reaches the log
+		err := lsp.Serve(stdin, stdout, logw, version)
+		if f, ok := logw.(interface{ Flush() error }); ok {
+			f.Flush()
+		}
+		if err != nil {
 			fmt.Fprintf(stderr, "bash-lsp: %v\n", err)
 			return 1
 		}
@@ -56,6 +62,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return cmdFmt(args[1:], stdout, stderr)
 	case "extract":
 		return cmdExtract(args[1:], stdout, stderr)
+	case "search":
+		return cmdSearch(args[1:], stdout, stderr)
+	case "mcp":
+		return cmdMCP(args[1:], stdin, stdout, stderr)
 	case "status", "callers", "callees", "refs", "impact", "trace", "unresolved", "cycles":
 		return cmdGraph(args[0], args[1:], stdout, stderr)
 	default:
