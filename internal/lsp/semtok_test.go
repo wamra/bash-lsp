@@ -226,13 +226,11 @@ func TestDeltaStaleResultId(t *testing.T) {
 	c.change("m.sh", fullText("source ./nested/n.sh\nnf\nnf\necho $HOME\n"))
 	fresh := c.semFull("m.sh")
 
-	// The current id gets a delta (control); every stale id gets a full result.
+	// The current id gets a delta (control); every stale id gets a full result, even
+	// though the control request issued a newer id since.
 	if isFullReply(c.semDeltaRaw("m.sh", fresh.ResultID)) {
 		t.Fatal("the current id should get a delta")
 	}
-	// The stored id is now the one after the control request's full result,
-	// so ask for it again through a fresh full.
-	current := c.semFull("m.sh")
 	check := func(what, prev string) {
 		t.Helper()
 		raw := c.semDeltaRaw("m.sh", prev)
@@ -251,7 +249,6 @@ func TestDeltaStaleResultId(t *testing.T) {
 	check("another document's id", other.ResultID)
 	check("an empty id", "")
 	check("an unknown id", "999.999")
-	_ = current
 
 	// An id from before a rehome: removing the outer folder moves n.sh to
 	// the inner folder's own backend.
@@ -370,64 +367,157 @@ func TestRangeSubset(t *testing.T) {
 	}
 }
 
+var refreshCap = map[string]any{"semanticTokens": map[string]any{"refreshSupport": true}}
+
+// refreshClient opens m.sh (which calls `nf`, defined in nested/n.sh) and
+// n.sh in one folder; the client holds tokens for m.sh. delay is the
+// debounce of the refresh request.
+func refreshClient(t *testing.T, cap map[string]any, delay time.Duration) *testClient {
+	t.Helper()
+	a, _ := nestedTree(t)
+	c := clientWith(t, clientCfg{folders: []string{a}, workspaceCap: cap,
+		onServer: func(s *server) { s.semtok.delay = delay }})
+	c.root = a
+	c.open("m.sh")
+	c.open("nested/n.sh")
+	c.semFull("m.sh")
+	c.symbols("")
+	return c
+}
+
+const nfDefined, nfMissing = "nf() { :; }\n", "ng() { :; }\n"
+
+// Another file changes what an open document's tokens are: one refresh, after the debounce.
 func TestSemanticTokensRefresh(t *testing.T) {
-	run := func(cap bool) (increments []int) {
-		a, _ := nestedTree(t)
-		cfg := clientCfg{folders: []string{a}}
-		if cap {
-			cfg.workspaceCap = map[string]any{"semanticTokens": map[string]any{"refreshSupport": true}}
-		}
-		c := clientWith(t, cfg)
-		c.root = a
-		c.open("m.sh")
-		c.open("nested/n.sh")
+	c := refreshClient(t, refreshCap, 30*time.Millisecond)
+	for i, text := range []string{nfMissing, nfDefined} { // nf unresolved, then resolved again
+		before := refreshesAfter(c, 0)
+		c.change("nested/n.sh", fullText(text))
 		c.symbols("")
-		for _, text := range []string{"nf() { :; }\nng() { :; }\n", "nf() { :; }\nng() { :; }\nnh() { :; }\n"} {
-			before := refreshesAfter(c, 0) // what the opens queued has gone out
-			// n.sh changes: m.sh, which sources it, is republished.
-			c.change("nested/n.sh", fullText(text))
-			c.symbols("")
-			want := before
-			if cap {
-				want++
-			}
-			increments = append(increments, refreshesAfter(c, want)-before)
+		if got := refreshesAfter(c, before+1) - before; got != 1 {
+			t.Fatalf("edit %d: %d refresh requests, want 1", i, got)
 		}
-		return increments
+		c.semFull("m.sh") // the client asks again
 	}
-	if got := run(false); got[0] != 0 || got[1] != 0 {
-		t.Errorf("refresh requests without client support: %v", got)
-	}
-	if got := run(true); got[0] != 1 || got[1] != 1 {
-		t.Errorf("refresh requests per edit of another file = %v, want [1 1]", got)
+	for _, r := range c.requestsFromServer() {
+		if r.Method == "workspace/semanticTokens/refresh" && len(r.Params) != 0 {
+			t.Errorf("refresh request carries params %s, want none", r.Params)
+		}
 	}
 }
 
-// One batch of watched-file changes that republishes documents in two
-// folders asks the client to refresh once.
+// An edit that leaves every other document's tokens as they were sends nothing.
+func TestSemanticTokensRefreshOnlyWhenChanged(t *testing.T) {
+	c := refreshClient(t, refreshCap, 30*time.Millisecond)
+	before := refreshesAfter(c, 0)
+	c.change("nested/n.sh", fullText("nf() { :; }\nng() { :; }\n")) // m.sh still resolves nf
+	c.symbols("")
+	if got := refreshesAfter(c, 0) - before; got != 0 { // long past the 30 ms debounce
+		t.Errorf("%d refresh requests for an edit that changes no tokens", got)
+	}
+}
+
+// Without the client capability nothing is sent.
+func TestSemanticTokensRefreshNeedsCapability(t *testing.T) {
+	c := refreshClient(t, nil, 30*time.Millisecond)
+	c.change("nested/n.sh", fullText(nfMissing))
+	c.symbols("")
+	if got := refreshesAfter(c, 0); got != 0 {
+		t.Errorf("%d refresh requests without client support", got)
+	}
+}
+
+// A burst of edits asks the client to refresh at most once, after the burst.
+func TestSemanticTokensRefreshBurst(t *testing.T) {
+	c := refreshClient(t, refreshCap, 700*time.Millisecond)
+	before := refreshesAfter(c, 0)
+	for i := 0; i < 100; i++ {
+		text := nfDefined
+		if i%2 == 1 {
+			text = nfMissing // the last edit leaves nf unresolved
+		}
+		c.change("nested/n.sh", fullText(text))
+	}
+	c.symbols("")
+	if got := refreshesAfter(c, before+1) - before; got != 1 {
+		t.Errorf("%d refresh requests for a burst of 100 edits, want 1", got)
+	}
+}
+
+// A document that moves to another backend asks for a refresh when its tokens
+// change with it: with the folder gone, `nosuchcmd` is no longer looked up in
+// the PATH profile.
+func TestSemanticTokensRefreshAfterRehome(t *testing.T) {
+	a, nested := nestedTree(t)
+	c := clientWith(t, clientCfg{folders: []string{a, nested}, workspaceCap: refreshCap,
+		onServer: func(s *server) { s.semtok.delay = 30 * time.Millisecond }})
+	c.root = a
+	c.openText("m.sh", "nosuchcmd\n")
+	c.openText("nested/n.sh", "nf() { :; }\n")
+	first := c.semFull("m.sh")
+	c.semFull("nested/n.sh")
+	if got := decodeSem(first.Data); len(got) != 1 || !strings.Contains(got[0], "unresolved") {
+		t.Fatalf("tokens in the folder: %v", got)
+	}
+	before := refreshesAfter(c, 0)
+	c.folders(nil, []string{a})
+	c.symbols("")
+	if got := refreshesAfter(c, before+1) - before; got != 1 {
+		t.Errorf("%d refresh requests after a rehome that changed tokens, want 1", got)
+	}
+}
+
+// One batch of watched-file changes that changes tokens in two folders asks
+// the client to refresh once.
 func TestSemanticTokensRefreshOncePerBatch(t *testing.T) {
 	dir := t.TempDir()
 	a, b := filepath.Join(dir, "a"), filepath.Join(dir, "b")
 	for _, f := range []string{a, b} {
-		put(t, filepath.Join(f, "m.sh"), "source ./lib.sh\n")
+		put(t, filepath.Join(f, "m.sh"), "source ./lib.sh\nf\n")
 		put(t, filepath.Join(f, "lib.sh"), "f() { :; }\n")
 	}
-	c := clientWith(t, clientCfg{folders: []string{a, b},
-		workspaceCap: map[string]any{"semanticTokens": map[string]any{"refreshSupport": true}}})
+	c := clientWith(t, clientCfg{folders: []string{a, b}, workspaceCap: refreshCap,
+		onServer: func(s *server) { s.semtok.delay = 30 * time.Millisecond }})
 	c.root = a
-	c.openText("m.sh", "source ./lib.sh\n")
+	c.openText("m.sh", "source ./lib.sh\nf\n")
 	c.notify("textDocument/didOpen", map[string]any{"textDocument": map[string]any{
-		"uri": workspaceURI(filepath.Join(b, "m.sh")), "languageId": "shellscript", "version": 1, "text": "source ./lib.sh\n"}})
+		"uri": workspaceURI(filepath.Join(b, "m.sh")), "languageId": "shellscript", "version": 1, "text": "source ./lib.sh\nf\n"}})
+	c.semFull("m.sh")
+	var other semTokens
+	if err := json.Unmarshal(c.call("textDocument/semanticTokens/full", map[string]any{
+		"textDocument": map[string]any{"uri": workspaceURI(filepath.Join(b, "m.sh"))}}), &other); err != nil {
+		t.Fatal(err)
+	}
 	c.symbols("")
 	before := refreshesAfter(c, 0)
-	put(t, filepath.Join(a, "lib.sh"), "f() { :; }\ng() { :; }\n")
-	put(t, filepath.Join(b, "lib.sh"), "f() { :; }\ng() { :; }\n")
+	put(t, filepath.Join(a, "lib.sh"), "g() { :; }\n")
+	put(t, filepath.Join(b, "lib.sh"), "g() { :; }\n")
 	c.notify("workspace/didChangeWatchedFiles", map[string]any{"changes": []any{
 		map[string]any{"uri": workspaceURI(filepath.Join(a, "lib.sh")), "type": 2},
 		map[string]any{"uri": workspaceURI(filepath.Join(b, "lib.sh")), "type": 2}}})
 	c.symbols("")
 	if got := refreshesAfter(c, before+1) - before; got != 1 {
 		t.Errorf("%d refresh requests for one batch over two folders, want 1", got)
+	}
+}
+
+func TestSemanticTokensFreshDocumentDelta(t *testing.T) {
+	c := client(t, t.TempDir())
+	for i, prev := range []string{"", "1.1", "2.1", "x"} { // a delta before any full result: a full result
+		rel := fmt.Sprintf("d%d.sh", i)
+		c.openText(rel, semSample)
+		raw := c.semDeltaRaw(rel, prev)
+		if !isFullReply(raw) {
+			t.Fatalf("previousResultId %q on a fresh document got a delta: %s", prev, raw)
+		}
+	}
+}
+
+func TestSemanticTokensInvertedRange(t *testing.T) {
+	c := client(t, t.TempDir())
+	c.openText("a.sh", semSample)
+	if got := c.semRange("a.sh", rng(2, 0, 0, 0)); len(got.Data) != 0 {
+		t.Errorf("an inverted range gave %v", got.Data)
 	}
 }
 

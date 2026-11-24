@@ -118,13 +118,13 @@ func TestTokensVariables(t *testing.T) {
 		"(4,11,1,variable,{declaration,nameref})",
 		"(5,0,1,function,{declaration})",
 		"(6,8,1,variable,{declaration,local})",
-		"(7,2,1,variable,{declaration,local})",
+		"(7,2,1,variable,{modification,local})",
 		"(8,2,4,function,{defaultLibrary})",
 		"(8,9,1,variable,{exported})",
 		"(8,15,1,variable,{array})",
 		"(8,24,4,variable,{environment})",
 		"(8,32,1,variable,{local})",
-		"(9,2,1,variable,{declaration,integer})",
+		"(9,2,1,variable,{declaration,integer})", // another scope than the file-level declaration
 		"(10,5,1,variable,{modification,integer})",
 	}
 	for _, w := range want {
@@ -157,14 +157,58 @@ func TestTokensVariables(t *testing.T) {
 }
 
 func TestTokensModification(t *testing.T) {
-	// An assignment is a declaration; arithmetic that changes a declared
-	// variable is a modification; a read of it is neither.
+	// The first declaration of a name in a scope is a declaration; a later
+	// plain assignment to it in the same scope is a modification, and so is
+	// arithmetic that changes it; a read is neither.
 	got := tokensOf(t, "n=1\n(( n++ ))\necho \"$n\"\n", Options{Root: "/w"})
 	wantToks(t, got,
 		"(0,0,1,variable,{declaration})",
 		"(1,3,1,variable,{modification})",
 		"(2,0,4,function,{defaultLibrary})",
 		"(2,7,1,variable,{})",
+	)
+	got = tokensOf(t, "n=1\nn=2\nf() { n=3; n=4; local m=1; m=2; declare m; }\nread r\nr=1\nfor i in 1; do i=2; done\nX=1 env\nX=2 env\n", Options{Root: "/w"})
+	wantToks(t, got,
+		"(0,0,1,variable,{declaration})",
+		"(1,0,1,variable,{modification})",
+		"(2,0,1,function,{declaration})",
+		"(2,6,1,variable,{declaration})",
+		"(2,11,1,variable,{modification})",
+		"(2,22,1,variable,{declaration,local})",
+		"(2,27,1,variable,{modification,local})",
+		"(2,40,1,variable,{declaration,local})",
+		"(3,0,4,function,{defaultLibrary})",
+		"(3,5,1,variable,{declaration})",
+		"(4,0,1,variable,{modification})",
+		"(5,4,1,variable,{declaration})",
+		"(5,15,1,variable,{modification})",
+		"(6,0,1,variable,{declaration})",
+		"(6,4,3,function,{})",
+		"(7,0,1,variable,{declaration})",
+		"(7,4,3,function,{})",
+	)
+}
+
+// Names inside strings have no exact range and get no token.
+func TestTokensNoStringNames(t *testing.T) {
+	got := tokensOf(t, "f() { :; }\ncmd=f\neval \"f\"\n\"$cmd\"\ntrap \"f\" EXIT\nbash -c \"f\"\n", Options{Root: "/w"})
+	for _, g := range got {
+		if strings.HasPrefix(g, "(2,6,") || strings.HasPrefix(g, "(3,") && strings.Contains(g, ",function,") || strings.HasPrefix(g, "(4,6,") || strings.HasPrefix(g, "(5,9,") {
+			t.Errorf("token %s on a name inside a string", g)
+		}
+	}
+	wantToks(t, got[:3], "(0,0,1,function,{declaration})", "(0,6,1,function,{defaultLibrary})", "(1,0,3,variable,{declaration})")
+}
+
+// `$0` and a name with a leading zero are not positional parameters, and a
+// subscripted number in arithmetic (`(( 1[2] ))`, a parameter node without
+// a dollar sign) is not an expansion.
+func TestTokensPositionalEdges(t *testing.T) {
+	got := tokensOf(t, "echo $0 ${00} ${01} $1 ${10}\n(( 1 + 2 ))\n(( 1[2] ))\n", Options{Root: "/w"})
+	wantToks(t, got,
+		"(0,0,4,function,{defaultLibrary})",
+		"(0,21,1,parameter,{})",
+		"(0,25,2,parameter,{})",
 	)
 }
 

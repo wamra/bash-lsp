@@ -519,7 +519,6 @@ func (s *server) didClose(raw json.RawMessage) *rpcError {
 		return nil
 	}
 	delete(s.docs, d.path)
-	d.resetTokens()
 	s.resetCheck(d)
 	// Every URI that led to it: the closing one, the one it was opened (and
 	// its diagnostics published) under, and any other spelling it was opened

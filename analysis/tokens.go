@@ -75,6 +75,13 @@ func attrMods(sym *Symbol) TokenMod {
 	return m
 }
 
+// plainAssignment reports whether d is `name=value` written on its own, not
+// a declaring command (`local`, `declare`, `read`, `for`, ...).
+func plainAssignment(d *Decl) bool {
+	n := d.Node
+	return d.Implicit == "" && n != nil && n.Kind == tree.KAssign && (n.Parent == nil || n.Parent.Kind != tree.KDecl)
+}
+
 // isPositional reports whether a parameter expansion of this name reads a
 // positional parameter or one of the argument lists: `$1`..`$9` (and `${10}`
 // and up), `$@`, `$*` and `$#`. `$0` is the script's name, not an argument.
@@ -130,7 +137,14 @@ func (s *Snapshot) Tokens(path string, within *tree.Range) []Token {
 	}
 
 	// Declarations come first so that, where a declaration and a use of its
-	// name start at the same place, the declaration is the token.
+	// name start at the same place, the declaration is the token. The first
+	// declaration of a name in a scope is a declaration; a later plain
+	// assignment to it in the same scope is a modification.
+	type scopeName struct {
+		sc   *Scope
+		name string
+	}
+	var seen map[scopeName]bool
 	for _, d := range ff.Decls {
 		sym := s.declSym[d]
 		if sym == nil {
@@ -142,7 +156,22 @@ func (s *Snapshot) Tokens(path string, within *tree.Range) []Token {
 		case DeclAlias:
 			add(d.NameRange, TokMacro, ModDeclaration)
 		case DeclVariable:
-			add(d.NameRange, TokVariable, ModDeclaration|modsOf(sym))
+			m := modsOf(sym)
+			if d.Temp { // lives for one command only
+				add(d.NameRange, TokVariable, ModDeclaration|m)
+				break
+			}
+			if seen == nil {
+				seen = map[scopeName]bool{}
+			}
+			k := scopeName{d.Scope, d.Name}
+			if seen[k] && plainAssignment(d) {
+				m |= ModModification
+			} else {
+				m |= ModDeclaration
+			}
+			seen[k] = true
+			add(d.NameRange, TokVariable, m)
 		}
 	}
 

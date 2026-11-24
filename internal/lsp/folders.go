@@ -320,7 +320,8 @@ func (s *server) rehome(dropped map[backend]bool) {
 		}
 		delete(s.docs, d.path)
 		d.be, d.path = be, path
-		d.resetTokens()
+		d.dropTokenID()
+		s.refreshSemanticTokens(d)
 		s.docs[path] = d
 		s.byURI[d.uri] = path
 		be.SetOverlay(path, d.version, d.text)

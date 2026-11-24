@@ -1,9 +1,12 @@
 package lsp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"slices"
+	"sort"
+	"time"
 
 	"github.com/wamra/bash-lsp/analysis"
 	"github.com/wamra/bash-lsp/tree"
@@ -65,10 +68,16 @@ type semanticTokensDelta struct {
 	Edits    []semanticTokensEdit `json:"edits"`
 }
 
+// semtokRefreshDelay is the quiet time after the last change that affects
+// open documents before the client is asked to refresh their tokens.
+const semtokRefreshDelay = 250 * time.Millisecond
+
 // semtokState is what the server keeps for semantic tokens.
 type semtokState struct {
-	docSeq    int  // documents numbered so far
-	refreshed bool // a workspace/semanticTokens/refresh is queued for the loop
+	docSeq  int                // documents numbered so far
+	pending map[*document]bool // documents whose tokens may have changed since the client last asked
+	timer   *time.Timer        // the trailing debounce of the refresh request (loop only)
+	delay   time.Duration      // the debounce; zero means semtokRefreshDelay (tests set it)
 }
 
 // semtokDoc is a document's semantic-tokens state: its number in this session
@@ -80,12 +89,15 @@ type semtokDoc struct {
 	data   []uint32
 }
 
-// resetTokens forgets the result the client holds for d, so that no
-// previousResultId matches until a new result is sent. The counters stay: a
-// result id is never issued twice for a document.
-func (d *document) resetTokens() {
-	d.semtok.id, d.semtok.data = "", nil
-}
+// dropTokenID forgets the result id of d, so that no previousResultId matches
+// until a new result is sent. The counters stay (a result id is never issued
+// twice for a document) and so does the data the client holds, which the
+// refresh check compares with the tokens now; no delta is made from it
+// without a matching id.
+func (d *document) dropTokenID() { d.semtok.id = "" }
+
+// clearTokens forgets everything the client was sent for d.
+func (d *document) clearTokens() { d.semtok.id, d.semtok.data = "", nil }
 
 // nextTokensID issues the result id of d's next stored result:
 // "<docSeq>.<n>", the document's number for this session and the count of results.
@@ -137,6 +149,9 @@ func (s *server) fullTokens(uri string) (any, *rpcError) {
 		return nil, rerr
 	}
 	if f == nil {
+		if d != nil {
+			d.clearTokens()
+		}
 		return semanticTokens{Data: []uint32{}}, nil
 	}
 	data := EncodeTokens(f.NewConverter(), snap.Tokens(path, nil))
@@ -158,6 +173,9 @@ func (s *server) semanticTokensDelta(raw json.RawMessage) (any, *rpcError) {
 		return nil, rerr
 	}
 	if f == nil {
+		if d != nil {
+			d.clearTokens()
+		}
 		return semanticTokens{Data: []uint32{}}, nil
 	}
 	data := EncodeTokens(f.NewConverter(), snap.Tokens(path, nil))
@@ -183,15 +201,21 @@ func (s *server) semanticTokensRange(raw json.RawMessage) (any, *rpcError) {
 	if rerr := decode(raw, &p); rerr != nil {
 		return nil, rerr
 	}
-	_, snap, path, f, rerr := s.tokenTarget(p.TextDocument.URI)
+	d, snap, path, f, rerr := s.tokenTarget(p.TextDocument.URI)
 	if rerr != nil {
 		return nil, rerr
 	}
 	if f == nil {
+		if d != nil {
+			d.clearTokens()
+		}
 		return semanticTokens{Data: []uint32{}}, nil
 	}
 	r := tree.Range{Start: f.FromUTF16(p.Range.Start.Line, p.Range.Start.Character),
 		End: f.FromUTF16(p.Range.End.Line, p.Range.End.Character)}
+	if r.Start.Offset > r.End.Offset {
+		return semanticTokens{Data: []uint32{}}, nil
+	}
 	return semanticTokens{Data: EncodeTokens(f.NewConverter(), snap.Tokens(path, &r))}, nil
 }
 
@@ -231,17 +255,67 @@ func DiffTokens(prev, next []uint32) (start, deleteCount int, data []uint32) {
 	return pre, len(prev) - pre - suf, next[pre : len(next)-suf]
 }
 
-// refreshSemanticTokens asks a client that supports it to ask for the tokens
-// of its open documents again, after the current message has been handled;
-// one request covers every call made meanwhile. Called when other files
-// changed under open documents (refreshOthers).
-func (s *server) refreshSemanticTokens() {
-	if !s.caps().SemanticTokensRefresh || s.semtok.refreshed {
+// refreshSemanticTokens notes that the tokens of docs may have changed
+// (another file changed under them, or they moved to another backend) and
+// queues one refresh request for the client, sent after the changes have been
+// quiet for the debounce delay. Only documents the client has received tokens
+// for count. Loop only.
+func (s *server) refreshSemanticTokens(docs ...*document) {
+	if !s.caps().SemanticTokensRefresh {
 		return
 	}
-	s.semtok.refreshed = true
-	go s.post(func() { // post may not be called from the loop itself
-		s.semtok.refreshed = false
-		s.call("workspace/semanticTokens/refresh", nil)
+	queued := false
+	for _, d := range docs {
+		if d.semtok.data == nil {
+			continue
+		}
+		if s.semtok.pending == nil {
+			s.semtok.pending = map[*document]bool{}
+		}
+		s.semtok.pending[d] = true
+		queued = true
+	}
+	if !queued {
+		return
+	}
+	delay := s.semtok.delay
+	if delay <= 0 {
+		delay = semtokRefreshDelay
+	}
+	if s.semtok.timer != nil {
+		s.semtok.timer.Reset(delay)
+		return
+	}
+	t := time.AfterFunc(delay, func() {
+		if s.baseCtx.Err() == nil {
+			s.post(s.flushTokenRefresh) // the timer's goroutine is not the loop
+		}
 	})
+	context.AfterFunc(s.baseCtx, func() { t.Stop() })
+	s.semtok.timer = t
+}
+
+// flushTokenRefresh sends workspace/semanticTokens/refresh when the tokens of
+// a pending document, as they are now, differ from what the client holds.
+func (s *server) flushTokenRefresh() {
+	docs := make([]*document, 0, len(s.semtok.pending))
+	for d := range s.semtok.pending {
+		docs = append(docs, d)
+	}
+	clear(s.semtok.pending)
+	sort.Slice(docs, func(i, j int) bool { return docs[i].path < docs[j].path })
+	for _, d := range docs {
+		if s.docs[d.path] != d || d.semtok.data == nil {
+			continue // closed since
+		}
+		snap := d.be.Snapshot()
+		var now []uint32
+		if f := fileOf(snap, d.path); f != nil {
+			now = EncodeTokens(f.NewConverter(), snap.Tokens(d.path, nil))
+		}
+		if !slices.Equal(now, d.semtok.data) {
+			s.call("workspace/semanticTokens/refresh", nil)
+			return
+		}
+	}
 }
