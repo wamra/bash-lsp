@@ -1,0 +1,5 @@
+exit 0
+--- stdout
+main.sh:21:1  main.sh -> main.sh:deploy  resolved/direct
+main.sh:11:9  main.sh:deploy -> lib/util.sh:log  candidate/string-trap
+--- stderr

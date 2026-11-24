@@ -1,0 +1,49 @@
+exit 0
+--- stdout
+{
+  "generation": 1,
+  "results": [
+    {
+      "caller": {
+        "path": "main.sh",
+        "function": null
+      },
+      "callee": {
+        "path": "lib/util.sh",
+        "function": null
+      },
+      "relation": "sources",
+      "resolution": "resolved",
+      "reason": "direct",
+      "site": {
+        "path": "main.sh",
+        "line": 2,
+        "col": 8
+      }
+    },
+    {
+      "caller": {
+        "path": "main.sh",
+        "function": null
+      },
+      "callee": {
+        "path": "main.sh",
+        "function": "deploy"
+      },
+      "relation": "calls",
+      "resolution": "resolved",
+      "reason": "direct",
+      "site": {
+        "path": "main.sh",
+        "line": 21,
+        "col": 1
+      },
+      "definition": {
+        "path": "main.sh",
+        "line": 4,
+        "col": 1
+      }
+    }
+  ]
+}
+--- stderr

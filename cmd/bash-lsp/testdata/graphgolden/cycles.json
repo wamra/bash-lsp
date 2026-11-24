@@ -1,0 +1,7 @@
+exit 0
+--- stdout
+{
+  "generation": 1,
+  "results": []
+}
+--- stderr

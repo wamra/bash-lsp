@@ -1,0 +1,61 @@
+exit 0
+--- stdout
+{
+  "generation": 1,
+  "results": [
+    {
+      "path": "dyn.sh",
+      "line": 4,
+      "col": 1,
+      "resolution": "resolved",
+      "reason": "direct",
+      "relation": "calls"
+    },
+    {
+      "path": "main.sh",
+      "line": 3,
+      "col": 10,
+      "resolution": "resolved",
+      "reason": "direct",
+      "relation": "aliases"
+    },
+    {
+      "path": "main.sh",
+      "line": 6,
+      "col": 3,
+      "resolution": "resolved",
+      "reason": "direct",
+      "relation": "calls"
+    },
+    {
+      "path": "main.sh",
+      "line": 7,
+      "col": 3,
+      "resolution": "resolved",
+      "reason": "alias",
+      "relation": "calls"
+    },
+    {
+      "path": "main.sh",
+      "line": 8,
+      "col": 13
+    },
+    {
+      "path": "main.sh",
+      "line": 9,
+      "col": 3,
+      "resolution": "candidate",
+      "reason": "variable-constant",
+      "relation": "calls"
+    },
+    {
+      "path": "main.sh",
+      "line": 10,
+      "col": 9,
+      "resolution": "candidate",
+      "reason": "string-eval",
+      "relation": "calls"
+    }
+  ]
+}
+--- stderr

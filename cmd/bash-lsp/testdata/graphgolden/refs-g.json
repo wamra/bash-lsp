@@ -1,0 +1,16 @@
+exit 0
+--- stdout
+{
+  "generation": 1,
+  "results": [
+    {
+      "path": "a.sh",
+      "line": 7,
+      "col": 7,
+      "resolution": "candidate",
+      "reason": "name-match-outside-closure",
+      "relation": "calls"
+    }
+  ]
+}
+--- stderr

@@ -1,0 +1,6 @@
+exit 2
+--- stdout
+--- stderr
+bash-lsp: "build_release" is ambiguous; use one of:
+lib/util.sh:4:1  build_release
+orphan.sh:2:1  build_release

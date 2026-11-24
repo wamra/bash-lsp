@@ -1,0 +1,14 @@
+exit 0
+--- stdout
+{
+  "generation": 1,
+  "results": [
+    {
+      "files": [
+        "a.sh",
+        "b.sh"
+      ]
+    }
+  ]
+}
+--- stderr

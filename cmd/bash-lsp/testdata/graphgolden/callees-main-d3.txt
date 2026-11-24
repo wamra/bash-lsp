@@ -1,0 +1,11 @@
+exit 0
+--- stdout
+main.sh:2:8  main.sh -> lib/util.sh  resolved/direct
+main.sh:21:1  main.sh -> main.sh:deploy  resolved/direct
+main.sh:6:3  main.sh:deploy -> lib/util.sh:build_release  resolved/direct
+main.sh:7:3  main.sh:deploy -> lib/util.sh:build_release  resolved/alias
+main.sh:9:3  main.sh:deploy -> lib/util.sh:build_release  candidate/variable-constant
+main.sh:10:9  main.sh:deploy -> lib/util.sh:build_release  candidate/string-eval
+main.sh:11:9  main.sh:deploy -> lib/util.sh:log  candidate/string-trap
+lib/util.sh:6:3  lib/util.sh:build_release -> lib/util.sh:log  resolved/direct
+--- stderr

@@ -1,0 +1,6 @@
+exit 0
+--- stdout
+a.sh:3:8  a.sh -> b.sh  resolved/direct
+a.sh:4:1  a.sh -> b.sh:f  resolved/direct
+a.sh:7:7  a.sh -> c.sh:g  candidate/name-match-outside-closure
+--- stderr

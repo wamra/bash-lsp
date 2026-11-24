@@ -1,0 +1,12 @@
+exit 0
+--- stdout
+{
+  "generation": 1,
+  "results": [
+    {
+      "path": "b.sh",
+      "function": null
+    }
+  ]
+}
+--- stderr

@@ -1,0 +1,20 @@
+exit 0
+--- stdout
+{
+  "generation": 1,
+  "results": [
+    {
+      "path": "dyn.sh",
+      "function": null
+    },
+    {
+      "path": "main.sh",
+      "function": "deploy"
+    },
+    {
+      "path": "main.sh",
+      "function": null
+    }
+  ]
+}
+--- stderr

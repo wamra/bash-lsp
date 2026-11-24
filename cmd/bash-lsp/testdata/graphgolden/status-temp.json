@@ -1,0 +1,16 @@
+exit 0
+--- stdout
+{
+  "generation": 1,
+  "root": "/privateTEMPROOT",
+  "files": 3,
+  "dialects": {
+    "bash": 3
+  },
+  "skipped": 0,
+  "skipped_files": [],
+  "limits": [],
+  "nesting_errors": 0,
+  "cache": "none"
+}
+--- stderr

@@ -1,0 +1,4 @@
+exit 0
+--- stdout
+a.sh:7:7  g  calls  candidate/name-match-outside-closure
+--- stderr

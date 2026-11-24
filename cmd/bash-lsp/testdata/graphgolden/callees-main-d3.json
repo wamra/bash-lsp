@@ -1,0 +1,187 @@
+exit 0
+--- stdout
+{
+  "generation": 1,
+  "results": [
+    {
+      "caller": {
+        "path": "main.sh",
+        "function": null
+      },
+      "callee": {
+        "path": "lib/util.sh",
+        "function": null
+      },
+      "relation": "sources",
+      "resolution": "resolved",
+      "reason": "direct",
+      "site": {
+        "path": "main.sh",
+        "line": 2,
+        "col": 8
+      }
+    },
+    {
+      "caller": {
+        "path": "main.sh",
+        "function": null
+      },
+      "callee": {
+        "path": "main.sh",
+        "function": "deploy"
+      },
+      "relation": "calls",
+      "resolution": "resolved",
+      "reason": "direct",
+      "site": {
+        "path": "main.sh",
+        "line": 21,
+        "col": 1
+      },
+      "definition": {
+        "path": "main.sh",
+        "line": 4,
+        "col": 1
+      }
+    },
+    {
+      "caller": {
+        "path": "main.sh",
+        "function": "deploy"
+      },
+      "callee": {
+        "path": "lib/util.sh",
+        "function": "build_release"
+      },
+      "relation": "calls",
+      "resolution": "resolved",
+      "reason": "direct",
+      "site": {
+        "path": "main.sh",
+        "line": 6,
+        "col": 3
+      },
+      "definition": {
+        "path": "lib/util.sh",
+        "line": 4,
+        "col": 1
+      }
+    },
+    {
+      "caller": {
+        "path": "main.sh",
+        "function": "deploy"
+      },
+      "callee": {
+        "path": "lib/util.sh",
+        "function": "build_release"
+      },
+      "relation": "calls",
+      "resolution": "resolved",
+      "reason": "alias",
+      "site": {
+        "path": "main.sh",
+        "line": 7,
+        "col": 3
+      },
+      "definition": {
+        "path": "lib/util.sh",
+        "line": 4,
+        "col": 1
+      }
+    },
+    {
+      "caller": {
+        "path": "main.sh",
+        "function": "deploy"
+      },
+      "callee": {
+        "path": "lib/util.sh",
+        "function": "build_release"
+      },
+      "relation": "calls",
+      "resolution": "candidate",
+      "reason": "variable-constant",
+      "site": {
+        "path": "main.sh",
+        "line": 9,
+        "col": 3
+      },
+      "definition": {
+        "path": "lib/util.sh",
+        "line": 4,
+        "col": 1
+      }
+    },
+    {
+      "caller": {
+        "path": "main.sh",
+        "function": "deploy"
+      },
+      "callee": {
+        "path": "lib/util.sh",
+        "function": "build_release"
+      },
+      "relation": "calls",
+      "resolution": "candidate",
+      "reason": "string-eval",
+      "site": {
+        "path": "main.sh",
+        "line": 10,
+        "col": 9
+      },
+      "definition": {
+        "path": "lib/util.sh",
+        "line": 4,
+        "col": 1
+      }
+    },
+    {
+      "caller": {
+        "path": "main.sh",
+        "function": "deploy"
+      },
+      "callee": {
+        "path": "lib/util.sh",
+        "function": "log"
+      },
+      "relation": "calls",
+      "resolution": "candidate",
+      "reason": "string-trap",
+      "site": {
+        "path": "main.sh",
+        "line": 11,
+        "col": 9
+      },
+      "definition": {
+        "path": "lib/util.sh",
+        "line": 3,
+        "col": 1
+      }
+    },
+    {
+      "caller": {
+        "path": "lib/util.sh",
+        "function": "build_release"
+      },
+      "callee": {
+        "path": "lib/util.sh",
+        "function": "log"
+      },
+      "relation": "calls",
+      "resolution": "resolved",
+      "reason": "direct",
+      "site": {
+        "path": "lib/util.sh",
+        "line": 6,
+        "col": 3
+      },
+      "definition": {
+        "path": "lib/util.sh",
+        "line": 3,
+        "col": 1
+      }
+    }
+  ]
+}
+--- stderr

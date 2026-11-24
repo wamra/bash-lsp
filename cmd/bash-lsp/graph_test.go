@@ -11,7 +11,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wamra/bash-lsp/internal/query"
 	"github.com/wamra/bash-lsp/internal/workspace"
+)
+
+// the records the commands print are internal/query's
+type (
+	jsonRef  = query.Ref
+	jsonEdge = query.Edge
 )
 
 const corpus = "../../testdata/corpus"
