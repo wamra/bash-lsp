@@ -732,3 +732,196 @@ func TestPullFollowsShellCheckResult(t *testing.T) {
 		t.Fatalf("pull again: %+v", again)
 	}
 }
+
+// ---- settings reload ----
+
+func (c *testClient) watchedPath(path string) {
+	c.watched(fileEvent{workspace.URIFromPath(path), 2})
+}
+
+// quiet fails if a push for rel arrives within d.
+func (c *testClient) quiet(rel string, d time.Duration) {
+	c.t.Helper()
+	time.Sleep(d)
+	c.symbols("") // a request after the wait: everything the server sent has arrived
+	if n := c.pending(rel); n != 0 {
+		_, ds := c.waitPush(rel)
+		c.t.Fatalf("an unexpected push for %s: %v", rel, codes(ds))
+	}
+}
+
+func TestSettingsReloadRepoFile(t *testing.T) {
+	root := t.TempDir()
+	put(t, filepath.Join(root, "a.sh"), "")
+	repo := filepath.Join(root, ".bash-lsp.toml")
+	c := client(t, root)
+	c.openText("a.sh", "#!/bin/bash\nrm $f\n")
+	if _, ds := c.waitPush("a.sh"); !hasCode(ds, "WB1401") {
+		t.Fatalf("before: %v", codes(ds))
+	}
+	put(t, repo, "[diagnostics]\ndisable = [\"WB1401\"]\n")
+	c.watchedPath(repo)
+	if v, ds := c.waitPush("a.sh"); v != 1 || hasCode(ds, "WB1401") {
+		t.Fatalf("after disabling WB1401: %d %v", v, codes(ds))
+	}
+	// Touching the file without changing it republishes nothing.
+	put(t, repo, "[diagnostics]\ndisable = [\"WB1401\"]\n")
+	c.watchedPath(repo)
+	c.quiet("a.sh", 100*time.Millisecond)
+	// A save of the open file counts as well.
+	put(t, repo, "[severity]\nWB1401 = \"error\"\n")
+	c.notify("textDocument/didSave", map[string]any{"textDocument": map[string]any{"uri": workspace.URIFromPath(repo)}})
+	_, ds := c.waitPush("a.sh")
+	if len(ds) == 0 || ds[0].Code != "WB1401" || ds[0].Severity != 1 {
+		t.Fatalf("after the severity change: %+v", ds)
+	}
+	// Deleting it restores the defaults.
+	if err := os.Remove(repo); err != nil {
+		t.Fatal(err)
+	}
+	c.notify("workspace/didChangeWatchedFiles", map[string]any{"changes": []any{
+		map[string]any{"uri": workspace.URIFromPath(repo), "type": 3}}})
+	if _, ds := c.waitPush("a.sh"); len(ds) == 0 || ds[0].Severity != 2 {
+		t.Fatalf("after deleting the file: %+v", ds)
+	}
+}
+
+func TestSettingsReloadUserFileAndConfigurationChange(t *testing.T) {
+	user := userConfig(t, "")
+	root := t.TempDir()
+	put(t, filepath.Join(root, "a.sh"), "")
+	c := client(t, root)
+	c.openText("a.sh", "#!/bin/bash\nrm $f\n")
+	c.openText("loose.sh", "#!/bin/bash\nrm $f\n") // inside the root too: both are served by the folder
+	c.waitPush("a.sh")
+	c.waitPush("loose.sh")
+	writeUserConfig(t, user, "[diagnostics]\ndisable = [\"WB1401\"]\n")
+	c.watchedPath(user) // the user file is outside every folder
+	for _, rel := range []string{"a.sh", "loose.sh"} {
+		if _, ds := c.waitPush(rel); hasCode(ds, "WB1401") {
+			t.Fatalf("%s after the user file change: %v", rel, codes(ds))
+		}
+	}
+	writeUserConfig(t, user, "")
+	c.notify("workspace/didChangeConfiguration", map[string]any{"settings": nil})
+	for _, rel := range []string{"a.sh", "loose.sh"} {
+		if _, ds := c.waitPush(rel); !hasCode(ds, "WB1401") {
+			t.Fatalf("%s after didChangeConfiguration: %v", rel, codes(ds))
+		}
+	}
+}
+
+func TestSettingsReloadLooseDocuments(t *testing.T) {
+	user := userConfig(t, "")
+	c := client(t, "") // no root
+	c.openText("l.sh", "#!/bin/bash\nrm $f\n")
+	if _, ds := c.waitPush("l.sh"); !hasCode(ds, "WB1401") {
+		t.Fatalf("before: %v", codes(ds))
+	}
+	writeUserConfig(t, user, "[diagnostics]\ndisable = [\"WB1401\"]\n")
+	c.watchedPath(user)
+	if _, ds := c.waitPush("l.sh"); hasCode(ds, "WB1401") {
+		t.Fatalf("after: %v", codes(ds))
+	}
+}
+
+func TestSettingsReloadFailureKeepsPrevious(t *testing.T) {
+	root := t.TempDir()
+	put(t, filepath.Join(root, "a.sh"), "")
+	repo := filepath.Join(root, ".bash-lsp.toml")
+	put(t, repo, "[diagnostics]\ndisable = [\"WB1401\"]\n")
+	c := client(t, root)
+	c.openText("a.sh", "#!/bin/bash\nrm $f\n")
+	if _, ds := c.waitPush("a.sh"); hasCode(ds, "WB1401") {
+		t.Fatalf("start: %v", codes(ds))
+	}
+	put(t, repo, "[diagnostics\ndisable = \n")
+	c.watchedPath(repo)
+	msg := c.waitLog(".bash-lsp.toml")
+	if !strings.Contains(msg, "not reloaded") || !strings.Contains(msg, "file ignored") {
+		t.Fatalf("log text %q", msg)
+	}
+	c.quiet("a.sh", 100*time.Millisecond) // the previous settings stay: no push
+	// The same broken text is not logged again, and a good file is picked up.
+	c.watchedPath(repo)
+	c.symbols("")
+	if n := len(c.logsContaining("not reloaded")); n != 1 {
+		t.Fatalf("logged %d times", n)
+	}
+	put(t, repo, "")
+	c.watchedPath(repo)
+	if _, ds := c.waitPush("a.sh"); !hasCode(ds, "WB1401") {
+		t.Fatalf("after fixing the file: %v", codes(ds))
+	}
+}
+
+func TestSettingsReloadShellCheck(t *testing.T) {
+	setDebounce(t, 10*time.Millisecond)
+	root := t.TempDir()
+	put(t, filepath.Join(root, "a.sh"), "")
+	repo := filepath.Join(root, ".bash-lsp.toml")
+	runlog := filepath.Join(t.TempDir(), "runs")
+	c := clientInit(t, root, false, scInit(fakeShellCheck(t, "mark", "WB_RUNLOG="+runlog), 0))
+	c.openText("a.sh", "#!/bin/bash\n# MARK 1\nrm $f\n")
+	c.waitPushWhere("a.sh", func(v int, ds []Diagnostic) bool { return anyMessage(ds, "mark:") })
+	// An unrelated change keeps the ShellCheck findings: no flicker, no new run.
+	put(t, repo, "[diagnostics]\ndisable = [\"WB1102\"]\n")
+	c.watchedPath(repo)
+	c.quiet("a.sh", 300*time.Millisecond)
+	if b, _ := os.ReadFile(runlog); strings.Count(string(b), "run") != 1 {
+		t.Fatalf("ShellCheck ran again after an unrelated change: %q", b)
+	}
+	// Turning ShellCheck off drops its findings and stops the runs.
+	put(t, repo, "[shellcheck]\nenabled = false\n")
+	c.watchedPath(repo)
+	if _, ds := c.waitPush("a.sh"); hasSource(ds, "shellcheck") || !hasCode(ds, "WB1401") {
+		t.Fatalf("after disabling: %v", codes(ds))
+	}
+	c.changeTo("a.sh", 2, "#!/bin/bash\n# MARK 2\nrm $f\n")
+	c.waitPush("a.sh")
+	c.quiet("a.sh", 300*time.Millisecond)
+	if b, _ := os.ReadFile(runlog); strings.Count(string(b), "run") != 1 {
+		t.Fatalf("ShellCheck ran while disabled: %q", b)
+	}
+	// Turning it on again runs it for the open document.
+	put(t, repo, "")
+	c.watchedPath(repo)
+	_, ds := c.waitPushWhere("a.sh", func(v int, ds []Diagnostic) bool { return anyMessage(ds, "mark:") })
+	if !anyMessage(ds, "mark:# MARK 2") {
+		t.Fatalf("after enabling: %v", messages(ds))
+	}
+}
+
+func TestSettingsReloadFormatSettings(t *testing.T) {
+	root := t.TempDir()
+	put(t, filepath.Join(root, "a.sh"), "")
+	repo := filepath.Join(root, ".bash-lsp.toml")
+	src := "f() {\necho a\n}\n"
+	c := client(t, root)
+	c.openText("a.sh", src)
+	c.waitPush("a.sh")
+	if got := apply(t, src, c.formatting("a.sh", nil)); got != "f() {\n\techo a\n}\n" {
+		t.Fatalf("before: %q", got)
+	}
+	put(t, repo, "[format]\nindent = 2\n")
+	c.watchedPath(repo)
+	c.symbols("") // the reload ran
+	if got := apply(t, src, c.formatting("a.sh", nil)); got != "f() {\n  echo a\n}\n" {
+		t.Fatalf("after: %q", got)
+	}
+}
+
+func TestSettingsReloadNamesWhatNeedsARestart(t *testing.T) {
+	root := t.TempDir()
+	put(t, filepath.Join(root, "a.sh"), "")
+	repo := filepath.Join(root, ".bash-lsp.toml")
+	c := client(t, root)
+	c.openText("a.sh", "echo a\n")
+	c.waitPush("a.sh")
+	put(t, repo, "[files]\nexclude = [\"vendor/\"]\n")
+	c.watchedPath(repo)
+	msg := c.waitLog("restart")
+	if !strings.Contains(msg, "files.exclude") {
+		t.Fatalf("log text %q", msg)
+	}
+}

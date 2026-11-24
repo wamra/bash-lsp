@@ -236,6 +236,8 @@ func (s *server) handle(m message) (any, *rpcError) {
 		return nil, s.didSave(m.Params)
 	case "workspace/didChangeWatchedFiles":
 		return nil, s.didChangeWatched(m.Params)
+	case "workspace/didChangeConfiguration":
+		return nil, s.didChangeConfiguration()
 	case "workspace/didChangeWorkspaceFolders":
 		return nil, s.didChangeFolders(m.Params)
 	case "textDocument/diagnostic":
@@ -538,6 +540,12 @@ func (s *server) settingsOf(be backend) config.Settings {
 // was ignored, including rule ids no native rule has.
 func (s *server) loadSettings(root string) config.Settings {
 	st := config.Load(root, s.initOpts)
+	s.reportSettings(st)
+	return st
+}
+
+// reportSettings logs what loading st ignored.
+func (s *server) reportSettings(st config.Settings) {
 	for _, w := range st.Warnings {
 		s.log.Printf("settings: %s", w)
 	}
@@ -545,7 +553,6 @@ func (s *server) loadSettings(root string) config.Settings {
 		s.log.Printf("settings: %s", w)
 		s.warnOnce("settings: " + w)
 	}
-	return st
 }
 
 func diagOptionsOf(st config.Settings) analysis.DiagOptions {

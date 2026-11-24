@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -638,4 +640,141 @@ func (j *fmtJob) run() fmtResult {
 	e.Range.End.Line, e.Range.End.Character = f.ToUTF16(f.PosAt(ee))
 	e.NewText = string(text)
 	return fmtResult{edits: []TextEdit{e}}
+}
+
+// ---- settings reload ----
+//
+// Settings are read when a folder opens. They are read again, on the loop (two
+// small files), when a settings file changes: the repo file of a folder or the
+// user file, reported by the watched-files handler or didSave, or when the
+// client sends workspace/didChangeConfiguration (taken only as a signal to read
+// the files again; its payload is not used). A load that cannot use a file
+// keeps the previous settings and logs why. Open documents are published again
+// under the new settings, and ShellCheck is rescheduled only when its own
+// settings changed. Keys the folder's workspace consumed when it opened (the
+// file filters, limits, source paths, the analysis dialect) and the path
+// profile are read once per session: a change is applied to what reads the
+// settings later and named in a log message as needing a restart.
+
+func (s *server) didChangeConfiguration() *rpcError {
+	if !s.wait() {
+		return nil
+	}
+	s.reloadSettings()
+	return nil
+}
+
+// isSettingsFile reports whether path (as the client spells it) is a settings
+// file that is read: the user file or the .bash-lsp.toml at a folder's root.
+func (s *server) isSettingsFile(path string) bool {
+	path = filepath.Clean(path)
+	if u, err := config.UserPath(); err == nil && u != "" && samePath(u, path) {
+		return true
+	}
+	if filepath.Base(path) != ".bash-lsp.toml" {
+		return false
+	}
+	dir := filepath.Dir(path)
+	for _, f := range s.folders {
+		if dir == f.client || dir == f.ws.Root() {
+			return true
+		}
+	}
+	return false
+}
+
+// samePath reports whether a and b name one file: equal when cleaned, or the
+// same file on disk.
+func samePath(a, b string) bool {
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	if a == b {
+		return true
+	}
+	fa, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	fb, err := os.Stat(b)
+	return err == nil && os.SameFile(fa, fb)
+}
+
+// reloadSettings reads the settings of every folder and of the loose documents
+// again and applies the ones that changed.
+func (s *server) reloadSettings() {
+	if st, ok := s.reloaded("", s.looseSt); ok {
+		old := s.looseSt
+		s.looseSt, s.looseDiag, s.looseTool = st, diagOptionsOf(st), nil
+		s.applySettings(s.loose, old, st)
+	}
+	for _, f := range s.folders {
+		if st, ok := s.reloaded(f.client, f.st); ok {
+			old := f.st
+			f.st, f.diag, f.tool = st, diagOptionsOf(st), nil
+			s.applySettings(f.ws, old, st)
+		}
+	}
+}
+
+// reloaded loads the settings of root and returns them when they differ from
+// old and every file could be used; otherwise ok is false and old stays.
+func (s *server) reloaded(root string, old config.Settings) (st config.Settings, ok bool) {
+	st = config.Load(root, s.initOpts)
+	if len(st.Failed) > 0 {
+		for _, w := range st.Failed {
+			s.log.Printf("settings: %s", w)
+		}
+		s.logMessageOnce(messageTypeWarning, "settings not reloaded, the previous ones stay: "+strings.Join(st.Failed, "; "))
+		return old, false
+	}
+	if reflect.DeepEqual(st, old) {
+		return old, false
+	}
+	s.reportSettings(st)
+	if keys := restartKeys(old, st); len(keys) > 0 {
+		s.logMessageOnce(messageTypeInfo, "settings: a restart of the language server is needed for "+strings.Join(keys, ", ")+" to take effect")
+	}
+	return st, true
+}
+
+// restartKeys names the settings that changed and that are read once per
+// session.
+func restartKeys(old, st config.Settings) []string {
+	var keys []string
+	add := func(changed bool, name string) {
+		if changed {
+			keys = append(keys, name)
+		}
+	}
+	add(!slices.Equal(old.Include, st.Include), "files.include")
+	add(!slices.Equal(old.Exclude, st.Exclude) || !slices.Equal(old.RepoExclude, st.RepoExclude), "files.exclude")
+	add(!slices.Equal(old.SourcePaths, st.SourcePaths), "sources.paths")
+	add(old.Dialect != st.Dialect, "bash.dialect (analysis; formatting follows it at once)")
+	add(old.MaxFiles != st.MaxFiles, "limits.max_files")
+	add(old.MaxFileBytes != st.MaxFileBytes, "limits.max_file_bytes")
+	add(!slices.Equal(old.PathProfile, st.PathProfile), "path.profile")
+	return keys
+}
+
+// applySettings publishes the open documents of be again under st. ShellCheck
+// is dropped and rescheduled only when its settings changed; otherwise its
+// findings stay and a document whose findings did not change is not sent.
+func (s *server) applySettings(be backend, old, st config.Settings) {
+	scChanged := old.ShellCheck != st.ShellCheck
+	var docs []*document
+	for _, d := range s.docs {
+		if d.be == be {
+			docs = append(docs, d)
+		}
+	}
+	sort.Slice(docs, func(i, j int) bool { return docs[i].path < docs[j].path })
+	for _, d := range docs {
+		if scChanged {
+			s.resetCheck(d)
+		}
+		d.lint.have = false
+		s.publishDoc(d, false)
+		if scChanged {
+			s.scheduleCheck(d)
+		}
+	}
 }

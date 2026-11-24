@@ -12,6 +12,9 @@ import (
 	"time"
 )
 
+// testBin is the PATH profile directory of the tests (see TestMain).
+var testBin string
+
 // TestMain points the user settings file at a file of its own, so no test
 // reads the real user configuration or the real $PATH: the file names a PATH
 // profile directory holding a few programs.
@@ -36,6 +39,7 @@ func TestMain(m *testing.M) {
 			panic(err)
 		}
 	}
+	testBin = bin
 	cfg := filepath.Join(dir, "config.toml")
 	if err := os.WriteFile(cfg, []byte("[path]\nprofile = [\""+bin+"\"]\n"), 0o644); err != nil {
 		panic(err)
@@ -120,4 +124,22 @@ func fakeShellCheck(t *testing.T, mode string, env ...string) string {
 		t.Fatal(err)
 	}
 	return p
+}
+
+// userConfig makes BASH_LSP_CONFIG name a new file that holds the tests' PATH
+// profile (so no real program is found) followed by extra; it returns the path.
+func userConfig(t *testing.T, extra string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "config.toml")
+	writeUserConfig(t, p, extra)
+	t.Setenv("BASH_LSP_CONFIG", p)
+	return p
+}
+
+func writeUserConfig(t *testing.T, p, extra string) {
+	t.Helper()
+	body := "[path]\nprofile = [\"" + testBin + "\"]\n" + extra
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }

@@ -397,13 +397,16 @@ func (s *server) didChangeWatched(raw json.RawMessage) *rpcError {
 		return nil
 	}
 	var order []*folder
-	ignores := false
+	ignores, reload := false, false
 	full := map[*folder]bool{}
 	paths := map[*folder][]string{}
 	for _, ch := range p.Changes {
 		path, err := workspace.PathFromURI(ch.URI)
 		if err != nil || !filepath.IsAbs(path) {
 			continue
+		}
+		if s.isSettingsFile(path) { // the user file lies outside every folder
+			reload = true
 		}
 		f, _ := s.folderOfClient(path)
 		if f == nil {
@@ -431,6 +434,9 @@ func (s *server) didChangeWatched(raw json.RawMessage) *rpcError {
 	if ignores {
 		s.queueFolderJob()
 	}
+	if reload {
+		s.reloadSettings()
+	}
 	return nil
 }
 
@@ -448,6 +454,9 @@ func (s *server) didSave(raw json.RawMessage) *rpcError {
 	path, err := workspace.PathFromURI(p.TextDocument.URI)
 	if err != nil || !filepath.IsAbs(path) {
 		return nil
+	}
+	if s.isSettingsFile(path) {
+		defer s.reloadSettings()
 	}
 	if f, _ := s.folderOfClient(path); f != nil {
 		if isGitignore(path, f.ws.CaseInsensitive()) {
