@@ -75,6 +75,7 @@ type clientCfg struct {
 	initOpts     any            // initializationOptions
 	workspaceCap map[string]any // capabilities.workspace
 	respond      func(serverReq) (any, *rpcError)
+	onServer     func(*server) // called with the server before it runs; tests that call its methods
 }
 
 type rpcReply struct {
@@ -131,8 +132,12 @@ func clientWith(t *testing.T, cfg clientCfg) *testClient {
 	if root == "" {
 		c.root = t.TempDir() // a place to name documents; not sent as the root
 	}
+	srv := newServer(inR, outW, c.logs, "test")
+	if cfg.onServer != nil {
+		cfg.onServer(srv)
+	}
 	go func() {
-		err := Serve(inR, outW, c.logs, "test")
+		err := srv.serve()
 		outW.Close()
 		c.done <- err
 	}()

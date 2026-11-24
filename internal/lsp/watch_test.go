@@ -677,11 +677,19 @@ func closeUnderVariant(t *testing.T, opens []string) {
 	s := newServer(strings.NewReader(""), &out, io.Discard, "t")
 	send := func(method string, params any) {
 		b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": method, "params": params})
-		s.dispatch(b)
+		var m message
+		if err := json.Unmarshal(b, &m); err != nil {
+			t.Fatal(err)
+		}
+		s.dispatch(m)
 	}
 	b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize",
 		"params": map[string]any{"capabilities": map[string]any{}, "rootUri": workspace.URIFromPath(root)}})
-	s.dispatch(b)
+	var init message
+	if err := json.Unmarshal(b, &init); err != nil {
+		t.Fatal(err)
+	}
+	s.dispatch(init)
 	send("initialized", map[string]any{})
 	upper := workspace.URIFromPath(filepath.Join(root, "MAIN.sh"))
 	lower := workspace.URIFromPath(filepath.Join(root, "main.sh"))

@@ -217,14 +217,17 @@ func (s *server) toClient(p string) string {
 // folders are reconciled with it (see reconcile): a served folder no longer
 // needed is dropped with its workspace, a newly outermost one is opened.
 // Open documents move to whatever serves them now and are published again
-// from there. Known limit: the opening runs synchronously on the message
-// loop, so requests wait for it (docs/m1-deferred.md, "M3 limits").
+// from there. Only the declared list changes on the message loop; reconcile's
+// walks run on the folder worker (see queueFolderJob), so edits and
+// notifications go on while a folder opens, and requests wait for the result.
 func (s *server) didChangeFolders(raw json.RawMessage) *rpcError {
 	var p didChangeWorkspaceFoldersParams
 	if rerr := decode(raw, &p); rerr != nil {
 		return rerr
 	}
-	s.wait()
+	if !s.wait() {
+		return nil
+	}
 	changed := false
 	for _, wf := range p.Event.Removed {
 		path, err := workspace.PathFromURI(wf.URI)
@@ -265,32 +268,8 @@ func (s *server) didChangeFolders(raw json.RawMessage) *rpcError {
 	if !changed {
 		return nil
 	}
-	s.refolder()
+	s.queueFolderJob()
 	return nil
-}
-
-// refolder reconciles the served folders with the declared ones and, when the
-// set changed, re-homes the open documents (see rehome). A call that changes
-// nothing publishes nothing.
-func (s *server) refolder() {
-	old := s.folders
-	s.folders = s.reconcile(s.declared, old)
-	dropped := map[backend]bool{}
-	same := len(old) == len(s.folders)
-	for i, f := range old {
-		kept := false
-		for _, g := range s.folders {
-			kept = kept || g == f
-		}
-		if !kept {
-			dropped[f.ws] = true
-		}
-		same = same && i < len(s.folders) && s.folders[i] == f
-	}
-	if same {
-		return
-	}
-	s.rehome(dropped)
 }
 
 // isGitignore reports whether path names a .gitignore file: the only files
@@ -403,7 +382,9 @@ func (s *server) didChangeWatched(raw json.RawMessage) *rpcError {
 	if rerr := decode(raw, &p); rerr != nil {
 		return rerr
 	}
-	s.wait()
+	if !s.wait() {
+		return nil
+	}
 	var order []*folder
 	ignores := false
 	full := map[*folder]bool{}
@@ -436,7 +417,7 @@ func (s *server) didChangeWatched(raw json.RawMessage) *rpcError {
 		}
 	}
 	if ignores {
-		s.refolder()
+		s.queueFolderJob()
 	}
 	return nil
 }
@@ -449,7 +430,9 @@ func (s *server) didSave(raw json.RawMessage) *rpcError {
 	if rerr := decode(raw, &p); rerr != nil {
 		return rerr
 	}
-	s.wait()
+	if !s.wait() {
+		return nil
+	}
 	path, err := workspace.PathFromURI(p.TextDocument.URI)
 	if err != nil || !filepath.IsAbs(path) {
 		return nil
@@ -457,7 +440,7 @@ func (s *server) didSave(raw json.RawMessage) *rpcError {
 	if f, _ := s.folderOfClient(path); f != nil {
 		if isGitignore(path) {
 			f.ws.Refresh()
-			s.refolder()
+			s.queueFolderJob()
 			return nil
 		}
 		f.ws.Refresh(filepath.Clean(path))

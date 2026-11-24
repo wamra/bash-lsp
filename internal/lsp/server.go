@@ -4,7 +4,6 @@ package lsp
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -135,6 +134,30 @@ type server struct {
 
 	exit    bool
 	exitErr error
+
+	// The message loop (loop.go). inbound is the bounded queue the reader
+	// goroutine fills; quit closes when `exit` is read and done when Serve
+	// returns; wake tells a loop that is waiting for input that a request was
+	// cancelled. live holds the requests read and not yet answered. cur is the
+	// request whose handler is running (nil for a notification). held are the
+	// requests that arrived while folder jobs were pending, in arrival order.
+	inbound  chan inbound
+	quit     chan struct{}
+	quitOnce sync.Once
+	done     chan struct{}
+	wake     chan struct{}
+	liveMu   sync.Mutex
+	live     map[string]*liveReq
+	cur      *liveReq
+	held     []message
+
+	// Folder jobs (loop.go): folderPending counts the jobs queued whose result
+	// was not applied; folderQ and folderStarted are guarded by folderMu.
+	folderPending int
+	folderMu      sync.Mutex
+	folderQ       [][]declaredFolder
+	folderStarted bool
+	folderSig     chan struct{}
 }
 
 // Serve runs the server until the client exits. It returns nil after `exit`
@@ -151,77 +174,18 @@ func newServer(in io.Reader, out io.Writer, logw io.Writer, version string) *ser
 		docs:    map[string]*document{},
 		byURI:   map[string]string{},
 		pending: map[string]string{},
+
+		inbound:   make(chan inbound, inboundCap),
+		quit:      make(chan struct{}),
+		done:      make(chan struct{}),
+		wake:      make(chan struct{}, 1),
+		live:      map[string]*liveReq{},
+		folderSig: make(chan struct{}, 1),
 	}
 }
 
 func Serve(in io.Reader, out io.Writer, logw io.Writer, version string) error {
-	s := newServer(in, out, logw, version)
-	for !s.exit {
-		body, err := s.c.read()
-		if err != nil {
-			if errors.Is(err, errBadFrame) {
-				s.log.Printf("fatal framing error: %v", err)
-			}
-			if err == io.EOF {
-				return errors.New("lsp: input ended before exit")
-			}
-			return fmt.Errorf("lsp: reading input: %w", err)
-		}
-		s.dispatch(body)
-		if err := s.c.writeErr(); err != nil {
-			return fmt.Errorf("lsp: writing output: %w", err)
-		}
-	}
-	return s.exitErr
-}
-
-func (s *server) dispatch(body []byte) {
-	// Unmarshal validates the syntax itself and reports a failure of it as a
-	// *json.SyntaxError, so a separate json.Valid pass over a large body (a
-	// didOpen carries the whole document) is not needed to tell the two apart.
-	var m message
-	if err := json.Unmarshal(body, &m); err != nil {
-		var syn *json.SyntaxError
-		if errors.As(err, &syn) {
-			s.c.reply(nil, nil, &rpcError{codeParseError, "parse error: invalid JSON"})
-			return
-		}
-		s.c.reply(nil, nil, &rpcError{codeInvalidRequest, "invalid request: " + err.Error()})
-		return
-	}
-	if m.Method == "" {
-		s.response(m)
-		return
-	}
-	isReq := len(m.ID) > 0
-	if m.Method == "exit" {
-		s.exit = true
-		if !s.shutdown {
-			s.exitErr = errors.New("lsp: exit before shutdown")
-		}
-		return
-	}
-	if m.Method == "$/cancelRequest" {
-		return
-	}
-	switch {
-	case m.Method == "initialize":
-		// handled below
-	case !s.initialized:
-		if isReq {
-			s.c.reply(m.ID, nil, &rpcError{codeNotInitialized, "server not initialized"})
-		}
-		return
-	case s.shutdown:
-		if isReq {
-			s.c.reply(m.ID, nil, &rpcError{codeInvalidRequest, "server is shut down"})
-		}
-		return
-	}
-	result, rerr := s.safeHandle(m)
-	if isReq {
-		s.c.reply(m.ID, result, rerr)
-	}
+	return newServer(in, out, logw, version).serve()
 }
 
 // safeHandle runs a handler, turning a panic into an internal error.
@@ -232,6 +196,9 @@ func (s *server) safeHandle(m message) (result any, rerr *rpcError) {
 			result, rerr = nil, &rpcError{codeInternalError, fmt.Sprintf("internal error in %s", m.Method)}
 		}
 	}()
+	if _, _, req := hooks(); req != nil {
+		req(m.Method)
+	}
 	return s.handle(m)
 }
 
@@ -386,14 +353,11 @@ func (s *server) startWorkspace() {
 			}
 		}()
 		s.declared = s.declare(s.roots)
+		if open, _, _ := hooks(); open != nil {
+			open()
+		}
 		s.folders = s.reconcile(s.declared, nil)
 	}()
-}
-
-// wait waits for the first workspace build.
-func (s *server) wait() {
-	s.startWorkspace()
-	<-s.ready
 }
 
 // ---- paths ----
@@ -446,7 +410,9 @@ func (s *server) didOpen(raw json.RawMessage) *rpcError {
 	if rerr := decode(raw, &p); rerr != nil {
 		return rerr
 	}
-	s.wait()
+	if !s.wait() {
+		return nil
+	}
 	be, path, rerr := s.locate(p.TextDocument.URI)
 	if rerr != nil {
 		s.log.Printf("didOpen ignored: %s", rerr.Message)
@@ -465,7 +431,9 @@ func (s *server) didChange(raw json.RawMessage) *rpcError {
 	if rerr := decode(raw, &p); rerr != nil {
 		return rerr
 	}
-	s.wait()
+	if !s.wait() {
+		return nil
+	}
 	d, rerr := s.docOf(p.TextDocument.URI)
 	if rerr != nil {
 		s.log.Printf("didChange ignored: %s", rerr.Message)
@@ -487,7 +455,9 @@ func (s *server) didClose(raw json.RawMessage) *rpcError {
 	if rerr := decode(raw, &p); rerr != nil {
 		return rerr
 	}
-	s.wait()
+	if !s.wait() {
+		return nil
+	}
 	d, rerr := s.docOf(p.TextDocument.URI)
 	delete(s.byURI, p.TextDocument.URI)
 	if rerr != nil || d == nil {
@@ -688,7 +658,10 @@ func (s *server) locations(snap *analysis.Snapshot, ls []analysis.Location) []Lo
 // cursor resolves a request position to a snapshot, path and byte offset.
 // ok is false when the document is unknown to the snapshot.
 func (s *server) cursor(uri string, pos Position) (snap *analysis.Snapshot, path string, offset int, ok bool, rerr *rpcError) {
-	s.wait()
+	if !s.wait() {
+		rerr = cancelledError()
+		return
+	}
 	be, path, rerr := s.locate(uri)
 	if rerr != nil {
 		return
@@ -770,7 +743,9 @@ func (s *server) documentSymbol(raw json.RawMessage) (any, *rpcError) {
 	if rerr := decode(raw, &p); rerr != nil {
 		return nil, rerr
 	}
-	s.wait()
+	if !s.wait() {
+		return nil, cancelledError()
+	}
 	be, path, rerr := s.locate(p.TextDocument.URI)
 	if rerr != nil {
 		return nil, rerr
@@ -836,7 +811,9 @@ func (s *server) workspaceSymbol(raw json.RawMessage) (any, *rpcError) {
 			return nil, rerr
 		}
 	}
-	s.wait()
+	if !s.wait() {
+		return nil, cancelledError()
+	}
 	type list struct {
 		snap  *analysis.Snapshot
 		infos []analysis.SymbolInfo
