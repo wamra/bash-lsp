@@ -307,7 +307,7 @@ func (s *Snapshot) signature(d *Decl) string {
 	var sb strings.Builder
 	sb.WriteString(d.Name)
 	for _, p := range params {
-		sb.WriteString(" <" + p.label() + ">")
+		sb.WriteString(" <" + p.Label() + ">")
 	}
 	if variadic {
 		sb.WriteString(" " + argsLabel)

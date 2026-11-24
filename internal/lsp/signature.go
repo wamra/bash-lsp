@@ -2,7 +2,6 @@ package lsp
 
 import (
 	"encoding/json"
-	"strconv"
 	"unicode/utf16"
 
 	"github.com/wamra/bash-lsp/analysis"
@@ -68,11 +67,7 @@ func (s *server) signatureInfo(sig analysis.FuncSignature) signatureInformation 
 	out := signatureInformation{Label: sig.Label, Parameters: []parameterInformation{}}
 	labels := make([]string, 0, len(sig.Params)+1)
 	for _, p := range sig.Params {
-		if p.Name != "" {
-			labels = append(labels, p.Name)
-		} else {
-			labels = append(labels, "$"+strconv.Itoa(p.Index))
-		}
+		labels = append(labels, p.Label())
 	}
 	if sig.Variadic {
 		labels = append(labels, "[args...]")

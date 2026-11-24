@@ -14,6 +14,10 @@ const maxGetoptsShown = 64
 // past the named ones.
 const argsLabel = "[args...]"
 
+// maxParams caps the positional parameters listed: a body reading `${N}` for
+// a huge N names N parameters. Past the cap the function is shown as variadic.
+const maxParams = 64
+
 // Param is one positional parameter of a script function: Index is N of $N,
 // Name the variable it is copied into, "" when only $N is read.
 type Param struct {
@@ -49,7 +53,7 @@ func (s *Snapshot) Signature(sym *Symbol) (FuncSignature, bool) {
 	}
 	parts := []string{d.Name}
 	for _, p := range sig.Params {
-		parts = append(parts, p.label())
+		parts = append(parts, p.Label())
 	}
 	if args {
 		parts = append(parts, argsLabel)
@@ -62,13 +66,16 @@ func (s *Snapshot) Signature(sym *Symbol) (FuncSignature, bool) {
 // reads "$@" or "$*". It touches only d's own body.
 func (s *Snapshot) params(d *Decl) (params []Param, variadic bool) {
 	names, max, args := positionalParams(d.Node, s.src(d))
+	if max > maxParams {
+		max, args = maxParams, true
+	}
 	for i := 1; i <= max; i++ {
 		params = append(params, Param{Index: i, Name: names[i]})
 	}
 	return params, args
 }
 
-func (p Param) label() string {
+func (p Param) Label() string {
 	if p.Name != "" {
 		return p.Name
 	}
@@ -79,7 +86,7 @@ func (p Param) label() string {
 // its command word: in the argument list, or in the blanks after it on the
 // same line. active is the 0-based index of the argument under the cursor,
 // at most len(sig.Params) (the `[args...]` position) when the function is
-// variadic. The innermost call decides: inside `f $(g ▮)` it is g's. ok is
+// variadic, else at most the last parameter. The innermost call decides: inside `f $(g ▮)` it is g's. ok is
 // false on the command word itself, outside a call, and for a call that is
 // not bound to a function.
 func (s *Snapshot) SignatureAt(path string, offset int) (sig FuncSignature, active int, ok bool) {
@@ -118,8 +125,13 @@ func (s *Snapshot) SignatureAt(path string, offset int) (sig FuncSignature, acti
 		}
 	}
 	sig, ok = s.Signature(sym)
-	if !ok {
-		return FuncSignature{}, 0, false
+	if !ok || sym.Decls[0].Name != best.Name {
+		return FuncSignature{}, 0, false // a call through an alias names the alias
+	}
+	for _, r := range s.edgesAt(file, best) {
+		if r.rel == RelAliases {
+			return FuncSignature{}, 0, false
+		}
 	}
 	for _, w := range bestWords[1:] {
 		if w.Range.End.Offset < offset {
@@ -128,6 +140,8 @@ func (s *Snapshot) SignatureAt(path string, offset int) (sig FuncSignature, acti
 	}
 	if sig.Variadic {
 		active = min(active, len(sig.Params))
+	} else if len(sig.Params) > 0 {
+		active = min(active, len(sig.Params)-1)
 	}
 	return sig, active, true
 }

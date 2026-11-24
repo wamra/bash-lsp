@@ -121,6 +121,18 @@ func TestSignatureHelpOptionsDoc(t *testing.T) {
 	}
 }
 
+func TestSignatureHelpDocRedactedPlaintext(t *testing.T) {
+	c := client(t, t.TempDir())
+	h, raw := c.sigAtMark("# Deploy with password=hunter2 and AKIAABCDEFGHIJKLMNOP.\nf() { echo \"$1\"; }\nf ▮")
+	if h == nil || h.Signatures[0].Documentation == nil {
+		t.Fatalf("got %s", raw)
+	}
+	d := h.Signatures[0].Documentation
+	if d.Kind != "plaintext" || strings.Contains(d.Value, "hunter2") || strings.Contains(d.Value, "AKIAABCDEFGHIJKLMNOP") || !strings.Contains(d.Value, "[redacted]") {
+		t.Fatalf("doc %+v", d)
+	}
+}
+
 func TestSignatureHelpVariadicClamped(t *testing.T) {
 	c := client(t, t.TempDir())
 	h, raw := c.sigAtMark("f() { echo \"$1\" \"$@\"; }; f a b c ▮")
