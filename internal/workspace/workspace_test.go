@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"bytes"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -722,5 +723,111 @@ func TestRCSourcePathOnePath(t *testing.T) {
 	w := open(t, root)
 	if got := w.searchPaths(filepath.Join(w.Root(), "a.sh")); len(got) != 1 {
 		t.Fatalf("%v", got)
+	}
+}
+
+func TestAliasOfSkippedDirIsSkipped(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "a.sh"), "a() { :; }\n")
+	write(t, filepath.Join(root, "node_modules", "n.sh"), "n() { :; }\n")
+	write(t, filepath.Join(root, "gen", "g.sh"), "g() { :; }\n")
+	write(t, filepath.Join(root, "sub", "out", "o.sh"), "o() { :; }\n")
+	write(t, filepath.Join(root, ".gitignore"), "gen/\n")
+	write(t, filepath.Join(root, "sub", ".gitignore"), "out/\n")
+	symlink(t, "node_modules", filepath.Join(root, "link"))
+	symlink(t, "gen", filepath.Join(root, "link2"))
+	symlink(t, filepath.Join("..", "sub", "out"), filepath.Join(root, "link3"))
+	w := open(t, root)
+	if got := rels(w); !slices.Equal(got, []string{"a.sh"}) {
+		t.Fatalf("listed %v, want only a.sh", got)
+	}
+}
+
+func TestCountLimitLineNamesFirstSkipped(t *testing.T) {
+	root := t.TempDir()
+	for _, n := range []string{"a.sh", "b.sh", "c.sh"} {
+		write(t, filepath.Join(root, n), "echo\n")
+	}
+	w, err := Open(root, Limits{MaxFiles: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "file limit of 2 reached: further files skipped, first: c.sh"
+	if got := w.Report().LimitsHit; !slices.Equal(got, []string{want}) {
+		t.Fatalf("LimitsHit = %q, want %q", got, want)
+	}
+}
+
+func TestRootAndPathsEqualUnderFold(t *testing.T) {
+	forceFold(t, true)
+	tmp := t.TempDir()
+	real := filepath.Join(tmp, "MixedCase")
+	write(t, filepath.Join(real, "a.sh"), "a() { :; }\n")
+	write(t, filepath.Join(real, "sub", "b.sh"), "b() { :; }\n")
+	other := filepath.Join(tmp, "mixedcase")
+	if !SameDir(real, other) {
+		t.Skip("case-sensitive volume")
+	}
+	w := open(t, other)
+	for _, r := range []string{real, other, strings.ToUpper(real)} {
+		rr, _ := filepath.EvalSymlinks(filepath.Dir(r))
+		r = filepath.Join(rr, filepath.Base(r))
+		if !w.IsRoot(r) {
+			t.Errorf("IsRoot(%s) = false", r)
+		}
+		if !w.Owns(filepath.Join(r, "sub", "b.sh")) {
+			t.Errorf("Owns(%s/sub/b.sh) = false", r)
+		}
+	}
+	paths := w.Snapshot().Paths()
+	if len(paths) != 2 {
+		t.Fatalf("paths %v", paths)
+	}
+	for _, p := range paths {
+		if !strings.HasPrefix(p, w.Root()+string(filepath.Separator)) {
+			t.Errorf("path %s does not start with the root's spelling %s", p, w.Root())
+		}
+		if w.Canon(p) != p {
+			t.Errorf("Canon(%s) = %s", p, w.Canon(p))
+		}
+		if !w.Owns(p) {
+			t.Errorf("Owns(%s) = false", p)
+		}
+	}
+}
+
+func TestDirDepthLimit(t *testing.T) {
+	root := t.TempDir()
+	deepest := func(n int) string {
+		parts := make([]string, n)
+		for i := range parts {
+			parts[i] = fmt.Sprintf("d%d", i+1)
+		}
+		return filepath.Join(parts...)
+	}
+	write(t, filepath.Join(root, "a.sh"), "a() { :; }\n")
+	write(t, filepath.Join(root, deepest(64), "ok.sh"), "ok() { :; }\n")
+	write(t, filepath.Join(root, deepest(65), "deep.sh"), "deep() { :; }\n")
+	w := open(t, root)
+	got := rels(w)
+	if len(got) != 2 || got[0] != "a.sh" || !strings.HasSuffix(got[1], "/ok.sh") {
+		t.Fatalf("listed %v, want a.sh and the file 64 directories down", got)
+	}
+	want := "directory depth limit of 64 reached: " + filepath.ToSlash(deepest(65)) + " and below not read"
+	if lines := w.Report().LimitsHit; !slices.Equal(lines, []string{want}) {
+		t.Fatalf("LimitsHit = %q, want %q", lines, want)
+	}
+	// A file event below the limit is refused as the walk would.
+	w.Refresh(filepath.Join(w.Root(), deepest(65), "deep.sh"))
+	if got := rels(w); len(got) != 2 {
+		t.Fatalf("Refresh listed a file below the depth limit: %v", got)
+	}
+	// A smaller limit.
+	w2, err := Open(root, Limits{MaxDirDepth: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := rels(w2); !slices.Equal(got, []string{"a.sh"}) {
+		t.Fatalf("MaxDirDepth 2 listed %v", got)
 	}
 }

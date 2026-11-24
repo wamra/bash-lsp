@@ -474,9 +474,9 @@ func TestRefreshSelfIgnoringGitignore(t *testing.T) {
 func countReadDir(t *testing.T) *int {
 	t.Helper()
 	n := new(int)
-	old := readDir
-	readDir = func(d string) ([]os.DirEntry, error) { *n++; return old(d) }
-	t.Cleanup(func() { readDir = old })
+	old := readDirN
+	readDirN = func(d string, max int) ([]os.DirEntry, error) { *n++; return old(d, max) }
+	t.Cleanup(func() { readDirN = old })
 	return n
 }
 
