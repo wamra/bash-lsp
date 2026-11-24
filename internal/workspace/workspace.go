@@ -120,7 +120,7 @@ func (w *Workspace) inSkipDir(path string) bool {
 
 // maxFoldListing is the most entries of one directory read to find the
 // spelling of a name on a folding volume; a directory with more is left
-// unlisted (Decision 30).
+// unlisted.
 const maxFoldListing = 1024
 
 // readDirN lists dir for the spelling of a name on a folding volume, sorted by
