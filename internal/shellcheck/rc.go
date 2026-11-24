@@ -251,3 +251,55 @@ func (info *rcInfo) addDisable(e string) error {
 	}
 	return nil
 }
+
+// UserRCExternalSources returns the user's own rc files (the ones ShellCheck
+// reads from the home directory: ~/.shellcheckrc and
+// $XDG_CONFIG_HOME/shellcheckrc, ~/.config/shellcheckrc when the variable is
+// unset) that set external-sources=true. ShellCheck honours them for every
+// run, so with that key a repository's `source` lines make it read files
+// anywhere, `source /dev/zero` included; the server never forwards the key
+// itself. The files are read without blocking, up to 64 KiB, and only the
+// words of the form external-sources=true count.
+func UserRCExternalSources() []string {
+	var files []string
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		files = append(files, filepath.Join(home, ".shellcheckrc"))
+		if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+			files = append(files, filepath.Join(xdg, "shellcheckrc"))
+		} else {
+			files = append(files, filepath.Join(home, ".config", "shellcheckrc"))
+		}
+	} else if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		files = append(files, filepath.Join(xdg, "shellcheckrc"))
+	}
+	var out []string
+	for _, file := range files {
+		f, err := openRC(file)
+		if err != nil {
+			continue
+		}
+		data, err := io.ReadAll(io.LimitReader(f, maxRCBytes+1))
+		f.Close()
+		if err != nil || len(data) > maxRCBytes {
+			continue
+		}
+		if setsExternalSources(string(data)) {
+			out = append(out, file)
+		}
+	}
+	return out
+}
+
+func setsExternalSources(text string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		if i := strings.IndexByte(line, '#'); i >= 0 {
+			line = line[:i]
+		}
+		for _, word := range strings.FieldsFunc(line, func(r rune) bool { return r == ' ' || r == '\t' || r == '\r' }) {
+			if key, val, ok := strings.Cut(word, "="); ok && key == "external-sources" && strings.Trim(val, `"'`) == "true" {
+				return true
+			}
+		}
+	}
+	return false
+}

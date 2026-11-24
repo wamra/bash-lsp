@@ -468,3 +468,32 @@ func TestDoctorBuildsOneProfile(t *testing.T) {
 		t.Errorf("doctor built %d PATH profiles, want 1", n)
 	}
 }
+
+// A user rc that sets external-sources=true lets ShellCheck read files outside
+// the workspace for a repository's scripts; the server never forwards the key
+// but the user's own file still applies, so doctor says so.
+func TestDoctorWarnsOnUserRCExternalSources(t *testing.T) {
+	emptyPath(t)
+	root := t.TempDir()
+	putFile(t, root, "a.sh", "#!/bin/bash\n:\n")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	if out := runOK(t, "doctor", root); strings.Contains(out, "external-sources") {
+		t.Errorf("no user rc, yet a warning:\n%s", out)
+	}
+	putFile(t, home, ".shellcheckrc", "external-sources=false\n")
+	if out := runOK(t, "doctor", root); strings.Contains(out, "external-sources") {
+		t.Errorf("external-sources=false warned:\n%s", out)
+	}
+	putFile(t, home, ".shellcheckrc", "# mine\ndisable=SC2086 external-sources=true\n")
+	out := runOK(t, "doctor", root)
+	wantLines(t, out, "warning: "+filepath.Join(home, ".shellcheckrc")+": external-sources=true")
+	putFile(t, home, ".shellcheckrc", "")
+	putFile(t, home, ".config/shellcheckrc", "external-sources='true'\n")
+	wantLines(t, runOK(t, "doctor", root), "warning: "+filepath.Join(home, ".config", "shellcheckrc")+": external-sources=true")
+	putFile(t, root, ".bash-lsp.toml", "[shellcheck]\nenabled = false\n")
+	if out := runOK(t, "doctor", root); strings.Contains(out, "external-sources") {
+		t.Errorf("ShellCheck is disabled, yet a warning:\n%s", out)
+	}
+}
