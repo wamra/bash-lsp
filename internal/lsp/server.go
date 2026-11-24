@@ -17,6 +17,7 @@ import (
 
 	"github.com/wamra/bash-lsp/analysis"
 	"github.com/wamra/bash-lsp/internal/config"
+	"github.com/wamra/bash-lsp/internal/extool"
 	"github.com/wamra/bash-lsp/internal/workspace"
 	"github.com/wamra/bash-lsp/parse"
 	"github.com/wamra/bash-lsp/tree"
@@ -111,6 +112,8 @@ type server struct {
 	shown        map[string]bool      // messages shown to the user this session (warnOnce)
 	logged       map[string]bool      // internal parser errors logged this session (logInternal)
 	looseDiag    analysis.DiagOptions // settings of documents outside every folder
+	profileOnce  sync.Once
+	profile      *extool.Profile // the PATH profile, read once per session (pathProfile)
 
 	started bool
 	ready   chan struct{} // closed when folders is set
@@ -557,6 +560,11 @@ func (s *server) diagOptions(be backend) analysis.DiagOptions {
 // every folder: the user file and initialization options only) and logs
 // what was ignored, including rule ids no native rule has.
 func (s *server) settings(root string) analysis.DiagOptions {
+	return diagOptionsOf(s.loadSettings(root))
+}
+
+// loadSettings loads the settings of root and logs what was ignored.
+func (s *server) loadSettings(root string) config.Settings {
 	st := config.Load(root, s.initOpts)
 	for _, w := range st.Warnings {
 		s.log.Printf("settings: %s", w)
@@ -565,7 +573,28 @@ func (s *server) settings(root string) analysis.DiagOptions {
 		s.log.Printf("settings: %s", w)
 		s.warnOnce("settings: " + w)
 	}
+	return st
+}
+
+func diagOptionsOf(st config.Settings) analysis.DiagOptions {
 	return analysis.DiagOptions{Target: st.Target, Disabled: st.Disabled, Severity: st.Severity}
+}
+
+// pathProfile is the PATH profile commands are looked up in: path.profile of
+// the user settings or initialization options (a repo file cannot set it, so
+// one profile serves every folder), else $PATH. Read once per session.
+func (s *server) pathProfile() *extool.Profile {
+	s.profileOnce.Do(func() {
+		if st := config.Load("", s.initOpts); st.PathProfile != nil {
+			s.profile = extool.NewProfile(st.PathProfile)
+		} else {
+			s.profile = extool.ProfileFromEnv()
+		}
+		for _, sk := range s.profile.Skipped() {
+			s.log.Printf("path profile: skipped %s", sk)
+		}
+	})
+	return s.profile
 }
 
 // messageTypeWarning is LSP MessageType 2, Warning.

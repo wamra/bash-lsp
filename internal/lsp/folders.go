@@ -114,12 +114,16 @@ func (s *server) reconcile(declared []declaredFolder, existing []*folder) []*fol
 			}
 		}
 		if f == nil {
-			ws, err := workspace.Open(d.client, workspace.Limits{})
+			st := s.loadSettings(d.client)
+			ws, err := workspace.OpenWith(d.client, st.Limits(), nil, st.Workspace(s.pathProfile().Commands()))
 			if err != nil {
 				s.log.Printf("cannot open workspace folder %s: %v", d.client, err)
 				continue
 			}
-			f = &folder{client: d.client, ws: ws, diag: s.settings(d.client)}
+			for _, n := range ws.Report().Notices {
+				s.log.Printf("workspace %s: %s", d.client, n)
+			}
+			f = &folder{client: d.client, ws: ws, diag: diagOptionsOf(st)}
 		}
 		out = append(out, f)
 		at[f] = i

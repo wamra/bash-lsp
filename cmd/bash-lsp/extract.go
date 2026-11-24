@@ -121,7 +121,7 @@ func cmdExtract(args []string, stdout, stderr io.Writer) int {
 			return fail(stderr, err)
 		}
 	}
-	ws, err := workspace.Open(a.root, workspace.Limits{})
+	ws, err := openWorkspace(a.root, stderr)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -292,6 +292,9 @@ func (x *extractor) fileRecords(path string) []extractRec {
 		return ""
 	}
 	for _, e := range x.edges[path] {
+		if e.IsCommand() { // calls of external commands are not part of the graph
+			continue
+		}
 		l, c := at(e.Site.Range.Start)
 		base := extractRec{Line: l, Col: c, In: inFunc(e.From), Resolution: e.Res.String(), Reason: e.Reason}
 		off := e.Site.Range.Start.Offset

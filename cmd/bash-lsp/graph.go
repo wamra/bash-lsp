@@ -113,7 +113,7 @@ func cmdGraph(cmd string, args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return graphUsageError(stderr, err.Error())
 	}
-	ws, err := workspace.Open(o.root, workspace.Limits{})
+	ws, err := openWorkspace(o.root, stderr)
 	if err != nil {
 		return fail(stderr, err)
 	}

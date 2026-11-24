@@ -13,7 +13,6 @@ import (
 
 	"github.com/wamra/bash-lsp/analysis"
 	"github.com/wamra/bash-lsp/internal/lsp"
-	"github.com/wamra/bash-lsp/internal/workspace"
 	"github.com/wamra/bash-lsp/parse"
 	"github.com/wamra/bash-lsp/tree"
 )
@@ -365,7 +364,7 @@ func cmdSymbols(args []string, stdout, stderr io.Writer) int {
 		if !fi.IsDir() {
 			root, only = filepath.Dir(p), filepath.Base(p)
 		}
-		ws, err := workspace.Open(root, workspace.Limits{})
+		ws, err := openWorkspace(root, stderr)
 		if err != nil {
 			return fail(stderr, err)
 		}
@@ -430,7 +429,7 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 	if len(pos) == 1 {
 		root = pos[0]
 	}
-	ws, err := workspace.Open(root, workspace.Limits{})
+	ws, err := openWorkspace(root, stderr)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -450,6 +449,9 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 	}
 	for _, l := range rep.LimitsHit {
 		fmt.Fprintf(stdout, "limit hit: %s\n", l)
+	}
+	for _, n := range rep.Notices {
+		fmt.Fprintf(stdout, "notice: %s\n", n)
 	}
 	errFiles := 0
 	var unresolved []string
