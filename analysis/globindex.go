@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // globIndex lists the workspace paths by directory, so that a pattern whose
@@ -16,6 +17,7 @@ type globIndex struct {
 	paths []string
 	once  sync.Once
 	byDir map[string][]string // directory -> its files' paths, sorted; made on the first match
+	tried atomic.Int64        // names compared against a pattern so far
 }
 
 func newGlobIndex(paths []string) *globIndex { return &globIndex{paths: paths} }
@@ -39,6 +41,7 @@ func (g *globIndex) match(pat string) []string {
 	var out []string
 	if matchMeta(dir) {
 		for _, p := range g.paths { // g.paths is sorted
+			g.tried.Add(1)
 			if ok, _ := filepath.Match(pat, p); ok {
 				if out = append(out, p); len(out) > maxGlobMatches {
 					break
@@ -58,6 +61,7 @@ func (g *globIndex) match(pat string) []string {
 		}
 	})
 	for _, p := range g.byDir[dir] {
+		g.tried.Add(1)
 		if ok, _ := filepath.Match(base, filepath.Base(p)); ok {
 			if out = append(out, p); len(out) > maxGlobMatches {
 				break

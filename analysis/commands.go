@@ -92,6 +92,48 @@ func (e Edge) IsCommand() bool {
 
 // --- WB1102: missing command ---
 
+// setsPathFor reports whether the call of u carries a prefix assignment of
+// PATH (`PATH=... cmd`), which changes where that command is found.
+func setsPathFor(u *Use) bool {
+	if u.Node == nil {
+		return false
+	}
+	for _, ch := range u.Node.Children {
+		if ch.Kind == tree.KAssign && ch.Name == "PATH" {
+			return true
+		}
+	}
+	return false
+}
+
+// pathSetInView reports whether file, a file it sources or a file that
+// sources it (the files visible from it, as for an unresolved source) assigns
+// PATH: `PATH=`, `PATH+=`, `export PATH=`, `declare -x PATH=`, `local PATH=`.
+// The files that do are found once per snapshot.
+func (s *Snapshot) pathSetInView(file int) bool {
+	s.pathOnce.Do(func() {
+		s.pathFiles = newBitset(len(s.paths))
+		for i, ff := range s.facts {
+			if ff == nil {
+				continue
+			}
+			for _, d := range ff.Decls {
+				if d.Kind == DeclVariable && d.Name == "PATH" && !d.Temp {
+					s.pathFiles.set(i)
+					break
+				}
+			}
+		}
+	})
+	vis := s.visible[file]
+	for i, w := range s.pathFiles {
+		if w&vis[i] != 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // commands reports each command of the file that is in no function, alias,
 // builtin or the PATH profile. It stays silent where the answer is not the
 // profile's alone: in a bats file (its helpers come from libraries loaded by
@@ -105,11 +147,21 @@ func (c *diagCtx) commands() {
 		return
 	}
 	var asked map[string]bool
+	pathSet, pathKnown := false, false
 	for _, site := range s.cmds[c.file] {
 		if s.cmdPaths[site.tab] != "" {
 			continue
 		}
 		u := c.ff.Uses[site.use]
+		if setsPathFor(u) {
+			continue
+		}
+		if !pathKnown {
+			pathSet, pathKnown = s.pathSetInView(c.file), true
+		}
+		if pathSet {
+			continue
+		}
 		if asked == nil {
 			asked = c.askedCommands()
 		}

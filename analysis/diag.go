@@ -94,9 +94,7 @@ func (s *Snapshot) Diagnostics(path string, opt DiagOptions) []Diagnostic {
 		out = append(out, d)
 	}
 	out, cut := capFindings(c.f, out, opt.Disabled["WB1007"])
-	if cut > 0 {
-		s.noteCapped(file, cut)
-	}
+	s.noteCapped(file, cut)
 	sortDiagnostics(out)
 	return out
 }
@@ -128,10 +126,15 @@ func capFindings(f *tree.File, ds []Diagnostic, quiet bool) ([]Diagnostic, int) 
 	return ds, cut
 }
 
-// noteCapped records that Diagnostics cut cut findings of file (LimitsHit).
+// noteCapped records that Diagnostics cut cut findings of file (LimitsHit); a
+// run that cut none clears the file's entry.
 func (s *Snapshot) noteCapped(file, cut int) {
 	s.capMu.Lock()
 	defer s.capMu.Unlock()
+	if cut == 0 {
+		delete(s.capped, file)
+		return
+	}
 	if s.capped == nil {
 		s.capped = map[int]int{}
 	}
@@ -318,6 +321,9 @@ type fileMentions struct {
 type diagState struct {
 	capMu  sync.Mutex
 	capped map[int]int // file -> findings Diagnostics cut past maxFindings (LimitsHit)
+
+	pathOnce  sync.Once
+	pathFiles bitset // files that assign PATH (WB1102)
 
 	diagMu   sync.Mutex
 	scans    map[*FileFacts]*fileScan

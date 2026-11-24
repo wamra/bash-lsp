@@ -242,6 +242,7 @@ func Build(files map[string]*FileFacts, opt Options, generation uint64) *Snapsho
 		}
 	}
 	s.adj, s.unresolved = adj, unresolved
+	s.lim.globTried = gi.tried.Load()
 	if p := opt.Prev; p != nil && s.sameGraph(p) {
 		s.visible, s.incomplete = p.visible, p.incomplete
 	} else {

@@ -10,6 +10,8 @@ import (
 type buildLimits struct {
 	alias map[int]limCount // alias chains cut at maxAliasDepth
 	glob  map[int]limCount // glob patterns cut at maxGlobMatches
+
+	globTried int64 // names the glob index compared against source patterns in Build
 }
 
 type limCount struct{ line, n int }

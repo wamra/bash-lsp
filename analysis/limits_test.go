@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/wamra/bash-lsp/parse"
 )
@@ -169,7 +168,7 @@ func TestLimitsHitSortedByPathThenLine(t *testing.T) {
 	}
 }
 
-// globLoaderWorld is the workspace of TestGlobCost: 1,000 library files in 20
+// globLoaderWorld is the workspace of TestGlobIndexLimitsComparisons: 1,000 library files in 20
 // directories of 50, and 200 loader files, ten per directory, each sourcing
 // every file of its directory.
 func globLoaderWorld() map[string]*FileFacts {
@@ -207,27 +206,23 @@ func BenchmarkGlobEdit(b *testing.B) {
 	}
 }
 
-// 1,000 files and 200 loaders: an edit rebuilds in under 50 ms (best of 7, so
-// that a busy machine does not fail it).
-func TestGlobCost(t *testing.T) {
-	if raceBuild {
-		t.Skip("timing under the race detector")
-	}
+// 1,000 files and 200 loaders of 50 files each: the index compares the names
+// of one directory per pattern (50), where a scan of every path compares all
+// 1,000, so a Build compares 10,000 names and not 200,000. The count does not
+// depend on the load of the machine; it fails when the index is bypassed.
+func TestGlobIndexLimitsComparisons(t *testing.T) {
 	files := globLoaderWorld()
-	prev := Build(files, Options{Root: diagRoot}, 1)
-	if n := len(prev.SourceEdges(diagRoot + "/load000.sh")[0].Targets); n != 50 {
+	s := Build(files, Options{Root: diagRoot}, 1)
+	if n := len(s.SourceEdges(diagRoot + "/load000.sh")[0].Targets); n != 50 {
 		t.Fatalf("loader resolves %d files, want 50", n)
 	}
-	best := time.Hour
-	for i := 0; i < 7; i++ {
-		t0 := time.Now()
-		prev = globEdit(files, prev, uint64(i+2))
-		if d := time.Since(t0); d < best {
-			best = d
-		}
+	if got := s.lim.globTried; got == 0 || got > 200*50 {
+		t.Errorf("Build compared %d names for 200 patterns of 50-file directories, want 1..%d (a full scan is %d)", got, 200*50, 200*1000)
 	}
-	t.Logf("best edit: %v", best)
-	if best > 50*time.Millisecond {
-		t.Errorf("an edit in a workspace of 1,000 files and 200 glob loaders takes %v, want under 50 ms", best)
+	// A pattern with a pattern character in its directory part scans every path.
+	g := newGlobIndex(s.paths)
+	g.match(diagRoot + "/d0?/f00.sh")
+	if got := g.tried.Load(); got != int64(len(s.paths)) {
+		t.Errorf("a pattern directory scan compared %d names, want %d", got, len(s.paths))
 	}
 }

@@ -211,3 +211,75 @@ func TestCommandEdgesDoNotChangeGraphOutput(t *testing.T) {
 		t.Errorf("graph output differs with a profile:\n--- without\n%s\n--- with\n%s", a, b)
 	}
 }
+
+func missingIn(files map[string]string, file string) []Diagnostic {
+	s := diagWorld(files, Options{Commands: fakeProfile("echo", "export")})
+	return ofRule(s.Diagnostics(filepath.Join(diagRoot, file), DiagOptions{}), "WB1102")
+}
+
+// A file that sets PATH may find commands the profile does not know.
+func TestMissingCommandSilentWhenPathIsSet(t *testing.T) {
+	silent := map[string]string{
+		"assign":     "PATH=\"$PWD/bin:$PATH\"\ndeploy\n",
+		"export":     "export PATH=\"$PWD/bin:$PATH\"\ndeploy\n",
+		"append":     "PATH+=:/opt/x\ndeploy\n",
+		"declare -x": "declare -x PATH=/opt/x\ndeploy\n",
+		"local":      "f() {\n  local PATH=/opt/x\n  deploy\n}\n",
+		"later":      "deploy\nPATH=/opt/x\n",
+	}
+	for name, src := range silent {
+		t.Run(name, func(t *testing.T) {
+			if ds := missingIn(map[string]string{"x.sh": src}, "x.sh"); len(ds) != 0 {
+				t.Errorf("WB1102 = %+v", ds)
+			}
+		})
+	}
+	reports := map[string]string{
+		"read only":  "echo $PATH\ndeploy\n",
+		"MANPATH":    "MANPATH=/opt/x\ndeploy\n",
+		"other name": "MYPATH=/opt/x\ndeploy\n",
+		"path word":  "./deploy\nbin/deploy\n",
+	}
+	for name, src := range reports {
+		t.Run("control "+name, func(t *testing.T) {
+			ds := missingIn(map[string]string{"x.sh": src}, "x.sh")
+			if name == "path word" {
+				if len(ds) != 0 {
+					t.Errorf("a path is no lookup: %+v", ds)
+				}
+			} else if len(ds) != 1 {
+				t.Errorf("WB1102 = %+v, want one", ds)
+			}
+		})
+	}
+}
+
+func TestMissingCommandPrefixAssignmentSilencesOnlyItsCommand(t *testing.T) {
+	src := "PATH=/opt/x deploy\nother\n"
+	ds := missingIn(map[string]string{"x.sh": src}, "x.sh")
+	if len(ds) != 1 || rangeText(src, ds[0].Range) != "other" {
+		t.Fatalf("WB1102 = %+v, want only `other`", ds)
+	}
+}
+
+func TestMissingCommandPathSetInSourcedFile(t *testing.T) {
+	files := map[string]string{
+		"main.sh":    "source ./lib/env.sh\ndeploy\n",
+		"lib/env.sh": "export PATH=\"$PWD/bin:$PATH\"\n",
+		"other.sh":   "deploy\n",
+	}
+	if ds := missingIn(files, "main.sh"); len(ds) != 0 {
+		t.Errorf("sourcing file: %+v", ds)
+	}
+	if ds := missingIn(files, "other.sh"); len(ds) != 1 {
+		t.Errorf("unrelated file: %+v", ds)
+	}
+	// and the other way: the sourced library is silenced by its sourcer
+	files2 := map[string]string{
+		"main.sh":  "PATH=/opt/x\nsource ./lib/f.sh\n",
+		"lib/f.sh": "deploy\n",
+	}
+	if ds := missingIn(files2, "lib/f.sh"); len(ds) != 0 {
+		t.Errorf("sourced file: %+v", ds)
+	}
+}
