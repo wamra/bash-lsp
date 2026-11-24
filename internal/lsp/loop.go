@@ -421,6 +421,12 @@ func (s *server) dispatch(m message) {
 	s.run(m)
 }
 
+// deferred is what a handler returns when it answers later: it has started work
+// off the loop that ends in a closure posted to the loop which calls s.answer
+// (once) with the request's id. Handlers read the id and the live entry from
+// s.curID and s.cur.
+type deferred struct{}
+
 // run runs the handler of m and answers a request. A request cancelled before
 // it starts is answered without running; one cancelled while it ran has its
 // result replaced.
@@ -434,9 +440,12 @@ func (s *server) run(m message) {
 		s.answer(m.ID, nil, cancelledError())
 		return
 	}
-	s.cur = s.liveOf(key)
+	s.cur, s.curID = s.liveOf(key), m.ID
 	result, rerr := s.safeHandle(m)
-	s.cur = nil
+	s.cur, s.curID = nil, nil
+	if _, ok := result.(deferred); ok && rerr == nil {
+		return // the handler answers later, from the loop, with s.answer
+	}
 	if s.isCancelled(key) {
 		result, rerr = nil, cancelledError()
 	}

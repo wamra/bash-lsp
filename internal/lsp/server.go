@@ -119,6 +119,7 @@ type server struct {
 	baseCtx      context.Context      // ends when Serve returns; every ShellCheck run derives from it
 	baseCancel   context.CancelFunc
 	loggedMsg    map[string]bool // window/logMessage texts sent once (logMessageOnce)
+	fmtSem       chan struct{}   // bounds the formatter runs going at once (lint.go)
 	profileOnce  sync.Once
 	profile      *extool.Profile // the PATH profile, read once per session (pathProfile)
 
@@ -157,6 +158,7 @@ type server struct {
 	liveMu   sync.Mutex
 	live     map[string]*liveReq
 	cur      *liveReq
+	curID    json.RawMessage // the id of the request being handled
 	held     []message
 
 	// Folder jobs (loop.go): folderPending counts the jobs queued whose result
@@ -191,6 +193,7 @@ func newServer(in io.Reader, out io.Writer, logw io.Writer, version string) *ser
 		wake:      make(chan struct{}, 1),
 		live:      map[string]*liveReq{},
 		folderSig: make(chan struct{}, 1),
+		fmtSem:    make(chan struct{}, 2),
 	}
 }
 
@@ -239,6 +242,10 @@ func (s *server) handle(m message) (any, *rpcError) {
 		return s.diagnostic(m.Params)
 	case "textDocument/codeAction":
 		return s.codeAction(m.Params)
+	case "textDocument/formatting":
+		return s.formatting(m.Params, false)
+	case "textDocument/rangeFormatting":
+		return s.formatting(m.Params, true)
 	case "textDocument/definition":
 		return s.definition(m.Params)
 	case "textDocument/references":

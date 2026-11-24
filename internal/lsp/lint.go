@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"sort"
@@ -13,6 +14,8 @@ import (
 	"time"
 
 	"github.com/wamra/bash-lsp/analysis"
+	"github.com/wamra/bash-lsp/format"
+	"github.com/wamra/bash-lsp/internal/config"
 	"github.com/wamra/bash-lsp/internal/extool"
 	"github.com/wamra/bash-lsp/internal/shellcheck"
 	"github.com/wamra/bash-lsp/tree"
@@ -487,4 +490,152 @@ func (s *server) logMessageOnce(typ int, msg string) {
 	if !seen {
 		s.logMessage(typ, msg)
 	}
+}
+
+// ---- formatting ----
+//
+// A formatting request never runs on the loop and never on an edit: the
+// handler captures the text and the settings, starts the work on a goroutine
+// (bounded by fmtSem) and returns `deferred`; the answer is posted back to the
+// loop, which drops it for a cancelled request and answers an empty list, with
+// a log message, for a document that changed meanwhile. A cancelled request is
+// answered at once (the formatter takes no context, so its run ends by itself
+// and its result is discarded). Refusals answer an empty list and a log
+// message with the formatter's own reason.
+
+// maxTabSize caps FormattingOptions.tabSize, as the `format.indent` setting is
+// capped.
+const maxTabSize = 16
+
+// formatHook is a test seam, called when a formatter run starts; guarded by
+// hookMu.
+var formatHook func()
+
+type fmtJob struct {
+	path, root string
+	text       []byte
+	st         config.Settings // only Format and Dialect are read
+	opts       format.LSPOptions
+	ranged     bool
+	rng        Range
+}
+
+type fmtResult struct {
+	edits    []TextEdit
+	refusal  string
+	panicked any
+}
+
+func (s *server) formatting(raw json.RawMessage, ranged bool) (any, *rpcError) {
+	var p documentRangeFormattingParams
+	if rerr := decode(raw, &p); rerr != nil {
+		return nil, rerr
+	}
+	if !s.wait() {
+		return nil, cancelledError()
+	}
+	d, rerr := s.docOf(p.TextDocument.URI)
+	if rerr != nil {
+		return nil, rerr
+	}
+	if d == nil {
+		return []TextEdit{}, nil
+	}
+	root := filepath.Dir(d.path) // a document outside every folder: its own directory
+	if f := s.folderOf(d.path); f != nil {
+		root = f.ws.Root()
+	}
+	tab := min(max(p.Options.TabSize, 0), maxTabSize)
+	job := &fmtJob{path: d.path, root: root, text: bytes.Clone(d.text), st: s.settingsOf(d.be),
+		opts:   format.LSPOptions{TabSize: uint(tab), InsertSpaces: p.Options.InsertSpaces},
+		ranged: ranged, rng: p.Range}
+	id, lr, version := s.curID, s.cur, d.version
+	cancelled := make(<-chan struct{})
+	if lr != nil {
+		cancelled = lr.done
+	}
+	go s.runFormat(job, d, version, id, cancelled)
+	return deferred{}, nil
+}
+
+// runFormat runs on its own goroutine and touches no server state: it waits for
+// a slot, runs the job and posts the outcome.
+func (s *server) runFormat(job *fmtJob, d *document, version int, id json.RawMessage, cancelled <-chan struct{}) {
+	res := make(chan fmtResult, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				res <- fmtResult{panicked: r}
+			}
+		}()
+		select {
+		case s.fmtSem <- struct{}{}:
+			defer func() { <-s.fmtSem }()
+		case <-cancelled:
+			return
+		}
+		hookMu.RLock()
+		h := formatHook
+		hookMu.RUnlock()
+		if h != nil {
+			h()
+		}
+		res <- job.run()
+	}()
+	select {
+	case r := <-res:
+		s.post(func() { s.finishFormat(d, version, id, r) })
+	case <-cancelled:
+		s.post(func() { s.answer(id, nil, cancelledError()) })
+	case <-s.baseCtx.Done():
+	}
+}
+
+// finishFormat answers a formatting request on the loop.
+func (s *server) finishFormat(d *document, version int, id json.RawMessage, r fmtResult) {
+	switch {
+	case s.isCancelled(idKey(id)):
+		s.answer(id, nil, cancelledError())
+	case r.panicked != nil:
+		s.log.Printf("panic formatting %s: %v", d.path, r.panicked)
+		s.answer(id, nil, &rpcError{codeInternalError, "internal error in formatting"})
+	case s.docs[d.path] != d || d.version != version:
+		s.logMessage(messageTypeInfo, fmt.Sprintf("format: %s changed while it was being formatted; nothing was applied", filepath.Base(d.path)))
+		s.answer(id, []TextEdit{}, nil)
+	case r.refusal != "":
+		s.logMessage(messageTypeWarning, "format refused: "+r.refusal)
+		s.answer(id, []TextEdit{}, nil)
+	default:
+		s.answer(id, r.edits, nil)
+	}
+}
+
+// run formats the captured text. A formatter refusal is the result's reason.
+func (j *fmtJob) run() fmtResult {
+	o := format.OptionsFor(j.path, j.root, j.st.Format, &j.opts)
+	f := tree.NewFile("", j.text)
+	var es, ee int
+	var text []byte
+	if j.ranged {
+		start := f.FromUTF16(j.rng.Start.Line, j.rng.Start.Character).Offset
+		end := max(f.FromUTF16(j.rng.End.Line, j.rng.End.Character).Offset, start)
+		var err error
+		if es, ee, text, err = format.RangeWith(j.path, j.text, start, end, o, j.st.Dialect); err != nil {
+			return fmtResult{refusal: err.Error()}
+		}
+	} else {
+		out, err := format.SourceWith(j.path, j.text, o, j.st.Dialect)
+		if err != nil {
+			return fmtResult{refusal: err.Error()}
+		}
+		es, ee, text = format.Edit(j.text, out)
+	}
+	if es == ee && len(text) == 0 || bytes.Equal(j.text[es:ee], text) {
+		return fmtResult{edits: []TextEdit{}}
+	}
+	var e TextEdit
+	e.Range.Start.Line, e.Range.Start.Character = f.ToUTF16(f.PosAt(es))
+	e.Range.End.Line, e.Range.End.Character = f.ToUTF16(f.PosAt(ee))
+	e.NewText = string(text)
+	return fmtResult{edits: []TextEdit{e}}
 }
