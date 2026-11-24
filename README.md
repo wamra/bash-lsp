@@ -34,10 +34,11 @@ A comment directive silences findings:
 # shellcheck disable=SC2086
 ```
 
-- `# bash-lsp disable=` takes rule ids (two letters and four digits, such as
-  `WB1401`), separated by commas or spaces. The list ends at the first word
-  that is not shaped like a rule id; the rest of the line is your comment. An
-  id that names no rule is reported (WB1008).
+- `# bash-lsp disable=` takes rule ids (such as `WB1401`), separated by commas
+  or spaces. The list runs to the end of the line, or to the first whitespace
+  that is followed by `#` or `--`: what follows is your comment. Every other
+  word in the list is taken as an id, and one that names no rule is reported
+  (WB1008).
 - `# shellcheck disable=` takes ShellCheck codes (`SC2086` or `2086`), ranges
   (`SC3000-SC4000`) and `all`, and silences the native rules that report the
   same problem as one of the codes.
@@ -77,9 +78,12 @@ The JSON each command prints with `--json` is described in
 [JSON records](#json-records).
 
 Positions are 1-based `line:col`, with columns counted in UTF-16 code units
-(the LSP column plus one), printed and accepted alike. A printed path
-is relative to the current directory when the file is under it, otherwise
-absolute, with forward slashes on every OS. Exit codes: 0 success, 1 runtime
+(the LSP column plus one), printed and accepted alike. A path printed by
+`check`, `symbols` and `fmt` is relative to the current directory when the file
+is under it, otherwise absolute; a path printed by the graph commands
+(`callers` to `cycles`, `status`, `search`) is relative to the workspace root,
+which is the current directory unless `--root` says otherwise. Forward slashes
+on every OS. Exit codes: 0 success, 1 runtime
 failure, 2 usage error.
 
 `check` prints the findings of the named files and directories (default `.`), one
@@ -94,7 +98,8 @@ user settings and is not inside the workspace. Exit codes: 0 no finding at or
 above `--fail-on` (default `warning`), 1 findings, 2 usage error, 3 runtime
 failure (an unreadable path or a failed ShellCheck run, even when findings were
 printed). What check did not cover goes to stderr and is not part of the exit
-code: `no shell files checked: PATH: why` for a directory with nothing to check
+code (one exception: a file over the size limit also gets the info finding
+WB1002, which counts under `--fail-on info` or `hint`): `no shell files checked: PATH: why` for a directory with nothing to check
 (ignored, or no shell files), `not analysed: FILE: why` for a file that was not
 parsed (over the size limit, or a shell the server does not support), the
 workspace limits met, and the workspace notices.
@@ -128,8 +133,10 @@ What it does not do:
 ## JSON records
 
 Every `--json` answer is one object that carries `generation` (the snapshot it
-was computed from). Paths are relative to the workspace root, with forward
-slashes; `line` and `col` are 1-based with UTF-16 columns. The table lists,
+was computed from). Paths in the graph commands' answers are relative to the
+workspace root, those in the answer of `check` follow the display rule above
+(relative to the current directory when under it, else absolute); both use
+forward slashes; `line` and `col` are 1-based with UTF-16 columns. The table lists,
 for each command, the keys of that object and the fields of one record; a
 field followed by `?` is left out when it does not apply. `status` is flat:
 the object is the record. `ast` and `extract` are not in the table (`extract`
