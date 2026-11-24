@@ -41,8 +41,9 @@ func Parse(path string, src []byte, d Dialect) *tree.File {
 		f.Skipped = "zsh is not supported yet"
 		return f
 	}
-	stmts, errs, comments := parseFile(f, d)
+	stmts, errs, comments, limits := parseFile(f, d)
 	f.Errors = errs
+	f.Limits = limits
 	if nothingBut(stmts, tree.KErrorGap) && errorWith(errs, nestingError) {
 		f.Skipped = nestingError
 		return f

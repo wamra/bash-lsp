@@ -141,10 +141,22 @@ func (n *Node) Enclosing(k Kind) *Node {
 	return nil
 }
 
-// SyntaxError is a parse problem at a source range.
+// SyntaxError is a parse problem at a source range. Internal marks a panic
+// in the parser or the lowerer that was recovered: the region it names is
+// incomplete because of a defect in bash-lsp, not in the script.
 type SyntaxError struct {
-	Range Range
-	Msg   string
+	Range    Range
+	Msg      string
+	Internal bool
+}
+
+// Limit is a work bound the parser hit. Name is "resync-attempts" or
+// "resync-bytes"; Range is the error gap left unanalysed because of it (from
+// the gap's start to the end of the file); Detail says what was used up.
+type Limit struct {
+	Name   string
+	Range  Range
+	Detail string
 }
 
 // File is a parsed (or skipped) source file.
@@ -154,6 +166,7 @@ type File struct {
 	Root     *Node   // Kind == KFile
 	Comments []*Node // every KComment, in source order
 	Errors   []SyntaxError
+	Limits   []Limit // work bounds hit while parsing, in source order
 	Skipped  string  // non-empty reason when the file was not parsed (e.g. "zsh is not supported yet")
 	Dialect  Dialect // the dialect the file was parsed as; set by every parse, including a skipped one
 

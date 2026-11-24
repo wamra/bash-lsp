@@ -125,19 +125,26 @@ func (l *lowerer) safeStmt(s *syntax.Stmt) (n *tree.Node) {
 			n = nil
 			l.depth = 0
 			at := l.f.PosAt(l.cursor)
-			msg := "internal error lowering statement"
+			e := tree.SyntaxError{Range: tree.Range{Start: at, End: at}, Msg: "internal error lowering statement", Internal: true}
 			if _, ok := r.(tooDeep); ok {
-				msg = loweringLimitError
+				e.Msg, e.Internal = loweringLimitError, false
 			}
-			l.errs = append(l.errs, tree.SyntaxError{Range: tree.Range{Start: at, End: at}, Msg: msg})
+			l.errs = append(l.errs, e)
 		}
 	}()
 	return l.stmt(s)
 }
 
-// lowerComments lowers every comment reachable from the parsed file, in source order.
-func lowerComments(f *tree.File, base tree.Pos, af *syntax.File) (out []*tree.Node) {
-	defer func() { _ = recover() }() // a partial tree after a hard error may hold nil nodes
+// lowerComments lowers every comment reachable from the parsed file, in
+// source order. panicked reports a recovered panic: a partial tree after a
+// hard error may hold nil nodes; the comments lowered before it are kept.
+func lowerComments(f *tree.File, base tree.Pos, af *syntax.File) (out []*tree.Node, panicked bool) {
+	defer func() {
+		if recover() != nil {
+			panicked = true
+			sort.SliceStable(out, func(i, j int) bool { return out[i].Range.Start.Offset < out[j].Range.Start.Offset })
+		}
+	}()
 	l := &lowerer{f: f, base: base}
 	visitAll(af, func(n syntax.Node) {
 		if c, ok := n.(*syntax.Comment); ok && c != nil && c.Hash.IsValid() {
@@ -151,7 +158,7 @@ func lowerComments(f *tree.File, base tree.Pos, af *syntax.File) (out []*tree.No
 		}
 	})
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Range.Start.Offset < out[j].Range.Start.Offset })
-	return out
+	return out, false
 }
 
 func (l *lowerer) pos(p syntax.Pos) tree.Pos {

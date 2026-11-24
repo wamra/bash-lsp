@@ -13,14 +13,30 @@ import (
 // maxResyncAttempts bounds how many candidate lines are parsed per file.
 const maxResyncAttempts = 50
 
+// The re-parses of one file may read at most resyncByteBudget(len(src))
+// bytes in all: a 4 MiB floor (50 re-parses of an 80 KiB file, so files up to
+// that size are bounded by maxResyncAttempts alone) plus twice the file. A
+// candidate whose tail would not fit in what is left is not tried. Bytes, not
+// time, so the result does not depend on the machine.
+const (
+	resyncByteFloor  = 4 << 20
+	resyncByteFactor = 2
+)
+
+func resyncByteBudget(size int) int { return resyncByteFloor + resyncByteFactor*size }
+
 // resyncer recovers a tree for the code after a syntax error the parser could
 // not absorb: it cuts out the broken region as a KErrorGap and parses the file
 // again from the next line that looks like the start of a statement.
 type resyncer struct {
-	f      *tree.File
-	d      Dialect
-	budget int // candidate lines still allowed, shared by the whole file
-	nul    nulIndex
+	f         *tree.File
+	d         Dialect
+	budget    int // candidate lines still allowed, shared by the whole file
+	bytesLeft int // bytes the candidate re-parses may still read
+	parsed    int // bytes the candidate re-parses have read
+	reads     []int
+	limits    []tree.Limit
+	nul       nulIndex
 }
 
 // attempt is one parser run over f.Src[off:], lowered to absolute positions.
@@ -32,39 +48,66 @@ type attempt struct {
 	failErr  tree.SyntaxError
 }
 
-// parseFile parses all of f.Src and returns its statements, errors and
-// comments.
-func parseFile(f *tree.File, d Dialect) (stmts []*tree.Node, errs []tree.SyntaxError, comments []*tree.Node) {
-	r := &resyncer{f: f, d: d, budget: maxResyncAttempts, nul: newNULIndex(f.Src)}
-	return r.resolve(r.raw(0))
+// parseFile parses all of f.Src and returns its statements, errors, comments
+// and the work bounds resync hit.
+func parseFile(f *tree.File, d Dialect) (stmts []*tree.Node, errs []tree.SyntaxError, comments []*tree.Node, limits []tree.Limit) {
+	return newResyncer(f, d).run()
 }
 
-// raw runs the parser once over f.Src[off:]. It does not resync.
-func (r *resyncer) raw(off int) attempt {
+func newResyncer(f *tree.File, d Dialect) *resyncer {
+	return &resyncer{f: f, d: d, budget: maxResyncAttempts, bytesLeft: resyncByteBudget(len(f.Src)), nul: newNULIndex(f.Src)}
+}
+
+// run parses the whole file (not charged to the byte budget) and resyncs
+// after a failure.
+func (r *resyncer) run() ([]*tree.Node, []tree.SyntaxError, []*tree.Node, []tree.Limit) {
+	a, _ := r.raw(0)
+	stmts, errs, comments := r.resolve(a)
+	return stmts, errs, comments, r.limits
+}
+
+// raw runs the parser once over f.Src[off:] and returns the run and the
+// bytes the parser read. It does not resync.
+func (r *resyncer) raw(off int) (attempt, int) {
 	f := r.f
-	af, err, crashed := parseSafely(f.Src[off:], f.Path, r.d)
+	af, read, err, crashed := parseSafely(f.Src[off:], f.Path, r.d)
 	if af == nil {
 		af = &syntax.File{}
 	}
 	base := f.PosAt(off)
 	a := attempt{failOff: -1}
 	a.stmts, a.errs = lowerStmts(f, base, af.Stmts, r.nul)
-	a.comments = lowerComments(f, base, af)
+	var cmtPanic bool
+	a.comments, cmtPanic = lowerComments(f, base, af)
 	switch {
 	case crashed:
 		// No position to go by: the broken region starts where this run did.
-		a.failErr = tree.SyntaxError{Range: tree.Range{Start: base, End: base}, Msg: err.Error()}
+		a.failErr = tree.SyntaxError{Range: tree.Range{Start: base, End: base}, Msg: err.Error(), Internal: true}
 		a.failOff = base.Offset
 	case err != nil:
 		a.failErr = hardError(f, base.Offset, err)
 		a.failOff = a.failErr.Range.Start.Offset
 	}
-	if q := unclosedQuote(af); q >= 0 && (a.failOff < 0 || off+q < a.failOff) {
+	q, quotePanic := unclosedQuote(af)
+	// After a hard error a partial tree may hold nil nodes, and the region is
+	// a gap anyway; on a clean run a panic in these scans is a defect.
+	if clean := err == nil && !crashed; clean && cmtPanic {
+		at := base
+		if n := len(a.comments); n > 0 {
+			at = a.comments[n-1].Range.Start
+		}
+		a.errs = append(a.errs, tree.SyntaxError{Range: tree.Range{Start: at, End: at}, Internal: true,
+			Msg: fmt.Sprintf("internal error: comments after line %d not recorded", at.Line)})
+	}
+	if clean := err == nil && !crashed; clean && quotePanic {
+		a.errs = append(a.errs, tree.SyntaxError{Range: tree.Range{Start: base, End: base}, Internal: true, Msg: "internal error: quote check"})
+	}
+	if q >= 0 && (a.failOff < 0 || off+q < a.failOff) {
 		at := f.PosAt(off + q)
 		a.failOff = at.Offset
 		a.failErr = tree.SyntaxError{Range: tree.Range{Start: at, End: at}, Msg: "unterminated quote"}
 	}
-	return a
+	return a, read
 }
 
 // parseSafely runs the parser over src. The parser can panic on some broken
@@ -74,22 +117,31 @@ func (r *resyncer) raw(off int) attempt {
 // What cannot be recovered from, a stack overflow, the parser rules out
 // itself: it counts nesting and returns an error past 10,000 levels
 // (internal/front/syntax, docs/m2a-nesting-design.md).
-func parseSafely(src []byte, path string, d Dialect) (af *syntax.File, err error, crashed bool) {
+//
+// read is the number of bytes the parser took from its reader (it reads in
+// chunks, so a run that stops at an early error reads little of a long tail).
+func parseSafely(src []byte, path string, d Dialect) (af *syntax.File, read int, err error, crashed bool) {
+	rd := bytes.NewReader(src)
 	defer func() {
 		if r := recover(); r != nil {
-			af, err, crashed = nil, fmt.Errorf("parser failure: %v", r), true
+			af, read, err, crashed = nil, len(src)-rd.Len(), fmt.Errorf("parser failure: %v", r), true
 		}
 	}()
 	p := syntax.NewParser(syntax.KeepComments(true), syntax.RecoverErrors(50), syntax.Variant(variant(d)))
-	af, err = p.Parse(bytes.NewReader(src), path)
-	return af, err, false
+	af, err = p.Parse(rd, path)
+	return af, len(src) - rd.Len(), err, false
 }
 
 // unclosedQuote returns the offset (relative to the parsed text) of the first
 // quoted string whose closing quote the parser had to invent, or -1.
-func unclosedQuote(af *syntax.File) (off int) {
+// panicked reports a recovered panic (a partial tree may hold nil nodes).
+func unclosedQuote(af *syntax.File) (off int, panicked bool) {
 	off = -1
-	defer func() { _ = recover() }() // a partial tree may hold nil nodes
+	defer func() {
+		if recover() != nil {
+			panicked = true
+		}
+	}()
 	visitAll(af, func(n syntax.Node) {
 		var left, right syntax.Pos
 		switch q := n.(type) {
@@ -104,7 +156,7 @@ func unclosedQuote(af *syntax.File) (off int) {
 			off = int(left.Offset())
 		}
 	})
-	return off
+	return off, false
 }
 
 // cut returns the offset where the broken region starts and the statements
@@ -118,6 +170,14 @@ func (a attempt) cut(f *tree.File) (gapStart int, kept []*tree.Node) {
 	for _, s := range a.stmts {
 		if s.Range.Start.Offset >= at.Offset-(at.Col-1) {
 			gapStart = s.Range.Start.Offset // the last such statement wins
+		}
+	}
+	// A statement that starts before the gap and runs into it is dropped: the
+	// gap starts where it starts, so no code goes missing without a gap.
+	for _, s := range a.stmts {
+		if s.Range.Start.Offset < gapStart && s.Range.End.Offset > gapStart {
+			gapStart = s.Range.Start.Offset
+			break
 		}
 	}
 	for _, s := range a.stmts {
@@ -152,13 +212,26 @@ func (r *resyncer) resolve(a attempt) ([]*tree.Node, []tree.SyntaxError, []*tree
 
 	src := f.Src
 	// Candidates start after both the failure and the dropped statements: a
-	// gap must not end before it starts.
-	for pos := nextLine(src, max(a.failOff, gapStart)); pos < len(src) && r.budget > 0; pos = nextLine(src, pos) {
+	// gap must not end before it starts. The loop ends when no candidate is
+	// left, or before a candidate when the attempts or the bytes are used up.
+	stop := ""
+	for pos := nextLine(src, max(a.failOff, gapStart)); pos < len(src); pos = nextLine(src, pos) {
 		if !resyncPoint(src, pos) {
 			continue
 		}
+		if r.budget <= 0 {
+			stop = "resync-attempts"
+			break
+		}
+		if len(src)-pos > r.bytesLeft {
+			stop = "resync-bytes"
+			break
+		}
 		r.budget--
-		t := r.raw(pos)
+		t, read := r.raw(pos)
+		r.reads = append(r.reads, read)
+		r.parsed += read
+		r.bytesLeft -= read
 		_, tailKept := t.cut(f)
 		if len(tailKept) == 0 || errorAt(t.errs, tailKept[0].Range.Start.Offset) {
 			continue
@@ -168,7 +241,16 @@ func (r *resyncer) resolve(a attempt) ([]*tree.Node, []tree.SyntaxError, []*tree
 		kept = append(kept, gap)
 		return append(kept, tStmts...), append(errs, tErrs...), append(comments, tComments...)
 	}
-	return append(kept, r.gap(gapStart, len(src), false)), errs, comments
+	gap := r.gap(gapStart, len(src), false)
+	switch stop {
+	case "resync-attempts":
+		r.limits = append(r.limits, tree.Limit{Name: stop, Range: gap.Range,
+			Detail: fmt.Sprintf("resync stopped after %d attempts", maxResyncAttempts)})
+	case "resync-bytes":
+		r.limits = append(r.limits, tree.Limit{Name: stop, Range: gap.Range,
+			Detail: fmt.Sprintf("resync stopped after re-parsing %d bytes (budget %d for a %d-byte file)", r.parsed, resyncByteBudget(len(src)), len(src))})
+	}
+	return append(kept, gap), errs, comments
 }
 
 func (r *resyncer) gap(from, to int, recovered bool) *tree.Node {
