@@ -47,13 +47,36 @@ func ParseTOML(data []byte) (map[string]map[string]any, error) {
 
 func parseEntries(data []byte) (entries []entry, sections []string, err error) {
 	text := strings.TrimPrefix(string(data), "\xef\xbb\xbf")
+	if !utf8.ValidString(text) {
+		n := 1
+		for i := 0; i < len(text); {
+			r, size := utf8.DecodeRuneInString(text[i:])
+			if r == utf8.RuneError && size == 1 {
+				break
+			}
+			if r == '\n' {
+				n++
+			}
+			i += size
+		}
+		return nil, nil, &ParseError{n, "file is not valid UTF-8"}
+	}
 	section := ""
 	seenSection := map[string]bool{}
 	seenKey := map[string]bool{}
 	for i, raw := range strings.Split(text, "\n") {
 		n := i + 1
-		line := strings.TrimSpace(strings.TrimSuffix(raw, "\r"))
-		if line == "" || line[0] == '#' {
+		line := trimWS(strings.TrimSuffix(raw, "\r"))
+		if strings.Contains(line, "\r") {
+			return nil, nil, &ParseError{n, "bare carriage return (lines end with LF or CRLF)"}
+		}
+		if line == "" {
+			continue
+		}
+		if line[0] == '#' {
+			if err := checkComment(line, n); err != nil {
+				return nil, nil, err
+			}
 			continue
 		}
 		if line[0] == '[' {
@@ -64,7 +87,7 @@ func parseEntries(data []byte) (entries []entry, sections []string, err error) {
 			if end < 0 {
 				return nil, nil, &ParseError{n, "section header without closing ]"}
 			}
-			name := strings.TrimSpace(line[1:end])
+			name := trimWS(line[1:end])
 			if strings.Contains(name, ".") {
 				return nil, nil, &ParseError{n, "only one-level sections are supported"}
 			}
@@ -86,7 +109,7 @@ func parseEntries(data []byte) (entries []entry, sections []string, err error) {
 		if eq < 0 {
 			return nil, nil, &ParseError{n, "expected key = value (no = found)"}
 		}
-		key := strings.TrimSpace(line[:eq])
+		key := trimWS(line[:eq])
 		switch {
 		case strings.ContainsAny(key, "\"'"):
 			return nil, nil, &ParseError{n, "quoted keys are not supported"}
@@ -100,7 +123,7 @@ func parseEntries(data []byte) (entries []entry, sections []string, err error) {
 			return nil, nil, &ParseError{n, fmt.Sprintf("duplicate key %q", key)}
 		}
 		seenKey[id] = true
-		val, rest, err := parseValue(strings.TrimSpace(line[eq+1:]), n)
+		val, rest, err := parseValue(trimWS(line[eq+1:]), n)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -124,10 +147,28 @@ func bareKey(s string) bool {
 	return true
 }
 
+// trimWS trims spaces and tabs only, the whitespace TOML allows around tokens.
+func trimWS(s string) string { return strings.Trim(s, " \t") }
+
+func isControl(c byte) bool { return (c < 0x20 && c != '\t') || c == 0x7f }
+
+// checkComment rejects control characters other than tab in a comment.
+func checkComment(c string, n int) error {
+	for i := 0; i < len(c); i++ {
+		if isControl(c[i]) {
+			return &ParseError{n, "control character in comment"}
+		}
+	}
+	return nil
+}
+
 // endOfLine accepts blanks and one comment.
 func endOfLine(rest string, n int) error {
-	rest = strings.TrimSpace(rest)
-	if rest == "" || rest[0] == '#' {
+	rest = trimWS(rest)
+	if rest != "" && rest[0] == '#' {
+		return checkComment(rest, n)
+	}
+	if rest == "" {
 		return nil
 	}
 	return &ParseError{n, fmt.Sprintf("trailing text after value: %q", rest)}
@@ -187,6 +228,11 @@ func parseString(s string, n int) (any, string, error) {
 		if end < 0 {
 			return nil, "", &ParseError{n, "unterminated string"}
 		}
+		for i := 1; i < 1+end; i++ {
+			if isControl(s[i]) {
+				return nil, "", &ParseError{n, "control character in string"}
+			}
+		}
 		return s[1 : 1+end], s[end+2:], nil
 	}
 	var b strings.Builder
@@ -222,7 +268,7 @@ func parseString(s string, n int) (any, string, error) {
 			default:
 				return nil, "", &ParseError{n, fmt.Sprintf("unsupported escape \\%c", s[i+1])}
 			}
-		case c < 0x20 && c != '\t', c == 0x7f:
+		case isControl(c):
 			return nil, "", &ParseError{n, "control character in string"}
 		default:
 			b.WriteByte(c)
@@ -234,7 +280,7 @@ func parseString(s string, n int) (any, string, error) {
 
 func parseArray(s string, n int) (any, string, error) {
 	out := []string{}
-	rest := strings.TrimSpace(s[1:])
+	rest := trimWS(s[1:])
 	for {
 		switch {
 		case rest == "":
@@ -249,10 +295,10 @@ func parseArray(s string, n int) (any, string, error) {
 			return nil, "", err
 		}
 		out = append(out, v.(string))
-		rest = strings.TrimSpace(after)
+		rest = trimWS(after)
 		switch {
 		case strings.HasPrefix(rest, ","):
-			rest = strings.TrimSpace(rest[1:])
+			rest = trimWS(rest[1:])
 		case strings.HasPrefix(rest, "]"):
 		default:
 			return nil, "", &ParseError{n, "expected , or ] in array"}

@@ -2,9 +2,29 @@
 // and the language server's initialization options.
 //
 // Precedence is defaults, then the user file, then the repo file, then
-// initialization options. Executable and hook keys are accepted only from the
-// user file and initialization options; a repo file naming one is refused and
-// the key is ignored.
+// initialization options. Initialization options come from the editor the user
+// runs and override everything.
+//
+// User settings are a floor against the repo file, which is untrusted input:
+//   - executable and hook keys (shellcheck.path, codeindex.path, path.profile,
+//     hook.enabled) are accepted only from the user file and initialization
+//     options; a repo file naming one is refused (Settings.Refused) and the key
+//     is ignored;
+//   - a repo limit applies only when it is lower than the effective value so
+//     far (the built-in cap, or the user's lower value);
+//   - a repo file cannot set shellcheck.enabled = true once the user file set
+//     it false;
+//   - the repo's diagnostics.disable is added to the user's list and never
+//     removes from it;
+//   - a repo [severity] entry may raise or lower a rule's severity, but not for
+//     a rule the user disabled.
+//
+// Each ignored repo value is reported in Settings.Warnings with the key and
+// the line. Other lists (files.include, files.exclude, sources.paths) are
+// replaced by the later layer; [severity] and [format] merge per key.
+//
+// The initialization option for references.resolved_only is spelled
+// references.resolved_only; references.resolvedOnly is accepted as an alias.
 package config
 
 import (
@@ -13,10 +33,12 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/wamra/bash-lsp/analysis"
@@ -58,7 +80,7 @@ type Settings struct {
 	MaxFileBytes     int64    // [limits] max_file_bytes; 0 = built-in; may only lower
 	Format           format.Settings
 	HookEnabled      bool
-	ResolvedOnly     bool // references.resolvedOnly
+	ResolvedOnly     bool // references.resolved_only (alias references.resolvedOnly)
 	Refused          []Refusal
 	Warnings         []string // unknown keys, parse errors, values above a cap, with file:line
 	Files            []string // config files read
@@ -111,8 +133,18 @@ var known = map[string]spec{
 	"format.space_redirects":     {kind: kBool},
 	"format.function_next_line":  {kind: kBool},
 	"format.simplify":            {kind: kBool},
+	"references.resolved_only":   {kind: kBool},
 	"references.resolvedOnly":    {kind: kBool},
 }
+
+// sectionNames lists the sections a settings file or init object may hold.
+var sectionNames = func() map[string]bool {
+	m := map[string]bool{"severity": true}
+	for k := range known {
+		m[k[:strings.IndexByte(k, '.')]] = true
+	}
+	return m
+}()
 
 var dialects = map[string]tree.Dialect{"bash": tree.Bash, "sh": tree.POSIX, "mksh": tree.Mksh, "bats": tree.Bats}
 
@@ -173,6 +205,10 @@ func (s *Settings) applyInit(raw json.RawMessage) {
 		s.Warnings = append(s.Warnings, fmt.Sprintf("%s: %v (ignored)", label, err))
 		return
 	}
+	if _, err := dec.Token(); err != io.EOF {
+		s.Warnings = append(s.Warnings, label+": text after the first JSON value (ignored)")
+		return
+	}
 	if top == nil {
 		return
 	}
@@ -182,17 +218,31 @@ func (s *Settings) applyInit(raw json.RawMessage) {
 		return
 	}
 	var entries []entry
+	l := layer{label, SrcInit, nil}
 	for _, sec := range sortedKeys(obj) {
+		if strings.Contains(sec, ".") {
+			s.warn(l, entry{key: sec}, "%s: dotted keys are not supported (ignored)", sec)
+			continue
+		}
 		sub, isObj := obj[sec].(map[string]any)
 		if !isObj {
+			if sectionNames[sec] {
+				s.warn(l, entry{key: sec}, "%s must be an object (ignored)", sec)
+				continue
+			}
 			entries = append(entries, entry{"", sec, initValue(obj[sec]), 0})
 			continue
 		}
 		for _, k := range sortedKeys(sub) {
+			if strings.Contains(k, ".") {
+				s.warn(l, entry{key: k}, "%s.%s: dotted keys are not supported (ignored)", sec, k)
+				continue
+			}
 			entries = append(entries, entry{sec, k, initValue(sub[k]), 0})
 		}
 	}
-	s.apply(layer{label, SrcInit, entries})
+	l.entries = entries
+	s.apply(l)
 }
 
 func sortedKeys(m map[string]any) []string {
@@ -259,10 +309,17 @@ func typeOf(v any) kind {
 }
 
 func (s *Settings) apply(l layer) {
-	for _, e := range l.entries {
+	// Rules the user disabled before this layer: a repo file cannot undo that.
+	var userDisabled map[string]bool
+	if l.src == SrcRepo {
+		userDisabled = s.Disabled
+	}
+	var canon, alias *entry
+	for i := range l.entries {
+		e := l.entries[i]
 		name := entryName(e)
 		if e.section == "severity" {
-			s.applySeverity(l, e)
+			s.applySeverity(l, e, userDisabled)
 			continue
 		}
 		sp, ok := known[name]
@@ -284,12 +341,34 @@ func (s *Settings) apply(l layer) {
 			s.warn(l, e, "%s must be %s, not %s (ignored)", name, kindName[sp.kind], what)
 			continue
 		}
-		s.set(l, e, name)
+		switch name {
+		case "references.resolved_only":
+			canon = &l.entries[i]
+		case "references.resolvedOnly":
+			alias = &l.entries[i]
+		default:
+			s.set(l, e, name)
+		}
+	}
+	switch {
+	case canon != nil && alias != nil:
+		if canon.val.(bool) != alias.val.(bool) {
+			s.warn(l, *alias, "references.resolvedOnly differs from references.resolved_only; using references.resolved_only (ignored)")
+		}
+		s.ResolvedOnly = canon.val.(bool)
+	case canon != nil:
+		s.ResolvedOnly = canon.val.(bool)
+	case alias != nil:
+		s.ResolvedOnly = alias.val.(bool)
 	}
 }
 
-func (s *Settings) applySeverity(l layer, e entry) {
+func (s *Settings) applySeverity(l layer, e entry, userDisabled map[string]bool) {
 	name := entryName(e)
+	if userDisabled[e.key] {
+		s.warn(l, e, "%s: the user settings disable this rule; a repo file cannot re-enable it (ignored)", name)
+		return
+	}
 	if !bareKey(e.key) {
 		s.warn(l, e, "bad rule id in %s (ignored)", name)
 		return
@@ -323,11 +402,19 @@ func (s *Settings) set(l layer, e entry, name string) {
 		}
 		s.Dialect = d
 	case "diagnostics.disable":
-		s.Disabled = map[string]bool{}
+		if l.src != SrcRepo || s.Disabled == nil {
+			s.Disabled = map[string]bool{}
+		} else {
+			s.Disabled = maps.Clone(s.Disabled)
+		}
 		for _, id := range e.val.([]string) {
 			s.Disabled[id] = true
 		}
 	case "shellcheck.enabled":
+		if l.src == SrcRepo && e.val.(bool) && !s.ShellCheck.Enabled {
+			s.warn(l, e, "shellcheck.enabled: the user settings turn ShellCheck off; a repo file cannot turn it on (ignored)")
+			return
+		}
 		s.ShellCheck.Enabled = e.val.(bool)
 	case "shellcheck.path":
 		s.ShellCheck.Path = e.val.(string)
@@ -356,11 +443,19 @@ func (s *Settings) set(l layer, e entry, name string) {
 			s.warn(l, e, "limits.max_files must be 1 to %d (limits may only lower the built-in cap), not %d (ignored)", workspace.DefaultMaxFiles, n)
 			return
 		}
+		if l.src == SrcRepo && s.MaxFiles != 0 && n >= int64(s.MaxFiles) {
+			s.warn(l, e, "limits.max_files %d is not lower than the user's %d; a repo file may only lower it (ignored)", n, s.MaxFiles)
+			return
+		}
 		s.MaxFiles = int(n)
 	case "limits.max_file_bytes":
 		n := e.val.(int64)
 		if n < 1 || n > workspace.DefaultMaxFileBytes {
 			s.warn(l, e, "limits.max_file_bytes must be 1 to %d (limits may only lower the built-in cap), not %d (ignored)", int64(workspace.DefaultMaxFileBytes), n)
+			return
+		}
+		if l.src == SrcRepo && s.MaxFileBytes != 0 && n >= s.MaxFileBytes {
+			s.warn(l, e, "limits.max_file_bytes %d is not lower than the user's %d; a repo file may only lower it (ignored)", n, s.MaxFileBytes)
 			return
 		}
 		s.MaxFileBytes = n
@@ -382,8 +477,6 @@ func (s *Settings) set(l layer, e entry, name string) {
 		s.Format.FunctionNextLine = boolPtr(e)
 	case "format.simplify":
 		s.Format.Simplify = boolPtr(e)
-	case "references.resolvedOnly":
-		s.ResolvedOnly = e.val.(bool)
 	}
 }
 
@@ -435,13 +528,16 @@ func Load(root string, init json.RawMessage) Settings {
 
 // readCapped returns the file's bytes (non-nil even when empty), or a note
 // when it is unusable. A missing file gives neither. With within set, the file
-// must resolve to a path inside that directory.
+// must resolve to a path inside that directory. A file that is not a regular
+// file (FIFO, device, socket, directory) is never opened blocking: the path is
+// resolved and stat'ed first, opened with O_NONBLOCK, and the opened file must
+// be the one that was stat'ed.
 func readCapped(path, within string) ([]byte, string) {
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil, noteFor(path, err)
+	}
 	if within != "" {
-		real, err := filepath.EvalSymlinks(path)
-		if err != nil {
-			return nil, noteFor(path, err)
-		}
 		base, err := filepath.EvalSymlinks(within)
 		if err != nil {
 			return nil, noteFor(path, err)
@@ -450,17 +546,24 @@ func readCapped(path, within string) ([]byte, string) {
 			return nil, fmt.Sprintf("%s: resolves outside the workspace root (ignored)", path)
 		}
 	}
-	f, err := os.Open(path)
+	before, err := os.Lstat(real)
+	if err != nil {
+		return nil, noteFor(path, err)
+	}
+	if !before.Mode().IsRegular() {
+		return nil, fmt.Sprintf("%s: not a regular file (ignored)", path)
+	}
+	f, err := os.OpenFile(real, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, noteFor(path, err)
 	}
 	defer f.Close()
-	fi, err := f.Stat()
+	after, err := f.Stat()
 	if err != nil {
 		return nil, noteFor(path, err)
 	}
-	if !fi.Mode().IsRegular() {
-		return nil, fmt.Sprintf("%s: not a regular file (ignored)", path)
+	if !after.Mode().IsRegular() || !os.SameFile(before, after) {
+		return nil, fmt.Sprintf("%s: changed while it was read, or not a regular file (ignored)", path)
 	}
 	data, err := io.ReadAll(io.LimitReader(f, maxConfigBytes+1))
 	if err != nil {
@@ -480,4 +583,25 @@ func noteFor(path string, err error) string {
 		return ""
 	}
 	return fmt.Sprintf("%s: %v (ignored)", path, err)
+}
+
+// CheckRules reports every rule id named in diagnostics.disable or [severity]
+// that known does not accept, as "diagnostics.disable: unknown rule id ..." or
+// "severity.ID: unknown rule id ...", sorted. Merge keeps unknown ids (the rule
+// set belongs to the analysis, not to this package); the caller that owns the
+// registry passes it here and publishes the result as warnings.
+func (s Settings) CheckRules(known func(id string) bool) []string {
+	var out []string
+	for id := range s.Disabled {
+		if !known(id) {
+			out = append(out, fmt.Sprintf("diagnostics.disable: unknown rule id %q", id))
+		}
+	}
+	for id := range s.Severity {
+		if !known(id) {
+			out = append(out, fmt.Sprintf("severity.%s: unknown rule id %q", id, id))
+		}
+	}
+	sort.Strings(out)
+	return out
 }
