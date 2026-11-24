@@ -143,20 +143,46 @@ func suppress(f *tree.File, ds []Diagnostic) []Diagnostic {
 	if len(dirs) == 0 {
 		return ds
 	}
-	// Each directive marks the findings in its range: sort a copy of the
-	// offsets once and search it per directive.
-	order := make([]int, len(ds))
-	for i := range order {
-		order[i] = i
+	// Findings by rule, each list sorted by offset. A directive marks the
+	// findings of each rule it silences in its range, jumping over those
+	// already dropped (skip), so nested directives over many findings stay
+	// linear.
+	byRule := map[string][]int{}
+	for i, d := range ds {
+		byRule[d.Rule] = append(byRule[d.Rule], i)
 	}
-	slices.SortFunc(order, func(a, b int) int { return ds[a].Range.Start.Offset - ds[b].Range.Start.Offset })
+	type bucket struct {
+		idx  []int
+		skip []int // skip[k]: the first position at or after k not yet dropped
+	}
+	buckets := map[string]*bucket{}
+	for r, idx := range byRule {
+		slices.SortStableFunc(idx, func(a, b int) int { return ds[a].Range.Start.Offset - ds[b].Range.Start.Offset })
+		skip := make([]int, len(idx)+1)
+		for k := range skip {
+			skip[k] = k
+		}
+		buckets[r] = &bucket{idx, skip}
+	}
+	var find func(b *bucket, k int) int
+	find = func(b *bucket, k int) int {
+		for b.skip[k] != k {
+			b.skip[k] = b.skip[b.skip[k]]
+			k = b.skip[k]
+		}
+		return k
+	}
 	drop := make([]bool, len(ds))
 	for k := range dirs {
 		d := &dirs[k]
-		i := sort.Search(len(order), func(i int) bool { return ds[order[i]].Range.Start.Offset >= d.start })
-		for ; i < len(order) && ds[order[i]].Range.Start.Offset < d.end; i++ {
-			if j := order[i]; !drop[j] && d.silences(ds[j].Rule) {
-				drop[j] = true
+		for r, b := range buckets {
+			if !d.silences(r) {
+				continue
+			}
+			i := sort.Search(len(b.idx), func(i int) bool { return ds[b.idx[i]].Range.Start.Offset >= d.start })
+			for i = find(b, i); i < len(b.idx) && ds[b.idx[i]].Range.Start.Offset < d.end; i = find(b, i+1) {
+				drop[b.idx[i]] = true
+				b.skip[i] = i + 1
 			}
 		}
 	}

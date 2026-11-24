@@ -249,6 +249,9 @@ func Build(files map[string]*FileFacts, opt Options, generation uint64) *Snapsho
 		hint = len(opt.Prev.recs) + len(opt.Prev.recs)/8
 	}
 	s.buildEdges(hint)
+	if opt.Prev != nil {
+		s.carryDiag(opt.Prev)
+	}
 	return s
 }
 

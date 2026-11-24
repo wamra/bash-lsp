@@ -150,6 +150,7 @@ type diagCtx struct {
 	out  []Diagnostic
 
 	union *nameUnion // what the file's visibility reads or names, built on first need
+	sites []int      // start offsets of the file's dynamic call sites, sorted, on first need
 }
 
 func (c *diagCtx) add(rule string, r tree.Range, msg string) *Diagnostic {
@@ -204,41 +205,65 @@ type fileMentions struct {
 	allexport bool            // `set -a` or `set -o allexport`: assignments are exported
 }
 
-// diagState is the per-snapshot state of Diagnostics, filled on first use.
+// diagState holds the scans and mentions Diagnostics made, by file facts.
+// Both depend only on the facts, which a snapshot built from the previous one
+// shares for every file that did not change: Build carries the entries of
+// those files over (carryDiag), so an edit rescans only the edited file.
 type diagState struct {
 	diagMu   sync.Mutex
-	scans    map[int]*fileScan
-	mentions map[int]*fileMentions
+	scans    map[*FileFacts]*fileScan
+	mentions map[*FileFacts]*fileMentions
+}
+
+// carryDiag copies from prev the scans and mentions of the facts s still has.
+func (s *Snapshot) carryDiag(prev *Snapshot) {
+	prev.diagMu.Lock()
+	defer prev.diagMu.Unlock()
+	if len(prev.scans) == 0 && len(prev.mentions) == 0 {
+		return
+	}
+	s.scans = map[*FileFacts]*fileScan{}
+	s.mentions = map[*FileFacts]*fileMentions{}
+	for _, ff := range s.facts {
+		if sc := prev.scans[ff]; sc != nil {
+			s.scans[ff] = sc
+		}
+		if m := prev.mentions[ff]; m != nil {
+			s.mentions[ff] = m
+		}
+	}
 }
 
 // scanOf returns the scan of file, made on first use.
 func (s *Snapshot) scanOf(file int) *fileScan {
+	ff := s.facts[file]
 	s.diagMu.Lock()
-	sc := s.scans[file]
+	sc := s.scans[ff]
 	s.diagMu.Unlock()
 	if sc != nil {
 		return sc
 	}
-	sc = scanFile(s.facts[file])
+	sc = scanFile(ff)
 	s.diagMu.Lock()
 	if s.scans == nil {
-		s.scans = map[int]*fileScan{}
+		s.scans = map[*FileFacts]*fileScan{}
 	}
-	s.scans[file] = sc
+	s.scans[ff] = sc
 	s.diagMu.Unlock()
 	return sc
 }
 
 // mentionsOf returns the mentions of file, made on first use.
 func (s *Snapshot) mentionsOf(file int) *fileMentions {
+	ff := s.facts[file]
 	s.diagMu.Lock()
-	m := s.mentions[file]
+	m := s.mentions[ff]
 	s.diagMu.Unlock()
 	if m != nil {
 		return m
 	}
 	m = &fileMentions{words: map[string]bool{}, dollar: map[string]bool{}}
-	if ff := s.facts[file]; ff != nil && ff.File != nil && ff.File.Root != nil {
+	if ff != nil && ff.File != nil && ff.File.Root != nil {
 		w := scanWalker{m: m, src: ff.File.Src}
 		for _, st := range ff.File.Root.Children {
 			w.visit(st, nil, false)
@@ -246,9 +271,9 @@ func (s *Snapshot) mentionsOf(file int) *fileMentions {
 	}
 	s.diagMu.Lock()
 	if s.mentions == nil {
-		s.mentions = map[int]*fileMentions{}
+		s.mentions = map[*FileFacts]*fileMentions{}
 	}
-	s.mentions[file] = m
+	s.mentions[ff] = m
 	s.diagMu.Unlock()
 	return m
 }

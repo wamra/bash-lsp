@@ -520,3 +520,44 @@ func TestDiagTestdata(t *testing.T) {
 		}
 	}
 }
+
+// Rules read facts and bindings once each: about 2 MiB of the shapes that
+// would multiply (a dynamic call next to every unused local, reads after
+// every subshell, thousands of nested directives over thousands of findings,
+// one global assigned thousands of times, many distinct unread locals) gives
+// its findings in bounded time.
+func TestDiagnosticsInBoundedTime(t *testing.T) {
+	size, bound := shapeSize()
+	nest := 3000
+	if raceBuild {
+		nest = 750
+	}
+	var locals strings.Builder
+	locals.WriteString("f() {")
+	for i := 0; locals.Len() < size-20; i++ {
+		fmt.Fprintf(&locals, " local v%d=1;", i)
+	}
+	locals.WriteString(" }\nf\n")
+	cases := map[string]string{
+		"unused locals beside dynamic calls": fillTo(size, "", "f() { local u=1; \"$h\"; }\n", ""),
+		"reads after subshells":              fillTo(size, "", "( y=1 ); echo \"$y\"\n", ""),
+		"nested directives, other rule":      fillTo(size, strings.Repeat("{\n# shellcheck disable=SC2034\n", nest), "rm $f\n", strings.Repeat("}\n", nest)),
+		"nested directives, same rule":       fillTo(size, strings.Repeat("{\n# shellcheck disable=SC2086\n", nest), "rm $f\n", strings.Repeat("}\n", nest)),
+		"directive per command":              fillTo(size, "echo start\n", "# shellcheck disable=SC2086\nrm $f\n", ""),
+		"one global assigned many times":     fillTo(size, "#!/bin/bash\necho hi\n", "x=1\n", ""),
+		"unused and duplicate functions":     fillTo(size, "#!/bin/bash\necho hi\n", "f() { :; }\n", ""),
+		"many unquoted arguments":            fillTo(size, "rm", " $f", "\n"),
+		"reads inside strings":               fillTo(size, "f() { local u=1; ", "eval 'echo $u';", " }\nf\n"),
+		"many distinct unread locals":        locals.String(),
+	}
+	for name, src := range cases {
+		f := parse.File("/ws/a.sh", []byte(src))
+		if f.Skipped != "" {
+			t.Fatalf("%s: skipped: %s", name, f.Skipped)
+		}
+		s := Build(map[string]*FileFacts{"/ws/a.sh": Bind(f)}, Options{Root: "/ws"}, 1)
+		var n int
+		withinBound(t, name, bound, func() { n = len(s.Diagnostics("/ws/a.sh", DiagOptions{})) })
+		t.Logf("%s: %d findings", name, n)
+	}
+}

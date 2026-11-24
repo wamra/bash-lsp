@@ -5,8 +5,8 @@ m2a's final review probed. Pass half of it to time each shape at n and 2n. Count
 int_assign_100k) do not scale.
 Shapes the parser refuses at its nesting limit (long `$((`, `${a[` runs, a 2 MiB `(( a+a+... ))`) are kept: their
 row shows the input never reaches Bind. A 2 MiB single expression of names is reached through `let "..."`.
-The m2b shapes (last block) stress edges, string bodies, variable calls, `unset -f`, aliases and many
-definitions of one name."""
+The m2b shapes stress edges, string bodies, variable calls, `unset -f`, aliases and many
+definitions of one name; the m3 shapes (diag_*, last block) the native diagnostic rules."""
 import os, sys
 out = sys.argv[1]
 M0 = 2 * 1024 * 1024 - 64
@@ -98,6 +98,23 @@ shapes["dyn_local_callers_3"] = ("f() { echo $y; }\ng() { echo $y; }\nk() { echo
                                  + "".join(f"h{i}() {{ local y; f; g; k; }}\n" for i in range(M // 33)))
 for d in (1000, 1990):
     shapes[f"nested_funcs_defs_{d}"] = "f() { " * d + "h() { :; };" * ((M - 8 * d) // 11) + " }" * d + "\n"
+# m3 shapes: the native diagnostic rules (analysis/rules.go) that walk scopes, bindings, declarations or
+# suppression directives, each with the input that would multiply a careless rule.
+shapes["diag_unused_locals_dyn"] = rep('f() { local u=1; "$h"; }\n')
+shapes["diag_reads_after_subshells"] = rep('( y=1 ); echo "$y"\n')
+d = 3000
+shapes["diag_nested_directives_other"] = rep("rm $f\n", "{\n# shellcheck disable=SC2034\n" * d, "}\n" * d)
+shapes["diag_nested_directives_same"] = rep("rm $f\n", "{\n# shellcheck disable=SC2086\n" * d, "}\n" * d)
+shapes["diag_directive_per_command"] = rep("# shellcheck disable=SC2086\nrm $f\n", "echo start\n")
+shapes["diag_global_assigned_often"] = rep("x=1\n", "#!/bin/bash\necho hi\n")
+shapes["diag_unused_dup_functions"] = rep("f() { :; }\n", "#!/bin/bash\necho hi\n")
+shapes["diag_unquoted_args"] = rep(" $f", "rm", "\n")
+shapes["diag_reads_in_strings"] = rep("eval 'echo $u';", "f() { local u=1; ", " }\nf\n")
+parts, size = ["f() {"], 5
+while size < M - 20:
+    parts.append(f" local v{len(parts)}=1;")
+    size += len(parts[-1])
+shapes["diag_distinct_locals"] = "".join(parts) + " }\nf\n"
 for k, v in shapes.items():
     open(os.path.join(out, k + ".sh"), "w").write(v)
 print(len(shapes), "shapes")

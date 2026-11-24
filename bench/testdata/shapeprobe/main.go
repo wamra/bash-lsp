@@ -1,4 +1,4 @@
-// Command shapeprobe times Parse, Bind, Build and the snapshot queries on one
+// Command shapeprobe times Parse, Bind, Build, the snapshot queries and the native diagnostics on one
 // file through the public API: shapeprobe FILE. It prints one line of
 // name=duration pairs (milliseconds). This is the probe behind
 // bench/results/bind-shapes-*.txt; build it from this directory with
@@ -74,5 +74,6 @@ func main() {
 		tm("callerat", func() { s.CallerAt(path, off) })
 	}
 	tm("docsyms", func() { s.DocumentSymbols(path) })
+	tm("diag", func() { s.Diagnostics(path, analysis.DiagOptions{}) })
 	fmt.Printf("bytes=%d decls=%d uses=%d %s\n", len(b), len(ff.Decls), len(ff.Uses), strings.Join(out, " "))
 }

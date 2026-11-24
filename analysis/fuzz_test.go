@@ -202,3 +202,70 @@ func FuzzEdges(f *testing.F) {
 		}
 	})
 }
+
+// FuzzDiagnostics runs the native rules on arbitrary input: no panic, every
+// finding's range (and every fix's edit) lies inside the file and agrees
+// with its offsets, findings come sorted, a quote fix keeps the text it
+// quotes. Diagnostics takes at most fuzzBudget.
+func FuzzDiagnostics(f *testing.F) {
+	for _, s := range []string{
+		"#!/bin/bash\nf(){ local u=1; rm $u; }\nf(){ :; }\nrm $x\nsource ./nope.sh\n",
+		"echo hi | read y; echo \"$y\"\n( y=2 ); echo \"$y\"\n",
+		"#!/bin/bash\nlocal x=1\ntest() { :; }\ncd() { builtin cd \"$@\"; }\n",
+		"# bash-lsp disable=WB1401\nrm $a\n# shellcheck disable=SC2000-SC2100,all\nrm $b\n",
+		"f() {\n  # shellcheck disable=SC2086\n  rm $a ${b:+x} ${#c} \"$d\"$e\n}\n",
+		"x=$(foo \\\n\"bar\nf() { :; }\n",
+		"A=$((0 A\nf() { :; }\n",
+		"tmp=$(mktemp); trap 'rm -f \"$tmp\"' EXIT\neval \"echo \\$u\"\n[[ -v z ]]\ndeclare -p w\nset -a\n",
+		"a() { echo hi; }\n) ) fi done\n" + strings.Repeat("echo ${x\n", 60) + "z() { :; }\n",
+	} {
+		f.Add([]byte(s))
+	}
+	const n = 1 << 14
+	for _, s := range []string{
+		fillTo(n, "", "f() { local u=1; \"$h\"; }\n", ""),
+		fillTo(n, "", "( y=1 ); echo \"$y\"\n", ""),
+		fillTo(n, strings.Repeat("{\n# shellcheck disable=SC2086\n", 200), "rm $f\n", strings.Repeat("}\n", 200)),
+		fillTo(n, "#!/bin/bash\necho hi\n", "f() { :; }\nx=1\n", ""),
+	} {
+		f.Add([]byte(s))
+	}
+	f.Fuzz(func(t *testing.T, src []byte) {
+		if len(src) > 1<<14 {
+			return
+		}
+		p := "/ws/f.sh"
+		var file *tree.File
+		withinBudget(t, "Parse", parseBudget(len(src)), len(src), func() { file = front.Parse(p, src, front.Bash) })
+		s := Build(map[string]*FileFacts{p: Bind(file)}, Options{Root: "/ws"}, 1)
+		var ds []Diagnostic
+		withinBudget(t, "Diagnostics", fuzzBudget(len(src)), len(src), func() {
+			s.scans, s.mentions = nil, nil
+			ds = s.Diagnostics(p, DiagOptions{})
+		})
+		check := func(what string, r tree.Range) {
+			a, b := r.Start.Offset, r.End.Offset
+			if a < 0 || b > len(src) || a > b {
+				t.Fatalf("%s: range [%d,%d) outside file of %d bytes", what, a, b, len(src))
+			}
+			if r.Start != file.PosAt(a) || r.End != file.PosAt(b) {
+				t.Fatalf("%s: range %+v disagrees with its offsets", what, r)
+			}
+		}
+		for i, d := range ds {
+			check(d.Rule, d.Range)
+			if i > 0 && (ds[i-1].Range.Start.Offset > d.Range.Start.Offset ||
+				ds[i-1].Range.Start.Offset == d.Range.Start.Offset && ds[i-1].Rule > d.Rule) {
+				t.Fatalf("not sorted at %d: %+v then %+v", i, ds[i-1], d)
+			}
+			for _, fx := range d.Fixes {
+				for _, e := range fx.Edits {
+					check(d.Rule+" fix", e.Range)
+					if old := string(src[e.Range.Start.Offset:e.Range.End.Offset]); e.NewText != "\""+old+"\"" {
+						t.Fatalf("fix %q for %q", e.NewText, old)
+					}
+				}
+			}
+		}
+	})
+}

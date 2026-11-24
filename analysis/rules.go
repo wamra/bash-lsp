@@ -311,7 +311,7 @@ func (c *diagCtx) unusedFunctions() {
 // when a dynamic call sits in its function.
 func (c *diagCtx) unusedVariables() {
 	s := c.s
-	var seen map[*Symbol]bool // globals looked at; a local's or private symbol's declarations are all in this file, first one first
+	var seen map[*Symbol]bool // symbols with several declarations, looked at already
 	script := -1
 	for _, d := range c.ff.Decls {
 		if d.Kind != DeclVariable || d.Temp || d.Implicit != "" || d.Name == "_" || shellVariable(d.Name) {
@@ -321,11 +321,7 @@ func (c *diagCtx) unusedVariables() {
 		if sym == nil {
 			continue
 		}
-		if sym.File != "" {
-			if !c.firstLooked(sym, d) {
-				continue
-			}
-		} else {
+		if len(sym.Decls) > 1 {
 			if seen[sym] {
 				continue
 			}
@@ -365,17 +361,6 @@ func (c *diagCtx) unusedVariables() {
 	}
 }
 
-// firstLooked reports whether d is the first declaration of sym (all of
-// whose declarations are in this file) that unusedVariables looks at.
-func (c *diagCtx) firstLooked(sym *Symbol, d *Decl) bool {
-	for _, e := range sym.Decls {
-		if !e.Temp && e.Implicit == "" {
-			return e == d
-		}
-	}
-	return false
-}
-
 func symFlags(sym *Symbol, f func(VarAttrs) bool) bool {
 	for _, d := range sym.Decls {
 		if f(d.Attrs) {
@@ -397,6 +382,10 @@ func readIn(bs []Binding) bool {
 // dynamicIn reports whether a dynamic call site lies in the scope that
 // holds local or private variable d: the called code may read it.
 func (c *diagCtx) dynamicIn(d *Decl) bool {
+	sites := c.dynSites()
+	if len(sites) == 0 {
+		return false
+	}
 	var n *tree.Node
 	if ps := privateScope(d.Scope); ps != nil {
 		n = ps.Node
@@ -404,14 +393,22 @@ func (c *diagCtx) dynamicIn(d *Decl) bool {
 		n = funcBody(d.Scope)
 	}
 	if n == nil {
-		return len(c.s.dyn[c.file]) > 0
+		return true
 	}
-	for _, site := range c.s.dyn[c.file] {
-		if o := site.rng.Start.Offset; n.Range.Start.Offset <= o && o < n.Range.End.Offset {
-			return true
+	i := sort.SearchInts(sites, n.Range.Start.Offset)
+	return i < len(sites) && sites[i] < n.Range.End.Offset
+}
+
+// dynSites returns the start offsets of the file's dynamic call sites, sorted.
+func (c *diagCtx) dynSites() []int {
+	if c.sites == nil {
+		c.sites = make([]int, 0, len(c.s.dyn[c.file]))
+		for _, site := range c.s.dyn[c.file] {
+			c.sites = append(c.sites, site.rng.Start.Offset)
 		}
+		sort.Ints(c.sites)
 	}
-	return false
+	return c.sites
 }
 
 // --- WB1401: unquoted expansion in an argument of a file-changing command ---
