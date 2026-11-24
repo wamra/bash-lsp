@@ -174,13 +174,13 @@ func TestCallHierarchyPrepare(t *testing.T) { // C09
 
 // The file's top-level item answers incoming and outgoing calls with the
 // steps `bash-lsp callers` and `callees` give for the file (both come from
-// analysis Callers and Callees at depth 1), restricted to calls and invokes:
-// a `source` is not a call (FDS-012).
+// analysis Callers and Callees at depth 1): calls, invokes and sources (FDS-012
+// takes the call hierarchy "from FDS-010", whose edges include `sources`).
 func TestCallHierarchyFileItemMatchesCLI(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "lib.sh", "# lib\nlib_fn() { :; }\n")
 	writeFile(t, root, "tool.sh", "# tool\ntool_fn() { :; }\ntool_fn\n")
-	writeFile(t, root, "main.sh", "source ./lib.sh\nrun() { lib_fn; ./tool.sh; }\nlib_fn\nrun\n./tool.sh\n")
+	writeFile(t, root, "main.sh", "source ./lib.sh\nrun() { lib_fn; ./tool.sh; }\nlib_fn\nrun\n./tool.sh\nload() { source ./lib.sh; }\n")
 	writeFile(t, root, "caller.sh", "./main.sh\nbash main.sh\n")
 	c := client(t, root)
 	ws, err := workspace.Open(root, workspace.Limits{})
@@ -192,9 +192,6 @@ func TestCallHierarchyFileItemMatchesCLI(t *testing.T) {
 	cli := func(steps []analysis.Step, incoming bool) []string {
 		var out []string
 		for _, st := range steps {
-			if st.Edge.Rel == analysis.RelSources {
-				continue
-			}
 			other := st.To
 			if incoming {
 				other = st.From
@@ -304,8 +301,8 @@ func TestCallHierarchyIncomingOutgoing(t *testing.T) { // C10, C11, AC-05
 		t.Fatalf("outgoing of deploy\n got %q\nwant %q", got, want)
 	}
 
-	// A file item (top-level code) has the calls of its top level; a
-	// `source` line is not a call.
+	// A file item (top-level code) has the calls of its top level and the
+	// files it sources (as `bash-lsp callees dyn.sh` lists them).
 	dyn := in[0].From
 	if dyn.SelectionRange.Start != (Position{}) || dyn.Range.Start != (Position{}) || dyn.Range.End.Line < 3 {
 		t.Fatalf("file item ranges %+v %+v", dyn.Range, dyn.SelectionRange)
@@ -314,7 +311,7 @@ func TestCallHierarchyIncomingOutgoing(t *testing.T) { // C10, C11, AC-05
 	for _, x := range c.outgoing(dyn) {
 		got = append(got, c.itemText(x.To)+" "+lines(x.FromRanges))
 	}
-	if !eq(got, "build_release 12 lib/util.sh [lib/util.sh] 4:1") {
+	if !eq(got, "lib/util.sh 1 lib/util.sh [lib/util.sh] 3:8", "build_release 12 lib/util.sh [lib/util.sh] 4:1") {
 		t.Fatalf("outgoing of dyn.sh: %q", got)
 	}
 

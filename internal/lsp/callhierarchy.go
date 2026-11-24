@@ -144,14 +144,16 @@ type callGroup struct {
 	worst  []analysis.Resolution // per label
 }
 
-// groupCalls groups calls and invokes steps (a `source` is not a call) by
-// the node at the other end: From for incoming, To for outgoing. Steps come
-// in site order, so groups are in the order of their first site.
+// groupCalls groups calls, invokes and sources steps (the steps `bash-lsp
+// callers` and `callees` list; FDS-012 takes the call hierarchy from the
+// FDS-010 edges) by the node at the other end: From for incoming, To for
+// outgoing. Steps come in site order, so groups are in the order of their
+// first site.
 func groupCalls(steps []analysis.Step, incoming bool) []*callGroup {
 	var groups []*callGroup
 	byNode := map[analysis.Node]*callGroup{}
 	for _, st := range steps {
-		if st.Edge.Rel != analysis.RelCalls && st.Edge.Rel != analysis.RelInvokes {
+		if st.Edge.Rel != analysis.RelCalls && st.Edge.Rel != analysis.RelInvokes && st.Edge.Rel != analysis.RelSources {
 			continue
 		}
 		other := st.To
