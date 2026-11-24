@@ -8,18 +8,19 @@ import (
 	"fmt"
 	"io"
 	"strconv"
-	"strings"
 	"sync"
 )
 
 // JSON-RPC error codes used by the server.
 const (
-	codeParseError     = -32700
-	codeInvalidRequest = -32600
-	codeMethodNotFound = -32601
-	codeInvalidParams  = -32602
-	codeInternalError  = -32603
-	codeNotInitialized = -32002
+	codeParseError       = -32700
+	codeInvalidRequest   = -32600
+	codeMethodNotFound   = -32601
+	codeInvalidParams    = -32602
+	codeInternalError    = -32603
+	codeNotInitialized   = -32002
+	codeRequestCancelled = -32800 // LSP 3.17 LSPErrorCodes.RequestCancelled
+	codeContentModified  = -32801 // LSP 3.17 LSPErrorCodes.ContentModified
 )
 
 // message is a request, a notification, or a response to a request the
@@ -74,15 +75,25 @@ func newConn(in io.Reader, out io.Writer) *conn {
 	return &conn{r: bufio.NewReaderSize(in, 64<<10), w: out}
 }
 
+// scratchMax is the largest body read into the caller's reusable buffer; a
+// longer body is read into a buffer that grows with the bytes received, so a
+// bogus Content-Length costs nothing until the bytes arrive.
+const scratchMax = 64 << 10
+
 // read returns the next message body. The body size is not limited; memory
 // grows only with the bytes actually received.
-func (c *conn) read() ([]byte, error) {
+func (c *conn) read() ([]byte, error) { return c.readBuf(nil) }
+
+// readBuf is read with a reusable buffer: when buf has room for the body (and
+// the body is at most scratchMax bytes) the result is buf[:n], so the caller
+// must not keep it past the next call.
+func (c *conn) readBuf(buf []byte) ([]byte, error) {
 	length := -1
 	sawHeader := false
 	for {
-		line, err := c.r.ReadString('\n')
+		line, err := c.line()
 		if err != nil {
-			if err == io.EOF && !sawHeader && line == "" {
+			if err == io.EOF && !sawHeader && len(line) == 0 {
 				return nil, io.EOF
 			}
 			if err == io.EOF {
@@ -90,17 +101,17 @@ func (c *conn) read() ([]byte, error) {
 			}
 			return nil, err
 		}
-		line = strings.TrimRight(line, "\r\n")
-		if line == "" {
+		line = bytes.TrimRight(line, "\r\n")
+		if len(line) == 0 {
 			if !sawHeader {
 				continue // stray blank line between messages
 			}
 			break
 		}
 		sawHeader = true
-		name, val, ok := strings.Cut(line, ":")
-		if ok && strings.EqualFold(strings.TrimSpace(name), "Content-Length") {
-			n, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64)
+		name, val, ok := bytes.Cut(line, []byte(":"))
+		if ok && bytes.EqualFold(bytes.TrimSpace(name), []byte("Content-Length")) {
+			n, err := strconv.ParseInt(string(bytes.TrimSpace(val)), 10, 64)
 			if err != nil || n < 0 {
 				length = -2
 			} else {
@@ -111,14 +122,44 @@ func (c *conn) read() ([]byte, error) {
 	if length < 0 {
 		return nil, fmt.Errorf("%w: missing or invalid Content-Length", errBadFrame)
 	}
-	var buf bytes.Buffer
-	if _, err := io.CopyN(&buf, c.r, int64(length)); err != nil {
+	if length <= scratchMax {
+		var body []byte
+		if cap(buf) >= length {
+			body = buf[:length]
+		} else {
+			body = make([]byte, length)
+		}
+		if _, err := io.ReadFull(c.r, body); err != nil {
+			if err == io.EOF {
+				err = io.ErrUnexpectedEOF
+			}
+			return nil, err
+		}
+		return body, nil
+	}
+	var big bytes.Buffer
+	if _, err := io.CopyN(&big, c.r, int64(length)); err != nil {
 		if err == io.EOF {
 			err = io.ErrUnexpectedEOF
 		}
 		return nil, err
 	}
-	return buf.Bytes(), nil
+	return big.Bytes(), nil
+}
+
+// line reads up to and including the next newline. The result is valid until
+// the next read; a line longer than the buffer is assembled in a copy.
+func (c *conn) line() ([]byte, error) {
+	frag, err := c.r.ReadSlice('\n')
+	if err != bufio.ErrBufferFull {
+		return frag, err
+	}
+	long := append([]byte(nil), frag...)
+	for err == bufio.ErrBufferFull {
+		frag, err = c.r.ReadSlice('\n')
+		long = append(long, frag...)
+	}
+	return long, err
 }
 
 func (c *conn) send(v any) {

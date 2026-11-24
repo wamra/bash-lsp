@@ -280,3 +280,34 @@ func TestLoadRepoFile(t *testing.T) {
 		t.Fatalf("%+v", s)
 	}
 }
+
+func TestLoadFailedListsUnusableFiles(t *testing.T) {
+	t.Setenv("BASH_LSP_CONFIG", "")
+	root := t.TempDir()
+	if s := Load(root, nil); len(s.Failed) != 0 {
+		t.Fatalf("no file: Failed = %v", s.Failed)
+	}
+	repo := filepath.Join(root, ".bash-lsp.toml")
+	if err := os.WriteFile(repo, []byte("[bash\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := Load(root, nil)
+	if len(s.Failed) != 1 || !strings.Contains(s.Failed[0], ".bash-lsp.toml") || !strings.Contains(s.Failed[0], "file ignored") {
+		t.Fatalf("parse error: Failed = %v", s.Failed)
+	}
+	if err := os.WriteFile(repo, []byte("[bash]\ntarget = \"4.0-5.0\"\nnope = 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if s := Load(root, nil); len(s.Failed) != 0 || len(s.Warnings) == 0 {
+		t.Fatalf("an unknown key is a warning, not a failure: Failed = %v, Warnings = %v", s.Failed, s.Warnings)
+	}
+	if err := os.Remove(repo); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if s := Load(root, nil); len(s.Failed) != 1 {
+		t.Fatalf("not a regular file: Failed = %v", s.Failed)
+	}
+}

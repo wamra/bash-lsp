@@ -48,6 +48,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -96,6 +97,7 @@ type Settings struct {
 	ResolvedOnly     bool // references.resolved_only (alias references.resolvedOnly)
 	Refused          []Refusal
 	Warnings         []string // unknown keys, parse errors, values above a cap, with file:line
+	Failed           []string // the part of Warnings about a settings file that could not be used (unreadable, or a parse error): its values are missing from these settings
 	Files            []string // config files read
 }
 
@@ -199,11 +201,14 @@ func (s *Settings) applyFile(label string, src Source, data []byte) {
 	entries, _, err := parseEntries(data)
 	if err != nil {
 		var pe *ParseError
+		var w string
 		if errors.As(err, &pe) {
-			s.Warnings = append(s.Warnings, fmt.Sprintf("%s:%d: %s (file ignored)", label, pe.Line, pe.Msg))
+			w = fmt.Sprintf("%s:%d: %s (file ignored)", label, pe.Line, pe.Msg)
 		} else {
-			s.Warnings = append(s.Warnings, fmt.Sprintf("%s: %v (file ignored)", label, err))
+			w = fmt.Sprintf("%s: %v (file ignored)", label, err)
 		}
+		s.Warnings = append(s.Warnings, w)
+		s.Failed = append(s.Failed, w)
 		return
 	}
 	s.apply(layer{label, src, entries})
@@ -560,6 +565,7 @@ func Load(root string, init json.RawMessage) Settings {
 		}
 	}
 	s := Merge(user, repo, init)
+	s.Failed = append(slices.Clone(notes), s.Failed...)
 	s.Warnings = append(notes, s.Warnings...)
 	s.Files = files
 	return s

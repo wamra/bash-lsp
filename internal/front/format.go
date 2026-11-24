@@ -82,7 +82,11 @@ func (p prepared) restore(b []byte) []byte {
 //   - zsh: not formatted;
 //   - any syntax error, gap, recovered node or limit that analysis of the same
 //     bytes reports: ErrFormatSyntax with the first error.
-func prepare(path string, src []byte) (prepared, error) {
+func prepare(path string, src []byte) (prepared, error) { return prepareWith(path, src, Bash) }
+
+// prepareWith is prepare with fallback as the dialect of a file that names none
+// (DetectWith).
+func prepareWith(path string, src []byte, fallback Dialect) (prepared, error) {
 	if len(src) > maxFormatBytes {
 		return prepared{}, unsupported("file is %d bytes, over the %d byte limit", len(src), maxFormatBytes)
 	}
@@ -100,7 +104,7 @@ func prepare(path string, src []byte) (prepared, error) {
 		p.crlf = true
 		p.text = bytes.ReplaceAll(src, []byte("\r\n"), []byte("\n"))
 	}
-	p.d = Detect(path, src)
+	p.d = DetectWith(path, src, fallback)
 	if p.d == Zsh {
 		return prepared{}, unsupported("zsh is not supported yet")
 	}
@@ -257,7 +261,13 @@ func printTree(f *syntax.File, o FormatOptions) (out []byte, err error) {
 // Format(x). A file that holds no statement and no comment is returned as it
 // is, and a missing final newline stays missing.
 func Format(path string, src []byte, o FormatOptions) ([]byte, error) {
-	p, err := prepare(path, src)
+	return FormatWith(path, src, o, Bash)
+}
+
+// FormatWith is Format with fallback (DetectWith) as the dialect of a file that
+// names none itself; 0 means Bash.
+func FormatWith(path string, src []byte, o FormatOptions, fallback Dialect) ([]byte, error) {
+	p, err := prepareWith(path, src, fallback)
 	if err != nil {
 		return nil, err
 	}
@@ -504,10 +514,16 @@ func stripLineTabs(s string, atStart bool) string {
 // returned. A file with any error is not formatted at all, in part or whole.
 // An empty range selects the statement at that offset.
 func FormatRange(path string, src []byte, start, end int, o FormatOptions) (editStart, editEnd int, text []byte, err error) {
+	return FormatRangeWith(path, src, start, end, o, Bash)
+}
+
+// FormatRangeWith is FormatRange with fallback (DetectWith) as the dialect of a
+// file that names none itself; 0 means Bash.
+func FormatRangeWith(path string, src []byte, start, end int, o FormatOptions, fallback Dialect) (editStart, editEnd int, text []byte, err error) {
 	if start < 0 || end < start || end > len(src) {
 		return 0, 0, nil, unsupported("range %d-%d is outside the %d byte file", start, end, len(src))
 	}
-	p, err := prepare(path, src)
+	p, err := prepareWith(path, src, fallback)
 	if err != nil {
 		return 0, 0, nil, err
 	}

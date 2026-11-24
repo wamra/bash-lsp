@@ -200,7 +200,10 @@ func (s *server) callsOf(raw json.RawMessage, incoming bool) (snap *analysis.Sna
 	if rerr = decode(raw, &p); rerr != nil {
 		return
 	}
-	s.wait()
+	if !s.wait() {
+		rerr = cancelledError()
+		return
+	}
 	snap, n, ok := s.nodeOf(p.Item)
 	if !ok {
 		return snap, n, nil, nil

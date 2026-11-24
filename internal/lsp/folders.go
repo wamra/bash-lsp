@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/wamra/bash-lsp/analysis"
+	"github.com/wamra/bash-lsp/internal/config"
 	"github.com/wamra/bash-lsp/internal/workspace"
 )
 
@@ -34,7 +36,9 @@ import (
 type folder struct {
 	client string // the root as the client spelled it, cleaned
 	ws     *workspace.Workspace
-	diag   analysis.DiagOptions // from the folder's settings, loaded when it opened
+	st     config.Settings      // the folder's settings (see reloadSettings)
+	diag   analysis.DiagOptions // their diagnostic part
+	tool   *scTool              // ShellCheck of the folder; nil until needed (lint.go)
 }
 
 // declaredFolder is a folder the client named, served or not.
@@ -123,7 +127,7 @@ func (s *server) reconcile(declared []declaredFolder, existing []*folder) []*fol
 			for _, n := range ws.Report().Notices {
 				s.log.Printf("workspace %s: %s", d.client, n)
 			}
-			f = &folder{client: d.client, ws: ws, diag: diagOptionsOf(st)}
+			f = &folder{client: d.client, ws: ws, st: st, diag: diagOptionsOf(st)}
 		}
 		out = append(out, f)
 		at[f] = i
@@ -217,14 +221,17 @@ func (s *server) toClient(p string) string {
 // folders are reconciled with it (see reconcile): a served folder no longer
 // needed is dropped with its workspace, a newly outermost one is opened.
 // Open documents move to whatever serves them now and are published again
-// from there. Known limit: the opening runs synchronously on the message
-// loop, so requests wait for it (docs/m1-deferred.md, "M3 limits").
+// from there. Only the declared list changes on the message loop; reconcile's
+// walks run on the folder worker (see queueFolderJob), so edits and
+// notifications go on while a folder opens, and requests wait for the result.
 func (s *server) didChangeFolders(raw json.RawMessage) *rpcError {
 	var p didChangeWorkspaceFoldersParams
 	if rerr := decode(raw, &p); rerr != nil {
 		return rerr
 	}
-	s.wait()
+	if !s.wait() {
+		return nil
+	}
 	changed := false
 	for _, wf := range p.Event.Removed {
 		path, err := workspace.PathFromURI(wf.URI)
@@ -265,37 +272,20 @@ func (s *server) didChangeFolders(raw json.RawMessage) *rpcError {
 	if !changed {
 		return nil
 	}
-	s.refolder()
+	s.queueFolderJob()
 	return nil
 }
 
-// refolder reconciles the served folders with the declared ones and, when the
-// set changed, re-homes the open documents (see rehome). A call that changes
-// nothing publishes nothing.
-func (s *server) refolder() {
-	old := s.folders
-	s.folders = s.reconcile(s.declared, old)
-	dropped := map[backend]bool{}
-	same := len(old) == len(s.folders)
-	for i, f := range old {
-		kept := false
-		for _, g := range s.folders {
-			kept = kept || g == f
-		}
-		if !kept {
-			dropped[f.ws] = true
-		}
-		same = same && i < len(s.folders) && s.folders[i] == f
-	}
-	if same {
-		return
-	}
-	s.rehome(dropped)
-}
-
 // isGitignore reports whether path names a .gitignore file: the only files
-// whose change can alter which directories a folder's walk reaches.
-func isGitignore(path string) bool { return filepath.Base(path) == ".gitignore" }
+// whose change can alter which directories a folder's walk reaches. fold is
+// the folder's CaseInsensitive: on a case-folding volume `.GitIgnore` is the
+// same file.
+func isGitignore(path string, fold bool) bool {
+	if fold {
+		return strings.EqualFold(filepath.Base(path), ".gitignore")
+	}
+	return filepath.Base(path) == ".gitignore"
+}
 
 // sameRoot reports whether two resolved roots name one directory: equal
 // spellings, or the same directory on disk (a case variant on a
@@ -403,15 +393,20 @@ func (s *server) didChangeWatched(raw json.RawMessage) *rpcError {
 	if rerr := decode(raw, &p); rerr != nil {
 		return rerr
 	}
-	s.wait()
+	if !s.wait() {
+		return nil
+	}
 	var order []*folder
-	ignores := false
+	ignores, reload := false, false
 	full := map[*folder]bool{}
 	paths := map[*folder][]string{}
 	for _, ch := range p.Changes {
 		path, err := workspace.PathFromURI(ch.URI)
 		if err != nil || !filepath.IsAbs(path) {
 			continue
+		}
+		if s.isSettingsFile(path) { // the user file lies outside every folder
+			reload = true
 		}
 		f, _ := s.folderOfClient(path)
 		if f == nil {
@@ -421,7 +416,7 @@ func (s *server) didChangeWatched(raw json.RawMessage) *rpcError {
 			order = append(order, f)
 		}
 		paths[f] = append(paths[f], filepath.Clean(path))
-		if isGitignore(path) {
+		if isGitignore(path, f.ws.CaseInsensitive()) {
 			// An open .gitignore keeps its buffer, which the walk never
 			// reads, so the whole folder is refreshed from disk.
 			ignores = true
@@ -434,9 +429,13 @@ func (s *server) didChangeWatched(raw json.RawMessage) *rpcError {
 		} else {
 			f.ws.Refresh(paths[f]...)
 		}
+		s.refreshOthers(f.ws, nil)
 	}
 	if ignores {
-		s.refolder()
+		s.queueFolderJob()
+	}
+	if reload {
+		s.reloadSettings()
 	}
 	return nil
 }
@@ -449,18 +448,25 @@ func (s *server) didSave(raw json.RawMessage) *rpcError {
 	if rerr := decode(raw, &p); rerr != nil {
 		return rerr
 	}
-	s.wait()
+	if !s.wait() {
+		return nil
+	}
 	path, err := workspace.PathFromURI(p.TextDocument.URI)
 	if err != nil || !filepath.IsAbs(path) {
 		return nil
 	}
+	if s.isSettingsFile(path) {
+		defer s.reloadSettings()
+	}
 	if f, _ := s.folderOfClient(path); f != nil {
-		if isGitignore(path) {
+		if isGitignore(path, f.ws.CaseInsensitive()) {
 			f.ws.Refresh()
-			s.refolder()
+			s.refreshOthers(f.ws, nil)
+			s.queueFolderJob()
 			return nil
 		}
 		f.ws.Refresh(filepath.Clean(path))
+		s.refreshOthers(f.ws, nil)
 	}
 	return nil
 }

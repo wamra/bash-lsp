@@ -3,8 +3,8 @@
 package lsp
 
 import (
+	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/wamra/bash-lsp/analysis"
 	"github.com/wamra/bash-lsp/internal/config"
@@ -94,6 +95,7 @@ type document struct {
 	be      backend // the workspace that holds its overlay
 	version int
 	text    []byte
+	lint    docLint // what was published for it (lint.go)
 }
 
 type server struct {
@@ -104,14 +106,22 @@ type server struct {
 	initialized  bool
 	shutdown     bool
 	hierarchical bool
-	resolvedOnly bool     // initialization option references.resolvedOnly
 	watchDynamic bool     // the client registers didChangeWatchedFiles dynamically
 	roots        []string // the workspace folders as the client spelled them
 	initOpts     json.RawMessage
 	shownMu      sync.Mutex
 	shown        map[string]bool      // messages shown to the user this session (warnOnce)
 	logged       map[string]bool      // internal parser errors logged this session (logInternal)
-	looseDiag    analysis.DiagOptions // settings of documents outside every folder
+	looseSt      config.Settings      // settings of documents outside every folder
+	looseDiag    analysis.DiagOptions // its diagnostic part
+	looseTool    *scTool              // ShellCheck for documents outside every folder (lint.go)
+	debounce     time.Duration        // quiet time before ShellCheck runs on an edited document
+	baseCtx      context.Context      // ends when Serve returns; every ShellCheck run derives from it
+	baseCancel   context.CancelFunc
+	loggedMsg    map[string]bool   // window/logMessage texts sent once (logMessageOnce)
+	fmtSem       chan struct{}     // bounds the formatter runs going at once (lint.go)
+	epoch        int               // settings reloads so far (part of a pull result id)
+	reloadMsg    map[string]string // per folder root: the "not reloaded" message sent for its last failed reload (loop only)
 	profileOnce  sync.Once
 	profile      *extool.Profile // the PATH profile, read once per session (pathProfile)
 
@@ -135,6 +145,33 @@ type server struct {
 
 	exit    bool
 	exitErr error
+
+	// The message loop (loop.go). inbound is the bounded queue the reader
+	// goroutine fills; quit closes when `exit` is read and done when Serve
+	// returns; wake tells a loop that is waiting for input that a request was
+	// cancelled. live holds the requests read and not yet answered. cur is the
+	// request whose handler is running (nil for a notification). held are the
+	// requests that arrived while folder jobs were pending, in arrival order.
+	inbound  chan inbound
+	stage    chan inbound // between the reader and inbound: room for exit and cancels to be read behind a full queue
+	posted   chan func()  // closures posted by other goroutines, read even when inbound is not
+	quit     chan struct{}
+	quitOnce sync.Once
+	done     chan struct{}
+	wake     chan struct{}
+	liveMu   sync.Mutex
+	live     map[string]*liveReq
+	cur      *liveReq
+	curID    json.RawMessage // the id of the request being handled
+	held     []message
+
+	// Folder jobs (loop.go): folderPending counts the jobs queued whose result
+	// was not applied; folderQ and folderStarted are guarded by folderMu.
+	folderPending int
+	folderMu      sync.Mutex
+	folderQ       [][]declaredFolder
+	folderStarted bool
+	folderSig     chan struct{}
 }
 
 // Serve runs the server until the client exits. It returns nil after `exit`
@@ -143,7 +180,9 @@ func newServer(in io.Reader, out io.Writer, logw io.Writer, version string) *ser
 	if logw == nil {
 		logw = io.Discard
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	return &server{
+		debounce: checkDebounce, baseCtx: ctx, baseCancel: cancel,
 		c:       newConn(in, out),
 		log:     log.New(logw, "bash-lsp: ", log.LstdFlags),
 		version: version,
@@ -151,77 +190,22 @@ func newServer(in io.Reader, out io.Writer, logw io.Writer, version string) *ser
 		docs:    map[string]*document{},
 		byURI:   map[string]string{},
 		pending: map[string]string{},
+
+		inbound:   make(chan inbound, inboundCap),
+		stage:     make(chan inbound, inboundCap),
+		posted:    make(chan func(), inboundCap),
+		quit:      make(chan struct{}),
+		done:      make(chan struct{}),
+		wake:      make(chan struct{}, 1),
+		live:      map[string]*liveReq{},
+		folderSig: make(chan struct{}, 1),
+		fmtSem:    make(chan struct{}, 2),
+		reloadMsg: map[string]string{},
 	}
 }
 
 func Serve(in io.Reader, out io.Writer, logw io.Writer, version string) error {
-	s := newServer(in, out, logw, version)
-	for !s.exit {
-		body, err := s.c.read()
-		if err != nil {
-			if errors.Is(err, errBadFrame) {
-				s.log.Printf("fatal framing error: %v", err)
-			}
-			if err == io.EOF {
-				return errors.New("lsp: input ended before exit")
-			}
-			return fmt.Errorf("lsp: reading input: %w", err)
-		}
-		s.dispatch(body)
-		if err := s.c.writeErr(); err != nil {
-			return fmt.Errorf("lsp: writing output: %w", err)
-		}
-	}
-	return s.exitErr
-}
-
-func (s *server) dispatch(body []byte) {
-	// Unmarshal validates the syntax itself and reports a failure of it as a
-	// *json.SyntaxError, so a separate json.Valid pass over a large body (a
-	// didOpen carries the whole document) is not needed to tell the two apart.
-	var m message
-	if err := json.Unmarshal(body, &m); err != nil {
-		var syn *json.SyntaxError
-		if errors.As(err, &syn) {
-			s.c.reply(nil, nil, &rpcError{codeParseError, "parse error: invalid JSON"})
-			return
-		}
-		s.c.reply(nil, nil, &rpcError{codeInvalidRequest, "invalid request: " + err.Error()})
-		return
-	}
-	if m.Method == "" {
-		s.response(m)
-		return
-	}
-	isReq := len(m.ID) > 0
-	if m.Method == "exit" {
-		s.exit = true
-		if !s.shutdown {
-			s.exitErr = errors.New("lsp: exit before shutdown")
-		}
-		return
-	}
-	if m.Method == "$/cancelRequest" {
-		return
-	}
-	switch {
-	case m.Method == "initialize":
-		// handled below
-	case !s.initialized:
-		if isReq {
-			s.c.reply(m.ID, nil, &rpcError{codeNotInitialized, "server not initialized"})
-		}
-		return
-	case s.shutdown:
-		if isReq {
-			s.c.reply(m.ID, nil, &rpcError{codeInvalidRequest, "server is shut down"})
-		}
-		return
-	}
-	result, rerr := s.safeHandle(m)
-	if isReq {
-		s.c.reply(m.ID, result, rerr)
-	}
+	return newServer(in, out, logw, version).serve()
 }
 
 // safeHandle runs a handler, turning a panic into an internal error.
@@ -232,6 +216,9 @@ func (s *server) safeHandle(m message) (result any, rerr *rpcError) {
 			result, rerr = nil, &rpcError{codeInternalError, fmt.Sprintf("internal error in %s", m.Method)}
 		}
 	}()
+	if _, _, req := hooks(); req != nil {
+		req(m.Method)
+	}
 	return s.handle(m)
 }
 
@@ -256,8 +243,18 @@ func (s *server) handle(m message) (any, *rpcError) {
 		return nil, s.didSave(m.Params)
 	case "workspace/didChangeWatchedFiles":
 		return nil, s.didChangeWatched(m.Params)
+	case "workspace/didChangeConfiguration":
+		return nil, s.didChangeConfiguration()
 	case "workspace/didChangeWorkspaceFolders":
 		return nil, s.didChangeFolders(m.Params)
+	case "textDocument/diagnostic":
+		return s.diagnostic(m.Params)
+	case "textDocument/codeAction":
+		return s.codeAction(m.Params)
+	case "textDocument/formatting":
+		return s.formatting(m.Params, false)
+	case "textDocument/rangeFormatting":
+		return s.formatting(m.Params, true)
 	case "textDocument/definition":
 		return s.definition(m.Params)
 	case "textDocument/references":
@@ -307,7 +304,6 @@ func (s *server) initialize(raw json.RawMessage) (any, *rpcError) {
 	}
 	s.initialized = true
 	s.hierarchical = p.Capabilities.TextDocument.DocumentSymbol.Hierarchical
-	s.resolvedOnly = resolvedOnlyOption(p.InitializationOptions, s.log)
 	s.initOpts = p.InitializationOptions
 	s.watchDynamic = p.Capabilities.Workspace.DidChangeWatchedFiles.DynamicRegistration
 	s.roots = rootsOf(p, s.log)
@@ -315,25 +311,6 @@ func (s *server) initialize(raw json.RawMessage) (any, *rpcError) {
 		go s.pathProfile() // read while the client sends `initialized` and the folders are walked
 	}
 	return initializeResult{Capabilities: capabilities(), ServerInfo: serverInfo{Name: "bash-lsp", Version: s.version}}, nil
-}
-
-// resolvedOnlyOption reads `{"references": {"resolvedOnly": true}}` from the
-// initialization options. Anything else, or a value of the wrong type, means
-// the default (false); a malformed value is logged, never an error.
-func resolvedOnlyOption(raw json.RawMessage, lg *log.Logger) bool {
-	if len(raw) == 0 || string(raw) == "null" {
-		return false
-	}
-	var o struct {
-		References struct {
-			ResolvedOnly bool `json:"resolvedOnly"`
-		} `json:"references"`
-	}
-	if err := json.Unmarshal(raw, &o); err != nil {
-		lg.Printf("ignoring initializationOptions: %v", err)
-		return false
-	}
-	return o.References.ResolvedOnly
 }
 
 // rootsOf picks the workspace folders, else rootUri, else rootPath. A
@@ -372,7 +349,8 @@ func (s *server) startWorkspace() {
 	}
 	s.started = true
 	s.loose = newDocsOnly()
-	s.looseDiag = s.settings("")
+	s.looseSt = s.loadSettings("")
+	s.looseDiag = diagOptionsOf(s.looseSt)
 	if len(s.roots) == 0 {
 		close(s.ready)
 		return
@@ -386,14 +364,11 @@ func (s *server) startWorkspace() {
 			}
 		}()
 		s.declared = s.declare(s.roots)
+		if open, _, _ := hooks(); open != nil {
+			open()
+		}
 		s.folders = s.reconcile(s.declared, nil)
 	}()
-}
-
-// wait waits for the first workspace build.
-func (s *server) wait() {
-	s.startWorkspace()
-	<-s.ready
 }
 
 // ---- paths ----
@@ -446,7 +421,9 @@ func (s *server) didOpen(raw json.RawMessage) *rpcError {
 	if rerr := decode(raw, &p); rerr != nil {
 		return rerr
 	}
-	s.wait()
+	if !s.wait() {
+		return nil
+	}
 	be, path, rerr := s.locate(p.TextDocument.URI)
 	if rerr != nil {
 		s.log.Printf("didOpen ignored: %s", rerr.Message)
@@ -457,6 +434,7 @@ func (s *server) didOpen(raw json.RawMessage) *rpcError {
 	s.byURI[d.uri] = path
 	be.SetOverlay(path, d.version, d.text)
 	s.publish(be, d, path)
+	s.refreshOthers(be, d)
 	return nil
 }
 
@@ -465,7 +443,9 @@ func (s *server) didChange(raw json.RawMessage) *rpcError {
 	if rerr := decode(raw, &p); rerr != nil {
 		return rerr
 	}
-	s.wait()
+	if !s.wait() {
+		return nil
+	}
 	d, rerr := s.docOf(p.TextDocument.URI)
 	if rerr != nil {
 		s.log.Printf("didChange ignored: %s", rerr.Message)
@@ -479,6 +459,7 @@ func (s *server) didChange(raw json.RawMessage) *rpcError {
 	d.version = p.TextDocument.Version
 	d.be.SetOverlay(d.path, d.version, d.text)
 	s.publish(d.be, d, d.path)
+	s.refreshOthers(d.be, d)
 	return nil
 }
 
@@ -487,13 +468,16 @@ func (s *server) didClose(raw json.RawMessage) *rpcError {
 	if rerr := decode(raw, &p); rerr != nil {
 		return rerr
 	}
-	s.wait()
+	if !s.wait() {
+		return nil
+	}
 	d, rerr := s.docOf(p.TextDocument.URI)
 	delete(s.byURI, p.TextDocument.URI)
 	if rerr != nil || d == nil {
 		return nil
 	}
 	delete(s.docs, d.path)
+	s.resetCheck(d)
 	// Every URI that led to it: the closing one, the one it was opened (and
 	// its diagnostics published) under, and any other spelling it was opened
 	// under (case variants).
@@ -515,28 +499,16 @@ func (s *server) didClose(raw json.RawMessage) *rpcError {
 	for _, u := range uris {
 		s.c.notify("textDocument/publishDiagnostics", publishDiagnosticsParams{URI: u, Diagnostics: []Diagnostic{}})
 	}
+	s.refreshOthers(d.be, nil)
 	return nil
 }
 
-// publish sends the native findings of an open document, computed on the
-// snapshot that holds its latest text, under the settings of its folder.
+// publish sends the native findings of an open document that was opened,
+// changed or moved (see publishDoc) and schedules ShellCheck for it.
 func (s *server) publish(be backend, d *document, path string) {
-	diags := []Diagnostic{}
-	snap := be.Snapshot()
-	if ff := snap.Facts(path); ff != nil && ff.File != nil {
-		s.logInternal(path, ff.File)
-		conv := ff.File.NewConverter()
-		for _, x := range snap.Diagnostics(path, s.diagOptions(be)) {
-			out := Diagnostic{Severity: int(x.Severity), Code: x.Rule, Source: x.Origin, Message: x.Message}
-			out.Range.Start.Line, out.Range.Start.Character = conv.ToUTF16(x.Range.Start)
-			out.Range.End.Line, out.Range.End.Character = conv.ToUTF16(x.Range.End)
-			if x.Unnecessary {
-				out.Tags = []int{diagnosticTagUnnecessary}
-			}
-			diags = append(diags, out)
-		}
-	}
-	s.c.notify("textDocument/publishDiagnostics", publishDiagnosticsParams{URI: d.uri, Diagnostics: diags})
+	s.resetCheck(d)
+	s.publishDoc(d, true)
+	s.scheduleCheck(d)
 }
 
 // diagnosticTagUnnecessary is LSP DiagnosticTag 1, Unnecessary.
@@ -559,16 +531,28 @@ func (s *server) diagOptions(be backend) analysis.DiagOptions {
 	return opt
 }
 
-// settings loads the settings of a folder root ("" for documents outside
-// every folder: the user file and initialization options only) and logs
-// what was ignored, including rule ids no native rule has.
-func (s *server) settings(root string) analysis.DiagOptions {
-	return diagOptionsOf(s.loadSettings(root))
+// settingsOf returns the settings of the folder be serves; the loose
+// documents' settings for any other backend.
+func (s *server) settingsOf(be backend) config.Settings {
+	for _, f := range s.folders {
+		if backend(f.ws) == be {
+			return f.st
+		}
+	}
+	return s.looseSt
 }
 
-// loadSettings loads the settings of root and logs what was ignored.
+// loadSettings loads the settings of a folder root ("" for documents outside
+// every folder: the user file and initialization options only) and logs what
+// was ignored, including rule ids no native rule has.
 func (s *server) loadSettings(root string) config.Settings {
 	st := config.Load(root, s.initOpts)
+	s.reportSettings(st)
+	return st
+}
+
+// reportSettings logs what loading st ignored.
+func (s *server) reportSettings(st config.Settings) {
 	for _, w := range st.Warnings {
 		s.log.Printf("settings: %s", w)
 	}
@@ -576,7 +560,9 @@ func (s *server) loadSettings(root string) config.Settings {
 		s.log.Printf("settings: %s", w)
 		s.warnOnce("settings: " + w)
 	}
-	return st
+	for _, r := range st.Refused { // a repo file naming a key only the user may set
+		s.logMessageOnce(messageTypeWarning, fmt.Sprintf("settings: %s: %s: %s", r.File, r.Key, r.Reason))
+	}
 }
 
 func diagOptionsOf(st config.Settings) analysis.DiagOptions {
@@ -688,7 +674,10 @@ func (s *server) locations(snap *analysis.Snapshot, ls []analysis.Location) []Lo
 // cursor resolves a request position to a snapshot, path and byte offset.
 // ok is false when the document is unknown to the snapshot.
 func (s *server) cursor(uri string, pos Position) (snap *analysis.Snapshot, path string, offset int, ok bool, rerr *rpcError) {
-	s.wait()
+	if !s.wait() {
+		rerr = cancelledError()
+		return
+	}
 	be, path, rerr := s.locate(uri)
 	if rerr != nil {
 		return
@@ -724,7 +713,7 @@ func (s *server) references(raw json.RawMessage) (any, *rpcError) {
 	if rerr != nil || !ok {
 		return []Location{}, rerr
 	}
-	if s.resolvedOnly {
+	if be, _, rerr := s.locate(p.TextDocument.URI); rerr == nil && s.settingsOf(be).ResolvedOnly {
 		return s.locations(snap, snap.ResolvedReferences(path, off, p.Context.IncludeDeclaration)), nil
 	}
 	return s.locations(snap, snap.References(path, off, p.Context.IncludeDeclaration)), nil
@@ -770,7 +759,9 @@ func (s *server) documentSymbol(raw json.RawMessage) (any, *rpcError) {
 	if rerr := decode(raw, &p); rerr != nil {
 		return nil, rerr
 	}
-	s.wait()
+	if !s.wait() {
+		return nil, cancelledError()
+	}
 	be, path, rerr := s.locate(p.TextDocument.URI)
 	if rerr != nil {
 		return nil, rerr
@@ -836,7 +827,9 @@ func (s *server) workspaceSymbol(raw json.RawMessage) (any, *rpcError) {
 			return nil, rerr
 		}
 	}
-	s.wait()
+	if !s.wait() {
+		return nil, cancelledError()
+	}
 	type list struct {
 		snap  *analysis.Snapshot
 		infos []analysis.SymbolInfo

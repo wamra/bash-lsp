@@ -99,6 +99,7 @@ func TestNestedFoldersAtRuntime(t *testing.T) {
 	c := clientWith(t, clientCfg{folders: []string{a, nested}})
 	c.root = a
 	c.folders(nil, []string{nested})
+	c.symbols("") // a request is answered once the folder change is applied: open the files after it
 	if got := c.nestedAnswers(); got != outerOnly {
 		t.Errorf("inner removed:\n%s\nwant:\n%s", got, outerOnly)
 	}
@@ -107,6 +108,7 @@ func TestNestedFoldersAtRuntime(t *testing.T) {
 	c = clientWith(t, clientCfg{folders: []string{nested}})
 	c.root = a
 	c.folders([]string{a}, nil)
+	c.symbols("")
 	if got := c.nestedAnswers(); got != outerOnly {
 		t.Errorf("outer added after inner:\n%s\nwant:\n%s", got, outerOnly)
 	}

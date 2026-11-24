@@ -130,9 +130,20 @@ type showMessageParams struct {
 	Message string `json:"message"`
 }
 
+// publishDiagnosticsParams is PublishDiagnosticsParams: version is the
+// document version the findings were computed for (omitted when the document
+// is closed and its findings cleared).
 type publishDiagnosticsParams struct {
 	URI         string       `json:"uri"`
+	Version     *int         `json:"version,omitempty"`
 	Diagnostics []Diagnostic `json:"diagnostics"`
+}
+
+// logMessageParams are the parameters of window/logMessage (MessageType as in
+// showMessageParams).
+type logMessageParams struct {
+	Type    int    `json:"type"`
+	Message string `json:"message"`
 }
 
 type workspaceFolder struct {
@@ -184,13 +195,17 @@ func capabilities() map[string]any {
 		// (WorkspaceFoldersServerCapabilities), in the form gopls sends.
 		"workspace": map[string]any{"workspaceFolders": map[string]any{
 			"supported": true, "changeNotifications": "workspace/didChangeWorkspaceFolders"}},
-		"definitionProvider":      true,
-		"referencesProvider":      true,
-		"implementationProvider":  true,
-		"hoverProvider":           true,
-		"documentSymbolProvider":  true,
-		"workspaceSymbolProvider": true,
-		"callHierarchyProvider":   true,
+		"definitionProvider":              true,
+		"referencesProvider":              true,
+		"implementationProvider":          true,
+		"hoverProvider":                   true,
+		"documentSymbolProvider":          true,
+		"workspaceSymbolProvider":         true,
+		"callHierarchyProvider":           true,
+		"diagnosticProvider":              map[string]any{"interFileDependencies": true, "workspaceDiagnostics": false},
+		"codeActionProvider":              map[string]any{"codeActionKinds": []string{"quickfix"}},
+		"documentFormattingProvider":      true,
+		"documentRangeFormattingProvider": true,
 	}
 }
 
@@ -300,4 +315,76 @@ type registration struct {
 
 type registrationParams struct {
 	Registrations []registration `json:"registrations"`
+}
+
+// ---- pull diagnostics, code actions, formatting ----
+//
+// Field names as in LSP 3.17 (textDocument/diagnostic: DocumentDiagnosticParams,
+// RelatedFullDocumentDiagnosticReport, RelatedUnchangedDocumentDiagnosticReport,
+// DiagnosticOptions; textDocument/codeAction: CodeActionParams, CodeActionContext,
+// CodeAction, WorkspaceEdit, CodeActionOptions; textDocument/formatting and
+// rangeFormatting: DocumentFormattingParams, DocumentRangeFormattingParams,
+// FormattingOptions, TextEdit). Work-done and partial-result tokens, the
+// identifier of a pull and the client's `triggerKind` are not used.
+
+type documentDiagnosticParams struct {
+	TextDocument     textDocumentIdentifier `json:"textDocument"`
+	PreviousResultID string                 `json:"previousResultId"`
+}
+
+// fullDiagnosticReport is the `full` kind of a document diagnostic report.
+type fullDiagnosticReport struct {
+	Kind     string       `json:"kind"`
+	ResultID string       `json:"resultId"`
+	Items    []Diagnostic `json:"items"`
+}
+
+// unchangedDiagnosticReport is the `unchanged` kind.
+type unchangedDiagnosticReport struct {
+	Kind     string `json:"kind"`
+	ResultID string `json:"resultId"`
+}
+
+// TextEdit replaces Range with NewText.
+type TextEdit struct {
+	Range   Range  `json:"range"`
+	NewText string `json:"newText"`
+}
+
+type codeActionParams struct {
+	TextDocument textDocumentIdentifier `json:"textDocument"`
+	Range        Range                  `json:"range"`
+	Context      struct {
+		Diagnostics []Diagnostic `json:"diagnostics"`
+		Only        []string     `json:"only"`
+	} `json:"context"`
+}
+
+type workspaceEdit struct {
+	Changes map[string][]TextEdit `json:"changes"`
+}
+
+// CodeAction is a quick fix. IsPreferred is always sent.
+type CodeAction struct {
+	Title       string        `json:"title"`
+	Kind        string        `json:"kind"`
+	Diagnostics []Diagnostic  `json:"diagnostics,omitempty"`
+	IsPreferred bool          `json:"isPreferred"`
+	Edit        workspaceEdit `json:"edit"`
+}
+
+type formattingOptions struct {
+	TabSize      int  `json:"tabSize"`
+	InsertSpaces bool `json:"insertSpaces"`
+}
+
+type documentFormattingParams struct {
+	TextDocument textDocumentIdentifier `json:"textDocument"`
+	Options      formattingOptions      `json:"options"`
+}
+
+type documentRangeFormattingParams struct {
+	TextDocument textDocumentIdentifier `json:"textDocument"`
+	Range        Range                  `json:"range"`
+	Options      formattingOptions      `json:"options"`
 }
