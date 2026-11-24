@@ -57,15 +57,17 @@ func (s *server) helpHover(uri string, snap *analysis.Snapshot, path string, off
 	if analysis.IsBuiltin(name) {
 		kind = "builtin"
 	}
-	if !l.Allowed(kind, name) {
-		return nil, nil // refused here, on the loop: no goroutine for it
-	}
 	rng := s.rangeIn(converters{}, snap, path, wrng)
+	// The cache first: it holds only names that passed Allowed, and an answer
+	// from it costs no PATH lookup or symlink resolution.
 	if doc, found, known := l.Cached(kind, name); known {
 		if !found {
 			return nil, nil
 		}
 		return helpHoverResult(doc, rng), nil
+	}
+	if !l.Allowed(kind, name) {
+		return nil, nil // refused here, on the loop: no goroutine for it
 	}
 	d, rerr := s.docOf(uri) // nil for a file that is not open
 	if rerr != nil {

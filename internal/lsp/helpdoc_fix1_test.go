@@ -63,3 +63,25 @@ func TestHelpSettingsChangeDropsTheLookup(t *testing.T) {
 		t.Fatalf("after the change: %d runs, last %v, %q", calls.Load(), last.Load(), h.Contents.Value)
 	}
 }
+
+// A word the lookup refuses (not on the PATH profile, not a plain word) is
+// answered on the loop with no help run.
+func TestHoverRefusedWordRunsNothing(t *testing.T) {
+	root := t.TempDir()
+	var calls atomic.Int32
+	run := func(ctx context.Context, tl extool.Tool, args []string, o extool.RunOptions) (extool.Result, error) {
+		calls.Add(1)
+		return extool.Result{Stdout: []byte(helpSample)}, nil
+	}
+	c := clientWith(t, clientCfg{root: root, initOpts: helpInitOpts(t, nil), onServer: func(s *server) { s.helpRun = run }})
+	openFile(t, c, root, "a.sh", "#!/bin/bash\nzz_no_such_command_qq hi\n")
+	for i := 0; i < 3; i++ { // a refusal is not cached: it must stay free every time
+		r, _ := c.helpHoverAt("a.sh", c.pos("a.sh", "zz_no", 1))
+		if r.Error != nil || string(r.Result) != "null" {
+			t.Fatalf("reply %s %+v", r.Result, r.Error)
+		}
+	}
+	if n := calls.Load(); n != 0 {
+		t.Fatalf("%d help runs for a refused word", n)
+	}
+}
