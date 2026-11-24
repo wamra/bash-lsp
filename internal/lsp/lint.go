@@ -62,13 +62,15 @@ type docLint struct {
 	// scDone; scSeq numbers the runs scheduled; timer and cancel belong to the
 	// latest; run keeps a run of this document from starting before the one it
 	// replaced has ended.
-	sc     []analysis.Diagnostic
-	scDone bool
-	scVer  int
-	scSeq  int
-	timer  *time.Timer
-	cancel context.CancelFunc
-	run    sync.Mutex
+	sc        []analysis.Diagnostic
+	scErr     error // the run ended without findings: extool.ErrTimeout or ErrOutputCap (shown as WB1004)
+	scTimeout time.Duration
+	scDone    bool
+	scVer     int
+	scSeq     int
+	timer     *time.Timer
+	cancel    context.CancelFunc
+	run       sync.Mutex
 }
 
 // findings returns the findings of d as they stand now, in LSP form. With
@@ -86,16 +88,25 @@ func (s *server) findings(d *document, cached bool) []pubDiag {
 			s.logInternal(d.path, l.file)
 		}
 	}
-	return pubDiags(l.file, l.merged(d))
+	return pubDiags(l.file, s.merged(d))
 }
 
 // merged is the native findings, with the ShellCheck findings for the current
-// version merged in (analysis.Merge drops the native ones they duplicate).
-func (l *docLint) merged(d *document) []analysis.Diagnostic {
-	if l.scDone && l.scVer == d.version {
-		return analysis.Merge(l.native, l.sc)
+// version merged in (analysis.Merge drops the native ones they duplicate). A run
+// that did not finish contributes WB1004, built here under the settings in
+// force now, so a reload that disables it or changes its severity applies.
+func (s *server) merged(d *document) []analysis.Diagnostic {
+	l := &d.lint
+	if !l.scDone || l.scVer != d.version {
+		return l.native
 	}
-	return l.native
+	sc := l.sc
+	if l.scErr != nil {
+		if w, ok := s.unfinished(d, l.scErr, l.scTimeout); ok {
+			sc = []analysis.Diagnostic{w}
+		}
+	}
+	return analysis.Merge(l.native, sc)
 }
 
 // pubDiags converts findings of f to LSP positions.
@@ -374,7 +385,7 @@ func (s *server) resetCheck(d *document) {
 		l.cancel()
 		l.cancel = nil
 	}
-	l.sc, l.scDone = nil, false
+	l.sc, l.scErr, l.scDone = nil, nil, false
 	l.scSeq++ // a result already on its way back is stale
 }
 
@@ -427,18 +438,16 @@ func (s *server) finishCheck(d *document, ver, seq int, ds []analysis.Diagnostic
 	for _, n := range notes {
 		s.logMessageOnce(messageTypeWarning, "shellcheck: "+n)
 	}
+	var failed error // the run ended without findings; WB1004 is built when merging
 	switch {
 	case err == nil:
 	case errors.Is(err, extool.ErrTimeout), errors.Is(err, extool.ErrOutputCap):
-		ds = nil
-		if w, ok := s.unfinished(d, err, timeout); ok {
-			ds = []analysis.Diagnostic{w}
-		}
+		ds, failed = nil, err
 	default:
 		s.logMessageOnce(messageTypeError, err.Error())
 		return
 	}
-	l.sc, l.scDone, l.scVer = ds, true, ver
+	l.sc, l.scErr, l.scTimeout, l.scDone, l.scVer = ds, failed, timeout, true, ver
 	s.publishDoc(d, false)
 }
 
@@ -485,6 +494,13 @@ func (s *server) logMessage(typ int, msg string) {
 	s.c.notify("window/logMessage", logMessageParams{Type: typ, Message: msg})
 }
 
+// forgetMessage lets msg be sent again by logMessageOnce.
+func (s *server) forgetMessage(msg string) {
+	s.shownMu.Lock()
+	delete(s.loggedMsg, msg)
+	s.shownMu.Unlock()
+}
+
 // logMessageOnce is logMessage, once per distinct text per session.
 func (s *server) logMessageOnce(typ int, msg string) {
 	s.shownMu.Lock()
@@ -504,8 +520,8 @@ func (s *server) logMessageOnce(typ int, msg string) {
 // A formatting request never runs on the loop and never on an edit: the
 // handler captures the text and the settings, starts the work on a goroutine
 // (bounded by fmtSem) and returns `deferred`; the answer is posted back to the
-// loop, which drops it for a cancelled request and answers an empty list, with
-// a log message, for a document that changed meanwhile. A cancelled request is
+// loop, which drops it for a cancelled request and answers ContentModified (-32801)
+// for a document that changed meanwhile. A cancelled request is
 // answered at once (the formatter takes no context, so its run ends by itself
 // and its result is discarded). Refusals answer an empty list and a log
 // message with the formatter's own reason.
@@ -607,8 +623,7 @@ func (s *server) finishFormat(d *document, version int, id json.RawMessage, r fm
 		s.log.Printf("panic formatting %s: %v", d.path, r.panicked)
 		s.answer(id, nil, &rpcError{codeInternalError, "internal error in formatting"})
 	case s.docs[d.path] != d || d.version != version:
-		s.logMessage(messageTypeInfo, fmt.Sprintf("format: %s changed while it was being formatted; nothing was applied", filepath.Base(d.path)))
-		s.answer(id, []TextEdit{}, nil)
+		s.answer(id, nil, &rpcError{codeContentModified, "the document changed while it was being formatted"})
 	case r.refusal != "":
 		s.logMessage(messageTypeWarning, "format refused: "+r.refusal)
 		s.answer(id, []TextEdit{}, nil)
@@ -673,16 +688,18 @@ func (s *server) didChangeConfiguration() *rpcError {
 // file that is read: the user file or the .bash-lsp.toml at a folder's root.
 func (s *server) isSettingsFile(path string) bool {
 	path = filepath.Clean(path)
-	if u, err := config.UserPath(); err == nil && u != "" && samePath(u, path) {
+	base, dir := filepath.Base(path), filepath.Dir(path)
+	// A name that cannot match is settled without touching the disk: only a
+	// case variant can be the same file, and then only on a folding volume.
+	if u, err := config.UserPath(); err == nil && u != "" && strings.EqualFold(base, filepath.Base(u)) && samePath(u, path) {
 		return true
 	}
-	if filepath.Base(path) != ".bash-lsp.toml" {
-		return false
-	}
-	dir := filepath.Dir(path)
 	for _, f := range s.folders {
-		if dir == f.client || dir == f.ws.Root() {
-			return true
+		fold := f.ws.CaseInsensitive()
+		if base == ".bash-lsp.toml" || fold && strings.EqualFold(base, ".bash-lsp.toml") {
+			if dir == f.client || dir == f.ws.Root() || fold && (s.sameRoot(dir, f.client) || s.sameRoot(dir, f.ws.Root())) {
+				return true
+			}
 		}
 	}
 	return false
@@ -730,8 +747,14 @@ func (s *server) reloaded(root string, old config.Settings) (st config.Settings,
 		for _, w := range fresh {
 			s.log.Printf("settings: %s", w)
 		}
-		s.logMessageOnce(messageTypeWarning, "settings not reloaded, the previous ones stay: "+strings.Join(fresh, "; "))
+		msg := "settings not reloaded, the previous ones stay: " + strings.Join(fresh, "; ")
+		s.logMessageOnce(messageTypeWarning, msg)
+		s.reloadMsg[root] = msg
 		return old, false
+	}
+	if msg, ok := s.reloadMsg[root]; ok { // recovered: the same failure later is news again
+		delete(s.reloadMsg, root)
+		s.forgetMessage(msg)
 	}
 	if reflect.DeepEqual(st, old) {
 		return old, false

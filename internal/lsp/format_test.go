@@ -1,6 +1,7 @@
 package lsp
 
 import (
+	"bytes"
 	"encoding/json"
 	"path/filepath"
 	"strings"
@@ -262,10 +263,9 @@ func TestFormattingIsOffTheLoop(t *testing.T) {
 	}
 	g.release()
 	r := c.waitReply("90")
-	if r.Error != nil || string(r.Result) != "[]" {
+	if r.Error == nil || r.Error.Code != codeContentModified {
 		t.Fatalf("a document that changed while it was formatted: %+v %s", r.Error, r.Result)
 	}
-	c.waitLog("changed")
 }
 
 func TestFormattingHonoursCancellation(t *testing.T) {
@@ -320,5 +320,68 @@ func TestFormattingTabSizeIsBounded(t *testing.T) {
 	got := apply(t, src, c.formatting("a.sh", map[string]any{"options": map[string]any{"tabSize": 1 << 30, "insertSpaces": true}}))
 	if len(got) > 200 {
 		t.Fatalf("an absurd tabSize produced %d bytes", len(got))
+	}
+}
+
+// At most two formatter runs go at once; the others wait for a slot.
+func TestFormattingConcurrencyIsBounded(t *testing.T) {
+	g := newGate()
+	var cur, peak atomic.Int64
+	setFormatHook(t, func() {
+		n := cur.Add(1)
+		for p := peak.Load(); n > p && !peak.CompareAndSwap(p, n); p = peak.Load() {
+		}
+		g.wait()
+		cur.Add(-1)
+	})
+	t.Cleanup(g.release)
+	root := t.TempDir()
+	put(t, filepath.Join(root, "a.sh"), "")
+	c := clientInit(t, root, false, map[string]any{"shellcheck": map[string]any{"enabled": false}})
+	c.openText("a.sh", "echo   a\n")
+	c.waitPush("a.sh")
+	ids := []string{"401", "402", "403", "404", "405"}
+	for _, id := range ids {
+		c.sendReq(id, "textDocument/formatting", fmtParams(c, "a.sh", nil))
+	}
+	g.waitEntered(t)
+	g.waitEntered(t)
+	time.Sleep(300 * time.Millisecond) // time for a third run to start if the bound were missing
+	if p := peak.Load(); p != 2 {
+		t.Fatalf("%d formatter runs at once, want 2", p)
+	}
+	g.release()
+	for _, id := range ids {
+		if r := c.waitReply(id); r.Error != nil || len(parseEdits(t, r.Result)) != 1 {
+			t.Fatalf("reply %s: %+v %s", id, r.Error, r.Result)
+		}
+	}
+	if p := peak.Load(); p != 2 {
+		t.Fatalf("peak %d after release, want 2", p)
+	}
+}
+
+// A result that comes back after the request was cancelled is not sent as
+// edits: finishFormat answers the cancellation.
+func TestFinishFormatAnswersCancelledRequest(t *testing.T) {
+	var out bytes.Buffer
+	s := newServer(strings.NewReader(""), &out, nil, "test")
+	s.loose = newDocsOnly()
+	text := []byte("echo   a\n")
+	d := &document{uri: "file:///x/a.sh", path: "/x/a.sh", be: s.loose, version: 1, text: text}
+	s.docs[d.path] = d
+	edits := []TextEdit{{NewText: "echo a\n"}}
+	id := json.RawMessage(`7`)
+	s.live[idKey(id)] = &liveReq{cancelled: true, done: make(chan struct{})}
+	s.finishFormat(d, 1, id, fmtResult{edits: edits})
+	if got := out.String(); !strings.Contains(got, `"code":-32800`) || strings.Contains(got, "echo a") {
+		t.Fatalf("reply to a cancelled request: %s", got)
+	}
+	out.Reset()
+	id = json.RawMessage(`8`)
+	s.live[idKey(id)] = &liveReq{done: make(chan struct{})}
+	s.finishFormat(d, 1, id, fmtResult{edits: edits})
+	if got := out.String(); !strings.Contains(got, "echo a") || strings.Contains(got, "-32800") {
+		t.Fatalf("reply to a live request: %s", got)
 	}
 }

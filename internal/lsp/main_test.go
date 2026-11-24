@@ -53,23 +53,23 @@ func TestMain(m *testing.M) {
 // runFakeTool is the fake ShellCheck. It reads the script on standard input
 // and answers by mode:
 //
+//	hang   appends "start <pid>" to $WB_RUNLOG, then never answers
 //	mark   one finding "mark:<the line of the script containing MARK>"; a
-//	       script containing SLOW takes 500 ms; every run appends a line to
-//	       $WB_RUNLOG
+//	       script containing SLOW takes 500 ms; every process appends "start"
+//	       to $WB_RUNLOG when it starts and "run" once it has read the script
 //	clean  no findings
 //	sleep  never answers (the runner's timeout kills it)
 //	flood  writes without end (the runner's output cap kills it)
 //	exit2  fails with status 2 and a message on standard error
 func runFakeTool(mode string) {
 	switch mode {
+	case "hang":
+		runLog("start %d", os.Getpid())
+		time.Sleep(time.Hour)
 	case "mark":
+		runLog("start")
 		src, _ := io.ReadAll(os.Stdin)
-		if p := os.Getenv("WB_RUNLOG"); p != "" {
-			if f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
-				fmt.Fprintln(f, "run")
-				f.Close()
-			}
-		}
+		runLog("run")
 		if bytes.Contains(src, []byte("SLOW")) {
 			time.Sleep(500 * time.Millisecond)
 		}
@@ -99,6 +99,18 @@ func runFakeTool(mode string) {
 		os.Exit(2)
 	default:
 		os.Exit(64)
+	}
+}
+
+// runLog appends a line to $WB_RUNLOG, when it is set.
+func runLog(format string, args ...any) {
+	p := os.Getenv("WB_RUNLOG")
+	if p == "" {
+		return
+	}
+	if f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+		fmt.Fprintf(f, format+"\n", args...)
+		f.Close()
 	}
 }
 

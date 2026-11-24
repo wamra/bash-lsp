@@ -118,9 +118,10 @@ type server struct {
 	debounce     time.Duration        // quiet time before ShellCheck runs on an edited document
 	baseCtx      context.Context      // ends when Serve returns; every ShellCheck run derives from it
 	baseCancel   context.CancelFunc
-	loggedMsg    map[string]bool // window/logMessage texts sent once (logMessageOnce)
-	fmtSem       chan struct{}   // bounds the formatter runs going at once (lint.go)
-	epoch        int             // settings reloads so far (part of a pull result id)
+	loggedMsg    map[string]bool   // window/logMessage texts sent once (logMessageOnce)
+	fmtSem       chan struct{}     // bounds the formatter runs going at once (lint.go)
+	epoch        int               // settings reloads so far (part of a pull result id)
+	reloadMsg    map[string]string // per folder root: the "not reloaded" message sent for its last failed reload (loop only)
 	profileOnce  sync.Once
 	profile      *extool.Profile // the PATH profile, read once per session (pathProfile)
 
@@ -199,6 +200,7 @@ func newServer(in io.Reader, out io.Writer, logw io.Writer, version string) *ser
 		live:      map[string]*liveReq{},
 		folderSig: make(chan struct{}, 1),
 		fmtSem:    make(chan struct{}, 2),
+		reloadMsg: map[string]string{},
 	}
 }
 

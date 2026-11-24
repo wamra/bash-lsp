@@ -8,9 +8,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1036,4 +1038,232 @@ func TestRepoFileRefusalIsReportedToTheUser(t *testing.T) {
 	if n := len(c.logsContaining("shellcheck.path")); n != 1 {
 		t.Fatalf("reported %d times", n)
 	}
+}
+
+// ---- fix round 1 ----
+
+// A pull answered under one backend must not be `unchanged` under another: a
+// loose document that moves into a folder (with its own settings) and a
+// document whose folder set changed.
+func TestPullAfterBackendChangeIsNotUnchanged(t *testing.T) {
+	t.Run("loose document moves into a folder", func(t *testing.T) {
+		base, _ := filepath.EvalSymlinks(t.TempDir())
+		a := filepath.Join(base, "A")
+		put(t, filepath.Join(a, "a.sh"), "#!/bin/bash\nrm $f\n")
+		put(t, filepath.Join(a, ".bash-lsp.toml"), "[diagnostics]\ndisable = [\"WB1401\"]\n")
+		put(t, filepath.Join(base, "other", "x.sh"), "")
+		c := clientWith(t, clientCfg{folders: []string{filepath.Join(base, "other")}, workspaceCap: map[string]any{"workspaceFolders": true}})
+		c.root = a
+		c.open("a.sh")
+		c.waitPush("a.sh")
+		p1 := c.pull("a.sh", "")
+		if !hasCode(p1.Items, "WB1401") {
+			t.Fatalf("before: %v", codes(p1.Items))
+		}
+		c.folders([]string{a}, nil)
+		c.symbols("") // answered once the folder job has been applied
+		p2 := c.pull("a.sh", p1.ResultID)
+		if p2.Kind != "full" || hasCode(p2.Items, "WB1401") || p2.ResultID == p1.ResultID {
+			t.Fatalf("pull with the id issued under the loose backend: %+v", p2)
+		}
+	})
+	t.Run("a folder is added", func(t *testing.T) {
+		base, _ := filepath.EvalSymlinks(t.TempDir())
+		a, b := filepath.Join(base, "A"), filepath.Join(base, "B")
+		put(t, filepath.Join(b, "lib.sh"), "#!/bin/bash\nlibf() { :; }\n")
+		put(t, filepath.Join(a, "a.sh"), "#!/bin/bash\nsource "+filepath.Join(b, "lib.sh")+"\nlibf\n")
+		c := clientWith(t, clientCfg{folders: []string{a}, workspaceCap: map[string]any{"workspaceFolders": true}})
+		c.root = a
+		c.open("a.sh")
+		c.waitPush("a.sh")
+		p1 := c.pull("a.sh", "")
+		c.folders([]string{b}, nil)
+		c.symbols("")
+		if p2 := c.pull("a.sh", p1.ResultID); p2.Kind != "full" || p2.ResultID == p1.ResultID {
+			t.Fatalf("pull with the id issued before the folder set changed: %+v", p2)
+		}
+	})
+}
+
+// WB1004 is built when the findings are merged, so a reload that disables it or
+// changes its severity takes effect on a result that is already in.
+func TestWB1004FollowsSettingsReload(t *testing.T) {
+	setDebounce(t, 10*time.Millisecond)
+	root := t.TempDir()
+	put(t, filepath.Join(root, "a.sh"), "")
+	repo := filepath.Join(root, ".bash-lsp.toml")
+	c := clientInit(t, root, false, scInit(fakeShellCheck(t, "sleep"), 1))
+	c.openText("a.sh", "#!/bin/bash\nrm $f\n")
+	c.waitPush("a.sh")
+	c.waitPushWhere("a.sh", func(v int, ds []Diagnostic) bool { return hasCode(ds, "WB1004") })
+	put(t, repo, "[severity]\nWB1004 = \"warning\"\n")
+	c.watchedPath(repo)
+	_, ds := c.waitPushWhere("a.sh", func(v int, ds []Diagnostic) bool {
+		return slices.ContainsFunc(ds, func(d Diagnostic) bool { return d.Code == "WB1004" && d.Severity == 2 })
+	})
+	if !hasCode(ds, "WB1401") {
+		t.Fatalf("the native findings are gone: %v", codes(ds))
+	}
+	put(t, repo, "[diagnostics]\ndisable = [\"WB1004\"]\n")
+	c.watchedPath(repo)
+	c.waitPushWhere("a.sh", func(v int, ds []Diagnostic) bool { return !hasCode(ds, "WB1004") && hasCode(ds, "WB1401") })
+	if r := c.pull("a.sh", ""); hasCode(r.Items, "WB1004") {
+		t.Fatalf("pull still has WB1004: %v", codes(r.Items))
+	}
+	put(t, repo, "")
+	c.watchedPath(repo)
+	c.waitPushWhere("a.sh", func(v int, ds []Diagnostic) bool { return hasCode(ds, "WB1004") })
+}
+
+func startedPIDs(t *testing.T, runlog string) []int {
+	t.Helper()
+	b, _ := os.ReadFile(runlog)
+	var pids []int
+	for _, l := range strings.Split(string(b), "\n") {
+		var pid int
+		if _, err := fmt.Sscanf(l, "start %d", &pid); err == nil {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
+}
+
+func waitPIDs(t *testing.T, runlog string, n int) []int {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if p := startedPIDs(t, runlog); len(p) >= n {
+			return p
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("the fake ShellCheck started %d times, want %d", len(startedPIDs(t, runlog)), n)
+	return nil
+}
+
+func waitGone(t *testing.T, pid int, why string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		p, err := os.FindProcess(pid)
+		if err != nil || p.Signal(syscall.Signal(0)) != nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("the ShellCheck child %d is still running %s", pid, why)
+}
+
+// A run in flight is killed (the child process, not only the result dropped)
+// when a newer version is scheduled and when the document closes.
+func TestShellCheckChildKilledOnNewerVersionAndClose(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake ShellCheck is a shell script")
+	}
+	setDebounce(t, 10*time.Millisecond)
+	root := t.TempDir()
+	put(t, filepath.Join(root, "a.sh"), "")
+	runlog := filepath.Join(t.TempDir(), "runs")
+	c := clientInit(t, root, false, scInit(fakeShellCheck(t, "hang", "WB_RUNLOG="+runlog), 60))
+	c.openText("a.sh", "#!/bin/bash\necho 1\n")
+	pid1 := waitPIDs(t, runlog, 1)[0]
+	c.changeTo("a.sh", 2, "#!/bin/bash\necho 2\n")
+	pid2 := waitPIDs(t, runlog, 2)[1]
+	waitGone(t, pid1, "after a newer version was scheduled")
+	c.closeDoc("a.sh")
+	waitGone(t, pid2, "after the document was closed")
+}
+
+// A burst of edits inside the quiet time starts ShellCheck once.
+func TestShellCheckBurstStartsOneProcess(t *testing.T) {
+	setDebounce(t, 2*time.Second)
+	root := t.TempDir()
+	put(t, filepath.Join(root, "a.sh"), "")
+	runlog := filepath.Join(t.TempDir(), "runs")
+	c := clientInit(t, root, false, scInit(fakeShellCheck(t, "mark", "WB_RUNLOG="+runlog), 0))
+	c.openText("a.sh", "#!/bin/bash\n# MARK 1\n")
+	for i := 2; i <= 12; i++ {
+		time.Sleep(40 * time.Millisecond) // long enough for a process started by an edit to show itself
+		c.changeTo("a.sh", i, fmt.Sprintf("#!/bin/bash\n# MARK %d\n", i))
+	}
+	if b, _ := os.ReadFile(runlog); len(b) != 0 {
+		t.Fatalf("ShellCheck started inside the quiet time: %q", b)
+	}
+	c.waitPushWhere("a.sh", func(v int, ds []Diagnostic) bool { return anyMessage(ds, "mark:# MARK 12") })
+	if b, _ := os.ReadFile(runlog); strings.Count(string(b), "start") != 1 {
+		t.Fatalf("ShellCheck started more than once for a burst: %q", b)
+	}
+}
+
+// merged keeps the ShellCheck findings and drops the native findings they
+// duplicate (analysis.Merge), without a real ShellCheck.
+func TestMergedDropsDuplicatedNativeFindings(t *testing.T) {
+	var out bytes.Buffer
+	s := newServer(strings.NewReader(""), &out, nil, "test")
+	s.loose = newDocsOnly()
+	path := "/x/a.sh"
+	text := []byte("#!/bin/bash\nrm $f\n")
+	s.loose.SetOverlay(path, 1, text)
+	d := &document{uri: "file:///x/a.sh", path: path, be: s.loose, version: 1, text: text}
+	s.docs[path] = d
+	s.publishDoc(d, true)
+	l := &d.lint
+	i := slices.IndexFunc(l.native, func(x analysis.Diagnostic) bool { return x.Rule == "WB1401" })
+	if i < 0 {
+		t.Fatalf("no native WB1401: %v", l.native)
+	}
+	sc := analysis.Diagnostic{Rule: "SC2086", Severity: analysis.SevInfo, Origin: "shellcheck", Range: l.native[i].Range, Message: "quote it"}
+	l.sc, l.scDone, l.scVer = []analysis.Diagnostic{sc}, true, 1
+	got := codes(diagnosticsOf(s.findings(d, true)))
+	if !slices.Contains(got, "SC2086") || slices.Contains(got, "WB1401") {
+		t.Fatalf("merged findings: %v", got)
+	}
+	l.scVer = 0 // findings kept for another version are not merged
+	if got := codes(diagnosticsOf(s.findings(d, true))); !slices.Contains(got, "WB1401") || slices.Contains(got, "SC2086") {
+		t.Fatalf("an older version's ShellCheck findings were merged: %v", got)
+	}
+}
+
+// A repo settings file is recognised by its name where the volume folds case,
+// and a name that cannot match never reaches the disk.
+func TestIsSettingsFileFoldsLikeTheVolume(t *testing.T) {
+	root := t.TempDir()
+	put(t, filepath.Join(root, "a.sh"), "")
+	var srv *server
+	c := clientWith(t, clientCfg{root: root, onServer: func(s *server) { srv = s }})
+	c.open("a.sh")
+	c.symbols("")
+	var fold, plain, variant, other bool
+	done := make(chan struct{})
+	srv.post(func() {
+		fold = srv.folders[0].ws.CaseInsensitive()
+		plain = srv.isSettingsFile(filepath.Join(root, ".bash-lsp.toml"))
+		variant = srv.isSettingsFile(filepath.Join(root, ".bash-lsp.TOML"))
+		other = srv.isSettingsFile(filepath.Join(root, "notes.toml"))
+		close(done)
+	})
+	<-done
+	if !plain || other || variant != fold {
+		t.Fatalf("fold %v: .bash-lsp.toml %v, case variant %v, other name %v", fold, plain, variant, other)
+	}
+}
+
+// The message for a settings file that cannot be read is sent again when the
+// file was valid in between and breaks again with the same text.
+func TestReloadFailureReportedAgainAfterRecovery(t *testing.T) {
+	root := t.TempDir()
+	put(t, filepath.Join(root, "a.sh"), "")
+	repo := filepath.Join(root, ".bash-lsp.toml")
+	c := client(t, root)
+	c.openText("a.sh", "#!/bin/bash\nrm $f\n")
+	c.waitPush("a.sh")
+	put(t, repo, "[diagnostics\n")
+	c.watchedPath(repo)
+	c.waitLogCount("not reloaded", 1)
+	put(t, repo, "[diagnostics]\ndisable = [\"WB1401\"]\n")
+	c.watchedPath(repo)
+	c.waitPushWhere("a.sh", func(v int, ds []Diagnostic) bool { return !hasCode(ds, "WB1401") })
+	put(t, repo, "[diagnostics\n")
+	c.watchedPath(repo)
+	c.waitLogCount("not reloaded", 2)
 }

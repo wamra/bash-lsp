@@ -645,6 +645,7 @@ func (s *server) applyFolders(res []*folder) {
 		same = same && i < len(res) && res[i] == f
 	}
 	if !same {
+		s.epoch++ // a pull id issued under the old folders must not read as current under the new
 		s.rehome(dropped)
 	}
 }

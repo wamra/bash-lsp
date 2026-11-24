@@ -20,6 +20,7 @@ const (
 	codeInternalError    = -32603
 	codeNotInitialized   = -32002
 	codeRequestCancelled = -32800 // LSP 3.17 LSPErrorCodes.RequestCancelled
+	codeContentModified  = -32801 // LSP 3.17 LSPErrorCodes.ContentModified
 )
 
 // message is a request, a notification, or a response to a request the
