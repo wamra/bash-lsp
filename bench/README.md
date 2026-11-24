@@ -95,3 +95,5 @@ The `*-m3-task7` files are the measurements for the formatter (milestone 3 task 
 The `*-m3` files without a task suffix are the milestone 3 acceptance measurements (`docs/m3-acceptance.md` cites each), on a binary built from a clean `git archive` of 3ba6fdd into `/private/tmp/bash-lsp/t13b/bin/`, 1-minute load average 3.4 to 3.8 (`load-m3-acceptance.txt`): `bash-lsp-m3.json` (ShellCheck off) and `bash-lsp-m3-shellcheck.json` (defaults), both 27 of 28 failing only C24; `repeat-workspace-edits-m3.json` (30 runs), `repeat-big-file-m3.json`, `repeat-arith-file-m3.json` and `repeat-diag-m3.json` (10 runs each, the last from `scale_diag.py`, replacing the task 9 run); `fuzz-m3-task13.txt` is the 5-minute `FuzzFormat` run.
 
 `bash-lsp-m3-final.json` is `bench.py` after the milestone 3 final fix wave (ShellCheck off, `BASH_LSP_CONFIG=bench/config-shellcheck-off.toml`): 27 of 28, failing only C24.
+
+`bash-lsp-m3-final2.json` is the same run after the second final-wave round: 27 of 28, failing only C24.
