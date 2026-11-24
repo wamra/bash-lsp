@@ -124,7 +124,7 @@ pins it): `t`, `file`, `line`, `col`, `endLine`, `endCol`, `name`, `alias`,
 | `alias` | `alias`, `target`, `line`, `col` (the alias name), `endLine`, `endCol`, `in` | every `alias` declaration with a literal target word |
 | `call` | `name`, `to`, `resolution`, `reason`, `in`, `line`, `col` | a `RelCalls` edge that is `resolved` or `candidate`. `name` is the function name, also for a call through an alias (`reason` is then `alias`); `to` is the file of the definition the edge goes to. A function with several definitions in view gives one record each (different `to`). |
 | `dynamic` | `expr`, `resolution` (`dynamic`), `reason`, `in`, `line`, `col` | a `RelCalls` edge with resolution `dynamic`; `expr` is the site text, whitespace collapsed, at most 160 characters (as `Clip`, `powershell-ast.ps1:31-35`). |
-| `dotsource` | `path`, `expr`, `resolution`, `reason`, `in`, `line`, `col` | a `source` or `.` command. Resolved: `path` is the absolute target file, one record per target. Unresolved: `path` is the word when it is a plain literal (`./missing.sh`), else absent; `expr` is the word text; `resolution` is `unresolved`, `reason` `not-found`. |
+| `dotsource` | `path`, `expr`, `resolution`, `reason`, `in`, `line`, `col` | a `source` or `.` command. Resolved: `path` is the absolute target file, one record per target. Unresolved: `path` is the word when it is a plain literal (`./missing.sh`), else absent; `expr` is the word text; `resolution` is `unresolved`, `reason` `not-found`. A source of an existing file the workspace skipped for its size: `path` is that file's absolute path, `resolution` `unresolved`, `reason` `skipped-for-size`. |
 | `invoke` | `path`, `expr`, `resolution`, `reason`, `in`, `line`, `col` | execution of a workspace file by literal path (`./tool.sh`). |
 | `parse_error` | `count`, `first`, `line` 1, `col` 1 | a file with syntax errors; the rest of the file is still extracted from the recovered tree. |
 | `error` | `message`, `line` 1, `col` 1 | a file the workspace listed but did not load (zsh, over the size cap, over the file-count limit). |
@@ -142,6 +142,13 @@ Choices where the PowerShell extractor gives no direct model:
   but if code-index indexed a file bash-lsp does not (an extension the
   workspace skips, say), it could store an `exact` edge for a source
   bash-lsp calls unresolved.
+- **`dotsource` of a file skipped for its size.** The file exists, so `path`
+  is its absolute path as for a resolved source, with `resolution`
+  `unresolved` and `reason` `skipped-for-size`. code-index reads no
+  `resolution` and looks an absolute `path` up in its own file index
+  (`edges.go:570-574`): if it indexed the file (its own size limit differs),
+  it stores an `exact` `dot_sources` edge to a file bash-lsp did not
+  analyse; if not, the record is dropped.
 - **Call-site column.** The PowerShell `call` and `dotsource` columns are those
   of the first command element (`powershell-ast.ps1:119`), after the `.` for a
   dot-source. For bash a `call` is at the command word and a `dotsource` at the
@@ -168,8 +175,8 @@ Choices where the PowerShell extractor gives no direct model:
   candidate: it would store them as `exact` (`edges.go:519`). The
   `resolution` and `reason` keys carry the truth for any consumer that reads
   them. This applies to `call` only: a `RelSources` edge is `resolved` or
-  `unresolved` (`analysis/edges.go:377,383`, also for glob-loop targets) and a
-  `RelInvokes` edge is always `resolved` (`analysis/dynamic.go:897`); the
+  `unresolved` (`analysis/edges.go:408,414`, also for glob-loop targets) and a
+  `RelInvokes` edge is always `resolved` (`analysis/dynamic.go:1034`); the
   `unset -f` relabelling to candidate touches only edges with a target
   function (`analysis/dynamic.go:587-589`). So `dotsource` and `invoke` never
   carry `candidate`, and code-index storing a resolvable `dotsource` as
