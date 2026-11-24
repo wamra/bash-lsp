@@ -14,7 +14,7 @@ type Relation uint8
 const (
 	RelCalls   Relation = iota + 1 // a command calls a function
 	RelSources                     // `source`/`.` of a file
-	RelInvokes                     // execution of a workspace file (Task 2)
+	RelInvokes                     // execution of a workspace file
 	RelAliases                     // an alias names a function
 )
 
