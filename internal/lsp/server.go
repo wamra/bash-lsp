@@ -266,6 +266,8 @@ func (s *server) handle(m message) (any, *rpcError) {
 		return s.implementation(m.Params)
 	case "textDocument/hover":
 		return s.hover(m.Params)
+	case "textDocument/signatureHelp":
+		return s.signatureHelp(m.Params)
 	case "textDocument/documentSymbol":
 		return s.documentSymbol(m.Params)
 	case "workspace/symbol":
