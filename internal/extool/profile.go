@@ -1,5 +1,5 @@
 // Package extool finds external programs. This file holds the PATH profile:
-// the names of the executables in a list of directories, read once, so that
+// the names in a list of directories, read once, so that
 // the analysis can tell a command that exists from one that does not. It
 // starts no process.
 package extool
@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
+	"sync"
 )
 
 // Limits of one profile (maxProfileNames is a variable so a test can lower it).
@@ -17,26 +19,33 @@ const maxProfileDirs = 64
 
 var maxProfileNames = 50000
 
-// Profile is the set of executable names in an ordered list of directories.
-// The first directory that holds a name wins, as in a shell. A Profile is
-// read-only after it is made and safe for concurrent use.
+// Profile is the set of names in an ordered list of directories, each checked
+// for being a program when it is first looked up (a PATH of Homebrew's size
+// holds two thousand names, most of them links, and a stat per name at start
+// cost 12 ms of the first answer). The first directory that holds a program
+// of that name wins, as in a shell. A Profile is safe for concurrent use.
 type Profile struct {
-	names   map[string]string // name -> absolute path
+	cands   map[string][]string // name -> the files of that name, in directory order
 	skipped []string
+	exts    []string // Windows: PATHEXT, lower-cased; nil elsewhere
+
+	mu    sync.Mutex
+	known map[string]string // name -> the path of the program, "" when none; filled by Lookup
 }
 
-// NewProfile reads each directory of dirs once (os.ReadDir). A relative
-// directory is skipped, and so is one that cannot be listed; beyond 64
-// directories or 50,000 names the rest is skipped. Each skip is reported by
-// Skipped. A name counts when its file has an execute bit (any of the three),
-// or on Windows when its extension is in PATHEXT; a directory or a link that
-// does not lead to a regular file does not.
+// NewProfile reads each directory of dirs once (os.ReadDir), without looking
+// at the files. A relative directory is skipped, and so is one that cannot be
+// listed; beyond 64 directories or 50,000 names the rest is skipped. Each skip
+// is reported by Skipped. Lookup decides, per name and once, whether a file is
+// a program: a regular file (after following a link) with an execute bit (any
+// of the three), or on Windows with a PATHEXT extension; a directory, a dangling
+// link or a data file is not.
 func NewProfile(dirs []string) *Profile {
-	p := &Profile{names: map[string]string{}}
-	var pathext []string
+	p := &Profile{cands: map[string][]string{}, known: map[string]string{}}
 	if runtime.GOOS == "windows" {
-		pathext = windowsExts()
+		p.exts = windowsExts()
 	}
+	count := 0
 	for i, dir := range dirs {
 		switch {
 		case i >= maxProfileDirs:
@@ -45,7 +54,7 @@ func NewProfile(dirs []string) *Profile {
 		case dir == "" || !filepath.IsAbs(dir):
 			p.skip(dir, "relative directory")
 			continue
-		case len(p.names) >= maxProfileNames:
+		case count >= maxProfileNames:
 			p.skip(dir, fmt.Sprintf("more than %d names", maxProfileNames))
 			continue
 		}
@@ -55,21 +64,23 @@ func NewProfile(dirs []string) *Profile {
 			continue
 		}
 		for _, e := range ents {
-			if len(p.names) >= maxProfileNames {
+			if count >= maxProfileNames {
 				p.skip(dir, fmt.Sprintf("more than %d names", maxProfileNames))
 				break
 			}
-			name := e.Name()
-			full := filepath.Join(dir, name)
-			if !executable(e, full, pathext) {
+			if e.IsDir() { // a directory that is not a link: nothing to run
 				continue
 			}
-			if pathext != nil {
+			name := e.Name()
+			if p.exts != nil {
+				ext := strings.ToLower(filepath.Ext(name))
+				if !slices.Contains(p.exts, ext) {
+					continue
+				}
 				name = strings.TrimSuffix(name, filepath.Ext(name))
 			}
-			if _, dup := p.names[name]; !dup {
-				p.names[name] = full
-			}
+			count++
+			p.cands[name] = append(p.cands[name], filepath.Join(dir, e.Name()))
 		}
 	}
 	return p
@@ -85,16 +96,28 @@ func ProfileFromEnv() *Profile {
 	return NewProfile(filepath.SplitList(path))
 }
 
-// Lookup returns the path of the executable called name. It answers by name
-// only: it does not look at the file again, and a directory inside a
-// workspace root counts (a repository's own bin/ commands are not missing).
-// A name with a path separator is never found. Safe on a nil Profile.
+// Lookup returns the path of the program called name. It answers by name
+// only: a directory inside a workspace root counts (a repository's own bin/
+// commands are not missing). The first call for a name looks at its files
+// (one stat each, until a program is found); the answer is kept. A name with a
+// path separator is never found. Safe on a nil Profile.
 func (p *Profile) Lookup(name string) (string, bool) {
 	if p == nil || name == "" || strings.ContainsAny(name, `/\`) {
 		return "", false
 	}
-	path, ok := p.names[name]
-	return path, ok
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	path, ok := p.known[name]
+	if !ok {
+		for _, c := range p.cands[name] {
+			if isProgram(c, p.exts) {
+				path = c
+				break
+			}
+		}
+		p.known[name] = path
+	}
+	return path, path != ""
 }
 
 // Skipped lists the directories that were not read, as "dir: reason".
@@ -105,12 +128,13 @@ func (p *Profile) Skipped() []string {
 	return append([]string(nil), p.skipped...)
 }
 
-// Len is the number of names in the profile.
+// Len is the number of distinct names in the directories read (not all of
+// them are programs).
 func (p *Profile) Len() int {
 	if p == nil {
 		return 0
 	}
-	return len(p.names)
+	return len(p.cands)
 }
 
 // Commands is Lookup as the function the analysis takes, or nil when the
@@ -127,41 +151,15 @@ func (p *Profile) skip(dir, reason string) {
 	p.skipped = append(p.skipped, dir+": "+reason)
 }
 
-// executable reports whether the directory entry e (at path full) is a
-// program: a regular file (after following a link) with an execute bit, or
-// with a PATHEXT extension on Windows.
-func executable(e os.DirEntry, full string, pathext []string) bool {
-	if e.IsDir() {
+// isProgram reports whether the file at full (links followed) is a regular
+// file with an execute bit, or on Windows (exts set; the name was matched
+// against PATHEXT already) a regular file.
+func isProgram(full string, exts []string) bool {
+	fi, err := os.Stat(full)
+	if err != nil || !fi.Mode().IsRegular() {
 		return false
 	}
-	mode := e.Type()
-	var fi os.FileInfo
-	if mode&os.ModeSymlink != 0 { // Homebrew's bin is all links: follow one
-		var err error
-		if fi, err = os.Stat(full); err != nil {
-			return false
-		}
-		mode = fi.Mode()
-	}
-	if !mode.IsRegular() {
-		return false
-	}
-	if pathext != nil {
-		ext := strings.ToLower(filepath.Ext(e.Name()))
-		for _, x := range pathext {
-			if x == ext {
-				return true
-			}
-		}
-		return false
-	}
-	if fi == nil {
-		var err error
-		if fi, err = e.Info(); err != nil {
-			return false
-		}
-	}
-	return fi.Mode().Perm()&0o111 != 0
+	return exts != nil || fi.Mode().Perm()&0o111 != 0
 }
 
 // windowsExts is PATHEXT, lower-cased; the usual list when it is unset.

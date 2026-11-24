@@ -311,6 +311,9 @@ func (s *server) initialize(raw json.RawMessage) (any, *rpcError) {
 	s.initOpts = p.InitializationOptions
 	s.watchDynamic = p.Capabilities.Workspace.DidChangeWatchedFiles.DynamicRegistration
 	s.roots = rootsOf(p, s.log)
+	if len(s.roots) > 0 {
+		go s.pathProfile() // read while the client sends `initialized` and the folders are walked
+	}
 	return initializeResult{Capabilities: capabilities(), ServerInfo: serverInfo{Name: "bash-lsp", Version: s.version}}, nil
 }
 

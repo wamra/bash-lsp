@@ -25,8 +25,11 @@
 // the line. The keys that describe the repository (bash.target, bash.dialect,
 // files.include, files.exclude, sources.paths, the [format] options) are
 // replaced by the repo file: they cannot run code or widen a bound, and the
-// repo knows its own layout. Lists are replaced by the later layer; [severity]
-// and [format] merge per key.
+// repo knows its own layout. A sources.paths entry is kept to that: the
+// workspace (workspace.Config) drops, with a notice in Report.Notices, one that
+// is absolute, spelled with ~ or $ (never expanded) or resolves outside the
+// root; a .shellcheckrc source-path is held to the same rule. Lists are
+// replaced by the later layer; [severity] and [format] merge per key.
 //
 // The initialization option for references.resolved_only is spelled
 // references.resolved_only; references.resolvedOnly is accepted as an alias.

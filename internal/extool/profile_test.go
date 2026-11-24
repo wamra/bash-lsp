@@ -165,3 +165,40 @@ func TestNilProfile(t *testing.T) {
 		t.Error("a nil Profile must answer nothing")
 	}
 }
+
+// NewProfile only lists the directories; a name is checked on its first
+// Lookup, and the answer is kept.
+func TestProfileChecksOnFirstLookup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("execute bits are a Unix rule")
+	}
+	dir := t.TempDir()
+	p := write(t, dir, "late", 0o644)
+	prof := NewProfile([]string{dir})
+	if err := os.Chmod(p, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := prof.Lookup("late"); !ok || got != p {
+		t.Fatalf("Lookup(late) = %q, %v; the file was made executable before its first lookup", got, ok)
+	}
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := prof.Lookup("late"); !ok {
+		t.Error("the first answer was not kept")
+	}
+}
+
+// A non-executable file of a name does not hide a program of that name later
+// in the list, as in a shell.
+func TestProfileSkipsNonProgramsOfTheSameName(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("execute bits are a Unix rule")
+	}
+	a, b := t.TempDir(), t.TempDir()
+	write(t, a, "tool", 0o644)
+	pb := write(t, b, "tool", 0o755)
+	if got, ok := NewProfile([]string{a, b}).Lookup("tool"); !ok || got != pb {
+		t.Errorf("Lookup(tool) = %q, %v; want %q", got, ok, pb)
+	}
+}
