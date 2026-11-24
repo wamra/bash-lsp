@@ -50,8 +50,8 @@ func (q *qworld) refuses(code, file, needle string, occ, off int, newName string
 	q.t.Helper()
 	plan, err := q.plan(file, needle, occ, off, newName)
 	r := refusal(q.t, err, code)
-	if plan != nil && len(plan.Edits) != 0 {
-		q.t.Fatalf("refusal %q carries edits %v", code, plan.Edits)
+	if plan != nil {
+		q.t.Fatalf("refusal %q comes with a plan", code)
 	}
 	return r
 }
@@ -327,35 +327,33 @@ func TestRenameSkippedFile(t *testing.T) {
 	off := strings.Index(src, "f()")
 	plan, err := s.PlanRename(main, off, "g")
 	r := refusal(t, err, RefuseSkippedFile)
-	if plan != nil && len(plan.Edits) != 0 {
-		t.Fatal("edits with a refusal")
+	if plan != nil {
+		t.Fatal("a plan with a refusal")
 	}
 	if len(r.Sites) != 1 || r.Sites[0].Range.Start.Line != 1 {
 		t.Fatalf("sites %v, want the source command", r.Sites)
 	}
 }
 
-func TestRenameNoDeclaration(t *testing.T) {
-	q := buildMem(t, map[string]string{"a.sh": "f() { :; }\n"})
-	_, err := q.s.planSymbol(&Symbol{Kind: DeclFunction, Name: "ghost"}, "x", nil)
-	refusal(t, err, RefuseNoDecl)
-}
-
-func TestRenameUnsetInViewIsExcluded(t *testing.T) {
+// A function that a file in view removes with `unset -f` is not renamed: the
+// unset names it where no use is found, so the rename is refused rather than
+// left half done.
+func TestRenameUnsetInViewIsRefused(t *testing.T) {
 	q := buildMem(t, map[string]string{
 		"lib.sh":  "f(){ :; }; unset -f f\n",
 		"main.sh": ". ./lib.sh\nf\n",
 	})
-	plan, err := q.plan("lib.sh", "f()", 0, 0, "g")
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantSeq(t, q.exclStrs(plan), "main.sh:2 candidate/unset-in-view")
-	for _, e := range plan.Edits {
-		if q.rel(e.Path) == "main.sh" {
-			t.Fatalf("edit at the unset-in-view call: %v", e)
-		}
-	}
+	_, err := q.plan("lib.sh", "f()", 0, 0, "g")
+	r := refusal(t, err, RefuseNameReference)
+	wantSeq(t, q.strs(r.Sites), "lib.sh:1")
+	// The same unset in the sourcing file is in view too.
+	q = buildMem(t, map[string]string{
+		"lib.sh":  "f(){ :; }\n",
+		"main.sh": ". ./lib.sh\nunset -f f\nf\n",
+	})
+	_, err = q.plan("lib.sh", "f()", 0, 0, "g")
+	r = refusal(t, err, RefuseNameReference)
+	wantSeq(t, q.strs(r.Sites), "main.sh:2")
 }
 
 func TestRenameUTF16(t *testing.T) {
@@ -467,8 +465,8 @@ func TestRenameSitesCapped(t *testing.T) {
 	}
 	plan, err := q.s.PlanRename(p, off, "g")
 	refusal(t, err, RefuseTooMany)
-	if plan != nil && len(plan.Edits) != 0 {
-		t.Fatal("edits with a refusal")
+	if plan != nil {
+		t.Fatal("a plan with a refusal")
 	}
 	// One fewer call is the largest plan: the declaration and the calls are maxRenameSites.
 	q = gen(maxRenameSites - 1)
