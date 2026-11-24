@@ -77,9 +77,10 @@ The JSON each command prints with `--json` is described in
 [JSON records](#json-records).
 
 Positions are 1-based `line:col`, with columns counted in UTF-16 code units
-(the LSP column plus one), printed and accepted alike. Paths are
-relative to the workspace root, with forward slashes on every OS. Exit codes:
-0 success, 1 runtime failure, 2 usage error.
+(the LSP column plus one), printed and accepted alike. A printed path
+is relative to the current directory when the file is under it, otherwise
+absolute, with forward slashes on every OS. Exit codes: 0 success, 1 runtime
+failure, 2 usage error.
 
 `check` prints the findings of the named files and directories (default `.`), one
 `path:line:col: severity RULE message` line each, or with `--format json` one
@@ -107,9 +108,9 @@ without `-w` prints the text; several list the files that would change and
 exit 1 if any does; `-w` rewrites them. A file is left alone, reported, and
 makes the exit code 1 when it has a syntax error, is zsh, has a byte order
 mark, NUL bytes or mixed line endings, is over the size cap (2 MiB, or
-`[limits] max_file_bytes` if lower), is outside the root (the current
-directory unless `--root`), cannot be written, or is an sh file that the POSIX
-and the bash grammar read differently (`[[ $a<$b ]]`). Every printed text is
+`[limits] max_file_bytes` if lower), is outside the root (found from the
+current directory as for `check`, unless `--root`), cannot be written, or is
+an sh file that the POSIX and the bash grammar read differently (`[[ $a<$b ]]`). Every printed text is
 parsed again and must give the same tree as the input.
 
 What it does not do:

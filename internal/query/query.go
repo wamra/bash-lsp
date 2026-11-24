@@ -29,9 +29,9 @@ import (
 // carries "truncated": true.
 const MaxResults = 10000
 
-// MaxDepth is the deepest graph walk a query runs a depth of 0
-// (unlimited) or above 64 is run at 64, and the answer carries "truncated":
-// true when more levels existed.
+// MaxDepth is the deepest graph walk a query runs. A depth of 0 (unlimited)
+// or above 64 is run at 64, and the answer carries "truncated": true when
+// more levels existed.
 const MaxDepth = 64
 
 // maxSignature is the most bytes of a symbol's source line an answer shows.

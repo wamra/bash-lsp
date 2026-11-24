@@ -22,8 +22,8 @@ const maxFmtBytes = 2 << 20
 // cmdFmt formats shell files with the in-process formatter, with the options
 // of format.OptionsFor (.editorconfig, then settings, then shfmt's defaults)
 // for each file. The root of the settings and of the .editorconfig lookup is
-// --root, else the current directory; a file outside it reads only its own
-// directory's .editorconfig.
+// found by findRoot from the current directory (--root wins); a file outside it
+// reads only its own directory's .editorconfig.
 //
 // One file without -w: the formatted text on stdout, exit 0. Several files
 // without -w: the names of the files that would change on stdout, exit 1 if
@@ -32,7 +32,7 @@ const maxFmtBytes = 2 << 20
 // error, zsh, over the size cap) is reported on stderr, left alone, and makes
 // the exit code 1; the other files are still done.
 func cmdFmt(args []string, stdout, stderr io.Writer) int {
-	write, root := false, "."
+	write, root := false, ""
 	var files []string
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--" {
@@ -60,13 +60,7 @@ func cmdFmt(args []string, stdout, stderr io.Writer) int {
 	if len(files) == 0 {
 		return fmtUsageError(stderr, "fmt needs at least one FILE")
 	}
-	absRoot, err := filepath.Abs(root)
-	if err != nil {
-		return fail(stderr, err)
-	}
-	if r, err := filepath.EvalSymlinks(absRoot); err == nil {
-		absRoot = r
-	}
+	absRoot, _ := findRoot(nil, root)
 	st := config.Load(absRoot, nil)
 	for _, w := range st.Warnings {
 		fmt.Fprintf(stderr, "bash-lsp: settings: %s\n", w)

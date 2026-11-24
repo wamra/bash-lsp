@@ -389,7 +389,7 @@ func TestCheckWithShellCheck(t *testing.T) {
 	if !strings.Contains(strings.Join(origins, " "), "shellcheck:SC2086") {
 		t.Errorf("no ShellCheck finding: %v", origins)
 	}
-	if !strings.Contains(errs, `disable entry "notacode" ignored`) {
+	if !strings.Contains(errs, ".shellcheckrc:1: not valid rc syntax") {
 		t.Errorf("the .shellcheckrc notice is not shown:\n%s", errs)
 	}
 	_, out, _ = runCode(t, "check", "--format", "json", "--shellcheck", "off", root)

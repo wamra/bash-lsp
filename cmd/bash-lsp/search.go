@@ -12,15 +12,11 @@ import (
 
 const searchUsage = "usage: bash-lsp search [--json] [--root DIR] [--] TEXT"
 
-// searchRoot is the root `search` works in. Kept apart so the root rules the
-// other commands share can replace it in one place.
-func searchRoot(flagRoot string) string { return flagRoot }
-
 // cmdSearch is `bash-lsp search [--json] [--root DIR] [--] TEXT`. The text
 // (several words are joined by one space) is one argument to the
 // code-index program, after "--", and never goes through a shell.
 func cmdSearch(args []string, stdout, stderr io.Writer) int {
-	asJSON, root := false, "."
+	asJSON, root := false, ""
 	var words []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -51,7 +47,8 @@ func cmdSearch(args []string, stdout, stderr io.Writer) int {
 	if len(text) > query.MaxText {
 		return usageErrorOf(stderr, searchUsage, fmt.Sprintf("the text is longer than %d bytes", query.MaxText))
 	}
-	ws, st, prof, err := query.Open(searchRoot(root), stderr)
+	searchDir, _ := findRoot(nil, root)
+	ws, st, prof, err := query.Open(searchDir, stderr)
 	if err != nil {
 		return fail(stderr, err)
 	}

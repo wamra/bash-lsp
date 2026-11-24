@@ -1040,7 +1040,7 @@ func TestRepoFileRefusalIsReportedToTheUser(t *testing.T) {
 	}
 }
 
-// ---- fix round 1 ----
+// ---- pulls across backend changes ----
 
 // A pull answered under one backend must not be `unchanged` under another: a
 // loose document that moves into a folder (with its own settings) and a

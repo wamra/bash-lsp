@@ -370,8 +370,21 @@ func TestStatus(t *testing.T) {
 	wantLines(t, out, "generation: ", "cache: none\n", "bash: ")
 }
 
-// `unresolved` lists the sites past the per-site candidate cap. (The `candidate cap`
-// line of Snapshot.LimitsHit is checked where `status` prints it.)
+// `status` and `status --json` carry the `candidate cap` line of
+// Snapshot.LimitsHit.
+func TestStatusReportsCandidateCap(t *testing.T) {
+	root := writeRoot(t, map[string]string{"a.sh": strings.Repeat("f(){ :; }\n", 17) + "f\nf\n"})
+	var st struct {
+		Limits []string `json:"limits"`
+	}
+	mustJSON(t, runOK(t, "status", "--root", root, "--json"), &st)
+	if len(st.Limits) != 1 || !strings.Contains(st.Limits[0], "candidate cap: 2 call sites") {
+		t.Errorf("limits %q", st.Limits)
+	}
+	wantLines(t, runOK(t, "status", "--root", root), "limit hit: a.sh:")
+}
+
+// `unresolved` lists the sites past the per-site candidate cap.
 func TestUnresolvedListsCandidateCap(t *testing.T) {
 	root := writeRoot(t, map[string]string{"a.sh": strings.Repeat("f(){ :; }\n", 17) + "f\nf\n"})
 	var un gEdges
