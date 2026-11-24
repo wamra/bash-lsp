@@ -166,8 +166,8 @@ func TestShParsedAsBash(t *testing.T) {
 		}
 		return true
 	})
-	if tests != 1 {
-		t.Fatalf("%d [[ ]] test nodes, want 1", tests)
+	if tests != 0 { // the tree is the POSIX grammar's: `[[` is a command there
+		t.Fatalf("%d [[ ]] test nodes, want 0", tests)
 	}
 	if got := featureTexts(t, "t.sh", src); len(got) != 1 || got[0] != "double-bracket [[" {
 		t.Fatalf("features %q", got)

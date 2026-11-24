@@ -37,6 +37,7 @@ type resyncer struct {
 	reads     []int
 	limits    []tree.Limit
 	nul       nulIndex
+	lang      syntax.LangVariant // the grammar the parser reads
 }
 
 // attempt is one parser run over f.Src[off:], lowered to absolute positions.
@@ -56,7 +57,7 @@ func parseFile(f *tree.File, d Dialect) (stmts []*tree.Node, errs []tree.SyntaxE
 }
 
 func newResyncer(f *tree.File, d Dialect) *resyncer {
-	return &resyncer{f: f, d: d, budget: maxResyncAttempts, bytesLeft: resyncByteBudget(len(f.Src)), nul: newNULIndex(f.Src)}
+	return &resyncer{f: f, d: d, budget: maxResyncAttempts, bytesLeft: resyncByteBudget(len(f.Src)), nul: newNULIndex(f.Src), lang: variant(d)}
 }
 
 // run parses the whole file (not charged to the byte budget) and resyncs
@@ -71,7 +72,7 @@ func (r *resyncer) run() ([]*tree.Node, []tree.SyntaxError, []*tree.Node, []tree
 // bytes the parser read. It does not resync.
 func (r *resyncer) raw(off int) (attempt, int) {
 	f := r.f
-	af, read, err, crashed := parseSafely(f.Src[off:], f.Path, r.d)
+	af, read, err, crashed := parseSafelyLang(f.Src[off:], f.Path, r.lang)
 	if af == nil {
 		af = &syntax.File{}
 	}
@@ -122,13 +123,18 @@ func (r *resyncer) raw(off int) (attempt, int) {
 // read is the number of bytes the parser took from its reader (it reads in
 // chunks, so a run that stops at an early error reads little of a long tail).
 func parseSafely(src []byte, path string, d Dialect) (af *syntax.File, read int, err error, crashed bool) {
+	return parseSafelyLang(src, path, variant(d))
+}
+
+// parseSafelyLang is parseSafely for a grammar given directly.
+func parseSafelyLang(src []byte, path string, lang syntax.LangVariant) (af *syntax.File, read int, err error, crashed bool) {
 	rd := bytes.NewReader(src)
 	defer func() {
 		if r := recover(); r != nil {
 			af, read, err, crashed = nil, len(src)-rd.Len(), fmt.Errorf("parser failure: %v", r), true
 		}
 	}()
-	p := syntax.NewParser(syntax.KeepComments(true), syntax.RecoverErrors(50), syntax.Variant(variant(d)))
+	p := syntax.NewParser(syntax.KeepComments(true), syntax.RecoverErrors(50), syntax.Variant(lang))
 	af, err = p.Parse(rd, path)
 	return af, len(src) - rd.Len(), err, false
 }

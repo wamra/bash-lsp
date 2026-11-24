@@ -1,6 +1,8 @@
 package front
 
 import (
+	"bytes"
+
 	"github.com/wamra/bash-lsp/internal/front/syntax"
 
 	"github.com/wamra/bash-lsp/tree"
@@ -9,10 +11,7 @@ import (
 func variant(d Dialect) syntax.LangVariant {
 	switch d {
 	case POSIX:
-		// An sh file is read with the bash grammar: its bash-only forms
-		// become evidence for the dialect rules (features.go) instead of
-		// parse errors that stop the file.
-		return syntax.LangBash
+		return syntax.LangPOSIX
 	case Mksh:
 		return syntax.LangMirBSDKorn
 	case Bats:
@@ -45,6 +44,9 @@ func Parse(path string, src []byte, d Dialect) *tree.File {
 		return f
 	}
 	stmts, errs, comments, feats, limits := parseFile(f, d)
+	if d == POSIX {
+		stmts, errs, comments, feats, limits = shGrammar(f, stmts, errs, comments, feats, limits)
+	}
 	f.Errors = errs
 	f.Limits = limits
 	f.Features = feats
@@ -78,6 +80,47 @@ func nothingBut(stmts []*tree.Node, k tree.Kind) bool {
 func errorWith(errs []tree.SyntaxError, msg string) bool {
 	for _, e := range errs {
 		if e.Msg == msg {
+			return true
+		}
+	}
+	return false
+}
+
+// bashHints are the texts of the bash forms an sh parse reads without an error
+// (`[[` and `source` are ordinary commands to it, `coproc` a command name,
+// `$'` a quote and a word).
+var bashHints = [][]byte{[]byte("[["), []byte("$'"), []byte("coproc"), []byte("source")}
+
+// shGrammar settles which grammar reads an sh file. The POSIX grammar comes
+// first: it is the language the file claims, and the bash grammar reads some
+// valid sh differently (`((a; b) | c)` is an arithmetic command, `coproc`,
+// `function` and `select` are keywords). When the POSIX parse has errors
+// the file is read again with the bash grammar and that result is used if it
+// has fewer errors, so a bash-only form is the evidence of a dialect finding
+// (WB1302) instead of a cascade of syntax errors. When the POSIX parse is
+// clean but the text holds a form the POSIX grammar takes for a command, a
+// bash parse supplies the file's features (only if it is clean too); the tree
+// stays the POSIX one. The cost is a second parse of the file, only for an
+// sh file with errors or with one of bashHints.
+func shGrammar(f *tree.File, stmts []*tree.Node, errs []tree.SyntaxError, comments []*tree.Node, feats []tree.Feature, limits []tree.Limit) ([]*tree.Node, []tree.SyntaxError, []*tree.Node, []tree.Feature, []tree.Limit) {
+	if len(errs) == 0 && !hasHint(f.Src) {
+		return stmts, errs, comments, feats, limits
+	}
+	r := newResyncer(f, POSIX)
+	r.lang = syntax.LangBash
+	bs, be, bc, bf, bl := r.run()
+	switch {
+	case len(errs) > 0 && len(be) < len(errs):
+		return bs, be, bc, bf, bl
+	case len(errs) == 0 && len(be) == 0:
+		return stmts, errs, comments, bf, limits
+	}
+	return stmts, errs, comments, feats, limits
+}
+
+func hasHint(src []byte) bool {
+	for _, h := range bashHints {
+		if bytes.Contains(src, h) {
 			return true
 		}
 	}
