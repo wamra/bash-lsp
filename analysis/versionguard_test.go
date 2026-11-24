@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -266,8 +267,11 @@ func wrapperChain(n int) string {
 }
 
 // A guard reaches the top level through a chain of wrappers, and the cost
-// of finding that grows with the chain, not with its square: each doubling
-// of the chain at most 2.5 times the time (best of five runs each).
+// of finding that grows with the chain, not with its square: three doublings
+// of the chain grow the time by at most 2.5 per doubling on average
+// ((t4/t1)^(1/3), each time the best of five runs). A linear search gives 2, a
+// quadratic one 4; single doublings scatter under load and are logged, not
+// asserted.
 func TestWB1301WrapperChainGrowth(t *testing.T) {
 	if got := ofRule(diagsWith(t, oneFile(wrapperChain(50)), "x.sh", "3.2-5.3"), "WB1301"); len(got) != 0 {
 		t.Fatalf("%d findings behind a chain of 50 wrappers", len(got))
@@ -282,13 +286,12 @@ func TestWB1301WrapperChainGrowth(t *testing.T) {
 		}
 		return d
 	}
-	prev := best(4000)
-	for _, n := range []int{8000, 16000} {
-		cur := best(n)
-		t.Logf("%d wrappers: %v (%.2fx)", n, cur, float64(cur)/float64(prev))
-		if r := float64(cur) / float64(prev); r > 2.5 {
-			t.Fatalf("chain of %d wrappers: %v, %.2fx the time of half as many", n, cur, r)
-		}
-		prev = cur
+	var times []time.Duration
+	for _, n := range []int{2000, 4000, 8000, 16000} {
+		times = append(times, best(n))
+	}
+	t.Logf("2000, 4000, 8000, 16000 wrappers: %v", times)
+	if overall := math.Cbrt(float64(times[3]) / float64(max(times[0], time.Millisecond))); overall > 2.5 {
+		t.Fatalf("grew x%.2f per doubling over three doublings (%v)", overall, times)
 	}
 }

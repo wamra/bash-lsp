@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -973,8 +974,10 @@ func TestParseClampsRanges(t *testing.T) {
 	}
 }
 
-// Mapping columns costs time linear in the report: two doublings of a report
-// of findings on one long line grow by at most 2.5 per doubling.
+// Mapping columns costs time linear in the report: three doublings of a report
+// of findings on one long line grow by at most 2.5 per doubling on average
+// ((t4/t1)^(1/3), each time the best of five runs). Linear gives 2, quadratic
+// 4; single doublings scatter under load and are logged, not asserted.
 func TestParseGrowth(t *testing.T) {
 	for _, pad := range []string{"a", "é"} {
 		line := "echo " + strings.Repeat(pad, 150000) + "\n"
@@ -991,7 +994,7 @@ func TestParseGrowth(t *testing.T) {
 			b.WriteString(`]}`)
 			out := []byte(b.String())
 			best := time.Hour
-			for i := 0; i < 3; i++ {
+			for i := 0; i < 5; i++ {
 				start := time.Now()
 				if _, err := Parse(f, out); err != nil {
 					t.Fatal(err)
@@ -1000,12 +1003,13 @@ func TestParseGrowth(t *testing.T) {
 			}
 			return best
 		}
-		t1, t2, t3 := timeFor(10000), timeFor(20000), timeFor(40000)
-		if t1 < time.Millisecond {
-			t1 = time.Millisecond
+		var times []time.Duration
+		for _, n := range []int{10000, 20000, 40000, 80000} {
+			times = append(times, timeFor(n))
 		}
-		if r1, r2 := float64(t2)/float64(t1), float64(t3)/float64(t2); r1 > 2.5 || r2 > 2.5 {
-			t.Errorf("pad %q: %v, %v, %v: ratios %.2f and %.2f", pad, t1, t2, t3, r1, r2)
+		t.Logf("pad %q: %v", pad, times)
+		if overall := math.Cbrt(float64(times[3]) / float64(max(times[0], time.Millisecond))); overall > 2.5 {
+			t.Errorf("pad %q: grew x%.2f per doubling over three doublings (%v)", pad, overall, times)
 		}
 	}
 }

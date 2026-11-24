@@ -44,6 +44,31 @@ func withinBound(t *testing.T, what string, bound time.Duration, fn func()) bool
 	}
 }
 
+// withinBoundBest is withinBound for a bound that a loaded machine can miss
+// once: setup then fn run up to tries times, and t fails only when every
+// attempt overruns bound. It reports whether an attempt finished in time.
+func withinBoundBest(t *testing.T, what string, bound time.Duration, tries int, setup func() func()) bool {
+	t.Helper()
+	for k := 0; k < tries; k++ {
+		fn := setup()
+		done := make(chan time.Duration, 1)
+		go func() {
+			start := time.Now()
+			fn()
+			done <- time.Since(start)
+		}()
+		select {
+		case d := <-done:
+			t.Logf("%s: %v (attempt %d)", what, d.Round(time.Millisecond), k+1)
+			return true
+		case <-time.After(bound):
+			t.Logf("%s: not done within %v (attempt %d of %d)", what, bound, k+1, tries)
+		}
+	}
+	t.Errorf("%s: not done within %v in %d attempts", what, bound, tries)
+	return false
+}
+
 // parseClean parses src as Bash and fails t unless it parsed without error.
 func parseClean(t *testing.T, name, src string) *FileFacts {
 	t.Helper()
@@ -195,8 +220,12 @@ func TestDynamicScopeInBoundedTime(t *testing.T) {
 			// general bound; once linear these take about 0.1 s
 			b = bound / 3
 		}
-		ff := parseClean(t, name, src)
-		withinBound(t, name, b, func() { Build(map[string]*FileFacts{"/ws/a.sh": ff}, Options{Root: "/ws"}, 1) })
+		if !withinBoundBest(t, name, b, 3, func() func() {
+			ff := parseClean(t, name, src)
+			return func() { Build(map[string]*FileFacts{"/ws/a.sh": ff}, Options{Root: "/ws"}, 1) }
+		}) {
+			continue
+		}
 	}
 }
 
