@@ -313,10 +313,13 @@ func TestMCPOutputCap(t *testing.T) {
 
 func TestMCPRedactsTokens(t *testing.T) {
 	token := "ghp_" + strings.Repeat("aB3", 12)
-	root := workspaceRoot(t, map[string]string{"a.sh": "TOKEN=" + token + "\nf() { :; }\n"})
+	// "token=sekrit1234.sh" is a field the query layer does not redact
+	// itself (a path): only the encoding of the whole answer does.
+	root := workspaceRoot(t, map[string]string{"a.sh": "TOKEN=" + token + "\nf() { :; }\n", "token=sekrit1234.sh": "gfunc() { :; }\n"})
 	s := serve(t, root, config.Settings{},
 		call(1, "find_symbol", map[string]any{"query": "TOKEN"}),
 		call(2, "get_callers", map[string]any{"symbol": "TOKEN=" + token}),
+		call(3, "find_symbol", map[string]any{"query": "gfunc"}),
 	)
 	if strings.Contains(string(s.out), token) {
 		t.Fatalf("token in the reply:\n%s", s.out)
@@ -329,6 +332,12 @@ func TestMCPRedactsTokens(t *testing.T) {
 	}
 	if e := result(t, rs[1]); !e.IsError || !strings.Contains(e.Text, "[redacted]") {
 		t.Errorf("error text %q", e.Text)
+	}
+	if strings.Contains(string(s.out), "sekrit1234") {
+		t.Fatalf("a path was not redacted:\n%s", s.out)
+	}
+	if rec := result(t, rs[2]).Doc["results"].([]any)[0].(map[string]any); rec["path"] != "token=[redacted]" {
+		t.Errorf("path %v", rec["path"])
 	}
 	// the log is written through redact.Writer
 	if strings.Contains(s.logs, token) {

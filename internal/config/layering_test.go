@@ -49,6 +49,11 @@ func TestRepoCannotReEnableShellCheck(t *testing.T) {
 	if s.ShellCheck.Enabled || !hasWarning(s, "shellcheck.enabled", ".bash-lsp.toml:2") {
 		t.Fatalf("%+v %q", s.ShellCheck, s.Warnings)
 	}
+	// With no user value ShellCheck is on by default: a repo value of true is
+	// not a re-enable and is not refused.
+	if s := Merge(nil, repo, nil); !s.ShellCheck.Enabled || len(s.Warnings) != 0 {
+		t.Fatalf("repo enabled with no user value: %+v %q", s.ShellCheck, s.Warnings)
+	}
 	if s := Merge(nil, []byte("[shellcheck]\nenabled = false\n"), nil); s.ShellCheck.Enabled || len(s.Warnings) != 0 {
 		t.Fatal("repo may turn ShellCheck off")
 	}
