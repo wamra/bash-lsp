@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -124,12 +125,11 @@ func TestCheckArgsDirAndStdin(t *testing.T) {
 	if len(parts) != 3 {
 		t.Fatalf("report %q", seen)
 	}
-	if want := "--format=json1\n--shell=bash\n--exclude=SC1091\n-"; parts[0] != want {
+	if want := "--format=json1\n--shell=bash\n--exclude=SC1090,SC1091\n-"; parts[0] != want {
 		t.Errorf("args = %q, want %q", parts[0], want)
 	}
-	wantDir, _ := filepath.EvalSymlinks(filepath.Join(dir, "sub"))
-	if gotDir, _ := filepath.EvalSymlinks(parts[1]); gotDir != wantDir {
-		t.Errorf("cwd = %s, want %s", parts[1], wantDir)
+	if parts[1] != extool.NeutralDir() {
+		t.Errorf("cwd = %s, want the neutral directory %s", parts[1], extool.NeutralDir())
 	}
 	if parts[2] != src {
 		t.Errorf("stdin = %q, want %q", parts[2], src)
@@ -521,7 +521,7 @@ func TestNoSC1091OnResolvedSource(t *testing.T) {
 	}
 }
 
-// BenchmarkCheck times one real ShellCheck run on the AC-13 fixture (process
+// BenchmarkCheck times one real ShellCheck run on the evidence fixture (process
 // start, parse of the report); it skips when ShellCheck is not installed.
 func BenchmarkCheck(b *testing.B) {
 	tool, _, ok := extool.Find("shellcheck", "", extool.ProfileFromEnv(), nil)
@@ -539,6 +539,277 @@ func BenchmarkCheck(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		if _, err := r.Check(context.Background(), f); err != nil {
 			b.Fatal(err)
+		}
+	}
+}
+
+// --- fix round: the workspace does not steer what runs or what is read ---
+
+// writeFile writes name under dir (creating directories) and returns its path.
+func writeFile(t *testing.T, dir, name, text string, mode os.FileMode) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(text), mode); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// A wrapper script outside the workspace starts `bash` through PATH; a `bash`
+// in the analysed file's directory must not run, whatever the PATH entries.
+func TestCheckNoWorkspaceProgramThroughPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the planted programs are /bin/sh and env scripts")
+	}
+	exe, _ := os.Executable()
+	for _, pathVar := range []string{":/usr/bin:/bin", ".:/usr/bin:/bin", "./sub:/usr/bin:/bin", "../sub:/usr/bin:/bin", "@WS@:/usr/bin:/bin"} {
+		base := t.TempDir()
+		ws := filepath.Join(base, "ws")
+		marker := filepath.Join(base, "marker")
+		wrapper := writeFile(t, base, "tools/shellcheck", "#!/usr/bin/env bash\nexec '"+exe+"' \"$@\"\n", 0o755)
+		writeFile(t, ws, "sub/bash", "#!/bin/sh\necho ran > '"+marker+"'\nexec /bin/bash \"$@\"\n", 0o755)
+		t.Setenv("PATH", strings.ReplaceAll(pathVar, "@WS@", filepath.Join(ws, "sub")))
+		r := New(extool.Tool{Name: "shellcheck", Path: wrapper}, Options{Roots: []string{ws}})
+		r.extraEnv = []string{"WB_FAKE_TOOL=clean"}
+		f := bashFile(filepath.Join(ws, "sub", "a.sh"), "echo hi\n")
+		if _, err := r.Check(context.Background(), f); err != nil {
+			t.Errorf("PATH=%q: %v", pathVar, err)
+		}
+		if _, err := os.Stat(marker); err == nil {
+			t.Errorf("PATH=%q: the workspace's bash ran", pathVar)
+		}
+	}
+}
+
+func TestReadRC(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, ".shellcheckrc", "# comment\nshell=sh\nexternal-sources=true\nsource-path=/etc\ndisable=SC2086, SC2000-SC2002\nenable=require-variable-braces\n", 0o644)
+	writeFile(t, root, "sub/.shellcheckrc", "disable=2154\nenable=all,Bad Name,-x\nfoo=bar\ndisable=junk\n", 0o644)
+	rc := readRC(filepath.Join(root, "sub", "deep", "a.sh"), []string{root})
+	for _, code := range []int{2086, 2000, 2001, 2002, 2154} {
+		if !rc.disabled(code) {
+			t.Errorf("SC%d not disabled", code)
+		}
+	}
+	if rc.disabled(2003) || rc.disabled(1091) {
+		t.Error("an unlisted code is disabled")
+	}
+	if want := []string{"all", "require-variable-braces"}; !slices.Equal(rc.enable, want) {
+		t.Errorf("enable = %v, want %v", rc.enable, want)
+	}
+	joined := strings.Join(rc.notes, "\n")
+	for _, w := range []string{"Bad Name", "-x", "junk"} {
+		if !strings.Contains(joined, w) {
+			t.Errorf("no notice about %q: %v", w, rc.notes)
+		}
+	}
+	// A file outside every root reads no rc.
+	if rc := readRC(filepath.Join(t.TempDir(), "a.sh"), []string{root}); rc.disabled(2086) || len(rc.enable) != 0 {
+		t.Error("an rc was read for a file outside the roots")
+	}
+	// A rc that is not a regular file is not read (a FIFO would block).
+	if runtime.GOOS != "windows" {
+		d := t.TempDir()
+		if err := mkfifo(filepath.Join(d, ".shellcheckrc")); err == nil {
+			readRC(filepath.Join(d, "a.sh"), []string{d}) // must return
+		}
+	}
+}
+
+// The repo rc's enable list reaches ShellCheck as one --enable argument;
+// disable, shell, external-sources and source-path never do.
+func TestCheckPassesOnlyEnableFromRC(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, ".shellcheckrc", "enable=require-variable-braces,Bad;Name\nexternal-sources=true\nsource-path=/etc\nshell=sh\ndisable=SC2086\n", 0o644)
+	r := fakeRunner(t, "argv", Options{Roots: []string{root}})
+	ds, notes, err := r.CheckNotes(context.Background(), bashFile(filepath.Join(root, "a.sh"), "echo\n"))
+	if err != nil || len(ds) != 1 {
+		t.Fatalf("CheckNotes = %v, %v", ds, err)
+	}
+	args := strings.SplitN(ds[0].Message, "\x00", 2)[0]
+	want := "--format=json1\n--shell=bash\n--exclude=SC1090,SC1091\n--enable=require-variable-braces\n-"
+	if args != want {
+		t.Errorf("args = %q, want %q", args, want)
+	}
+	if len(notes) == 0 || !strings.Contains(strings.Join(notes, "\n"), "Bad;Name") {
+		t.Errorf("notes = %v", notes)
+	}
+}
+
+func TestCheckAppliesRCDisableAfterParsing(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, ".shellcheckrc", "disable=SC2086\n", 0o644)
+	out := `{"comments":[` +
+		`{"file":"-","line":1,"endLine":1,"column":1,"endColumn":2,"level":"info","code":2086,"message":"a","fix":null},` +
+		`{"file":"-","line":1,"endLine":1,"column":1,"endColumn":2,"level":"info","code":2154,"message":"b","fix":null}]}`
+	r := fakeRunner(t, "json", Options{Roots: []string{root}}, "WB_FAKE_OUT="+out)
+	ds, err := r.Check(context.Background(), bashFile(filepath.Join(root, "a.sh"), "echo\n"))
+	if err != nil || len(ds) != 1 || ds[0].Rule != "SC2154" {
+		t.Errorf("Check = %v, %v; want only SC2154", ds, err)
+	}
+}
+
+func realChecker(t *testing.T, roots ...string) *Runner {
+	t.Helper()
+	tool, _, ok := extool.Find("shellcheck", "", extool.ProfileFromEnv(), nil)
+	if !ok {
+		t.Skip("shellcheck is not installed")
+	}
+	return New(tool, Options{Roots: roots, Timeout: 20 * time.Second})
+}
+
+func rules(ds []analysis.Diagnostic) []string {
+	var out []string
+	for _, d := range ds {
+		out = append(out, d.Rule)
+	}
+	return out
+}
+
+// A repo .shellcheckrc with external-sources and a source-path outside the
+// workspace does not make ShellCheck read outside it, and `source /dev/zero`
+// does not make it grow: it returns long before its timeout, with findings.
+func TestCheckRepoRCCannotReachOutside(t *testing.T) {
+	base := t.TempDir()
+	ws := filepath.Join(base, "ws")
+	outside := filepath.Join(base, "outside")
+	writeFile(t, outside, "defs.sh", "probe_vax=1\n", 0o644)
+	writeFile(t, ws, ".shellcheckrc", "external-sources=true\nsource-path="+outside+"\n", 0o644)
+	r := realChecker(t, ws)
+	f := bashFile(filepath.Join(ws, "sub", "a.sh"), "#!/bin/bash\nsource defs.sh\necho \"$probe_var\"\n")
+	ds, err := r.Check(context.Background(), f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range ds {
+		if strings.Contains(d.Message, "probe_vax") {
+			t.Errorf("an outside identifier leaked: %s", d.Message)
+		}
+	}
+	if !slices.Contains(rules(ds), "SC2154") {
+		t.Errorf("SC2154 is gone, so the outside file was read: %v", rules(ds))
+	}
+	zero := bashFile(filepath.Join(ws, "sub", "z.sh"), "#!/bin/bash\nx=$1\nsource /dev/zero\necho $x\n")
+	start := time.Now()
+	ds, err = r.Check(context.Background(), zero)
+	if err != nil || !slices.Contains(rules(ds), "SC2086") {
+		t.Fatalf("source /dev/zero: %v, %v", rules(ds), err)
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Errorf("source /dev/zero took %v", took)
+	}
+}
+
+func TestCheckRepoRCDisableAndUserRC(t *testing.T) {
+	base := t.TempDir()
+	ws := filepath.Join(base, "ws")
+	writeFile(t, ws, ".shellcheckrc", "disable=SC2086\n", 0o644)
+	src := "#!/bin/bash\nx=$1\necho $x\necho $undefined_one\n"
+	r := realChecker(t, ws)
+	ds, err := r.Check(context.Background(), bashFile(filepath.Join(ws, "a.sh"), src))
+	if err != nil || slices.Contains(rules(ds), "SC2086") || !slices.Contains(rules(ds), "SC2154") {
+		t.Errorf("repo disable: %v, %v", rules(ds), err)
+	}
+	// The user's own rc (HOME) still applies.
+	home := t.TempDir()
+	writeFile(t, home, ".shellcheckrc", "disable=SC2154\n", 0o644)
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	ds, err = r.Check(context.Background(), bashFile(filepath.Join(ws, "a.sh"), src))
+	if err != nil || slices.Contains(rules(ds), "SC2154") {
+		t.Errorf("user rc: %v, %v", rules(ds), err)
+	}
+}
+
+// ShellCheck cannot follow sources now; SC1090 and SC1091 never come from it
+// (the native WB1101 reports what the server cannot resolve).
+func TestNoSC1090FromShellCheck(t *testing.T) {
+	r := realChecker(t)
+	src := "#!/bin/bash\nHERE=$(dirname \"$0\")\nsource \"$HERE/lib/util.sh\"\nsource ./nope.sh\n"
+	ds, err := r.Check(context.Background(), bashFile("/x/a.sh", src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range ds {
+		if d.Rule == "SC1090" || d.Rule == "SC1091" {
+			t.Errorf("%s from ShellCheck: %s", d.Rule, d.Message)
+		}
+	}
+}
+
+// --- Parse bounds ---
+
+func TestParseRequiresCommentsArray(t *testing.T) {
+	f := bashFile("/x/a.sh", "echo $a\n")
+	for _, bad := range []string{`{}`, `null`, `[]`, `{"comments":null}`, `{"x":"comments"}`, `{"comments":{}}`, `{"comments":"x"}`} {
+		if ds, err := Parse(f, []byte(bad)); err == nil {
+			t.Errorf("Parse(%s) = %v, nil error", bad, ds)
+		}
+	}
+	if ds, err := Parse(f, []byte(`{"comments":[]}`)); err != nil || len(ds) != 0 {
+		t.Errorf("empty report: %v, %v", ds, err)
+	}
+}
+
+// One rule for a bad range: the end is moved up to the start, both inside the file.
+func TestParseClampsRanges(t *testing.T) {
+	f := bashFile("/x/a.sh", "echo hello\necho $a\n")
+	cases := map[string]string{
+		"inverted": `"line":2,"endLine":1,"column":6,"endColumn":2`,
+		"negative": `"line":-5,"endLine":999,"column":-3,"endColumn":99999`,
+		"far":      `"line":50,"endLine":60,"column":9,"endColumn":9`,
+	}
+	for name, pos := range cases {
+		js := `{"comments":[{"file":"-",` + pos + `,"level":"info","code":1,"message":"m","fix":{"replacements":[{` + pos + `,"replacement":"x"}]}}]}`
+		ds, err := Parse(f, []byte(js))
+		if err != nil || len(ds) != 1 {
+			t.Fatalf("%s: %v %v", name, ds, err)
+		}
+		rs := []tree.Range{ds[0].Range, ds[0].Fixes[0].Edits[0].Range}
+		for _, r := range rs {
+			if r.Start.Offset > r.End.Offset || r.Start.Offset < 0 || r.End.Offset > len(f.Src) {
+				t.Errorf("%s: range %+v is not ordered inside the file", name, r)
+			}
+		}
+	}
+}
+
+// Mapping columns costs time linear in the report: two doublings of a report
+// of findings on one long line grow by at most 2.5 per doubling.
+func TestParseGrowth(t *testing.T) {
+	for _, pad := range []string{"a", "é"} {
+		line := "echo " + strings.Repeat(pad, 150000) + "\n"
+		f := bashFile("/x/a.sh", line)
+		timeFor := func(n int) time.Duration {
+			var b strings.Builder
+			b.WriteString(`{"comments":[`)
+			for i := 0; i < n; i++ {
+				if i > 0 {
+					b.WriteByte(',')
+				}
+				b.WriteString(`{"file":"-","line":1,"endLine":1,"column":149990,"endColumn":149999,"level":"info","code":2086,"message":"m","fix":null}`)
+			}
+			b.WriteString(`]}`)
+			out := []byte(b.String())
+			best := time.Hour
+			for i := 0; i < 3; i++ {
+				start := time.Now()
+				if _, err := Parse(f, out); err != nil {
+					t.Fatal(err)
+				}
+				best = min(best, time.Since(start))
+			}
+			return best
+		}
+		t1, t2, t3 := timeFor(10000), timeFor(20000), timeFor(40000)
+		if t1 < time.Millisecond {
+			t1 = time.Millisecond
+		}
+		if r1, r2 := float64(t2)/float64(t1), float64(t3)/float64(t2); r1 > 2.5 || r2 > 2.5 {
+			t.Errorf("pad %q: %v, %v, %v: ratios %.2f and %.2f", pad, t1, t2, t3, r1, r2)
 		}
 	}
 }

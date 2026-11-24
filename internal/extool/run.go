@@ -64,11 +64,16 @@ var (
 // and the rest never read); stderr (the first MaxStderr bytes are kept, the
 // rest is discarded); lingering processes (on Unix the child leads its own
 // process group and the whole group is killed on timeout, cancel or output
-// cap, and again when a descendant holds the output open after the child
-// exits; on Windows only the child itself is killed). When Run returns no
-// goroutine of it is left. What is not bounded: the child's memory and CPU
-// while it runs, its writes to files, and its use of the network. Nothing
-// limits those, so the tool must be one the user chose.
+// cap, and once more after every run, normal exit included, so a descendant
+// that stays in the group dies even when it holds no pipe; a descendant that
+// calls setsid or setpgid leaves the group and escapes, and on Windows only
+// the child itself is killed). When Run returns no goroutine of it is left.
+// What is not bounded: the child's memory and CPU while it runs (the standard
+// library cannot set a resource limit on a child alone, and setting one on
+// the server would limit the server), its writes to files, and its use of the
+// network. Nothing limits those, so the tool must be one the user chose and
+// its working directory and environment (see ChildEnv, NeutralDir) must not
+// let a workspace steer it.
 //
 // The error is ErrTimeout, ErrOutputCap, the caller's context error, a start
 // failure, or a description of a death by signal; Result is filled as far as
@@ -104,9 +109,7 @@ func Run(ctx context.Context, t Tool, args []string, o RunOptions) (Result, erro
 	if cmd.ProcessState != nil {
 		res.Exit = cmd.ProcessState.ExitCode()
 	}
-	if errors.Is(werr, exec.ErrWaitDelay) {
-		group.killAll() // the child is gone; a descendant still holds its pipes
-	}
+	group.killAll() // the child is gone; kill what it left in its group
 	switch {
 	case capped.Load():
 		return res, ErrOutputCap

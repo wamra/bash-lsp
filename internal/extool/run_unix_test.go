@@ -110,3 +110,28 @@ func TestRunCrashIsAnError(t *testing.T) {
 		t.Errorf("err = %v, want a signal error", err)
 	}
 }
+
+func init() {
+	// detach: a grandchild in the same group that holds no pipe; the child exits 0.
+	fakeModes["detach"] = func() {
+		c := exec.Command(os.Args[0])
+		c.Env = []string{"WB_FAKE_TOOL=sleep"}
+		if err := c.Start(); err != nil {
+			os.Exit(65)
+		}
+		fmt.Println(c.Process.Pid)
+	}
+}
+
+// After a normal exit the group is killed too: a grandchild that holds no
+// pipe does not survive.
+func TestRunKillsGroupAfterNormalExit(t *testing.T) {
+	res, err := Run(context.Background(), fake(t), nil, RunOptions{Env: mode("detach"), Timeout: 10 * time.Second})
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if pid := firstInt(t, res.Stdout); !gone(pid) {
+		syscall.Kill(pid, syscall.SIGKILL)
+		t.Errorf("grandchild %d outlived a normal exit", pid)
+	}
+}

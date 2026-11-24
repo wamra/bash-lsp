@@ -10,9 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
-	"runtime"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -33,6 +31,7 @@ type Options struct {
 	Timeout     time.Duration
 	MaxOutput   int
 	Concurrency int
+	Roots       []string // the workspace folders (absolute): the child's PATH loses entries inside them, and their .shellcheckrc files are read by the server
 }
 
 // Runner runs one ShellCheck program, at most Options.Concurrency times at once.
@@ -72,34 +71,6 @@ func ShellFlag(d tree.Dialect) (string, bool) {
 	return "", false
 }
 
-// childEnv is the environment ShellCheck gets: the variables it or the
-// platform needs (a search path for a wrapper script, the home and config
-// directories where it reads its .shellcheckrc, locale, temp and Windows
-// system directories). Everything else is dropped, notably GHCRTS (Haskell
-// runtime options, which can crash or hang it) and SHELLCHECK_OPTS (options
-// belong to the settings files, not to whatever the editor was started from).
-func (r *Runner) childEnv() []string {
-	keep := func(name string) bool {
-		switch strings.ToUpper(name) {
-		case "PATH", "HOME", "XDG_CONFIG_HOME", "LANG", "LANGUAGE", "TMPDIR", "TEMP", "TMP",
-			"SYSTEMROOT", "USERPROFILE", "APPDATA", "LOCALAPPDATA":
-			return true
-		}
-		return strings.HasPrefix(name, "LC_")
-	}
-	if runtime.GOOS == "windows" {
-		keep0 := keep
-		keep = func(name string) bool { return keep0(strings.ToUpper(name)) }
-	}
-	env := []string{}
-	for _, kv := range os.Environ() {
-		if name, _, ok := strings.Cut(kv, "="); ok && name != "" && keep(name) {
-			env = append(env, kv)
-		}
-	}
-	return append(env, r.extraEnv...)
-}
-
 func (r *Runner) acquire(ctx context.Context) error {
 	select {
 	case r.sem <- struct{}{}:
@@ -115,46 +86,73 @@ func (r *Runner) run(ctx context.Context, args []string, stdin []byte, dir strin
 	}
 	defer func() { <-r.sem }()
 	return extool.Run(ctx, r.tool, args, extool.RunOptions{
-		Dir: dir, Stdin: stdin, Env: r.childEnv(), Timeout: r.opt.Timeout, MaxOutput: r.opt.MaxOutput,
+		Dir: dir, Stdin: stdin, Env: extool.ChildEnv(r.opt.Roots, r.extraEnv...), Timeout: r.opt.Timeout, MaxOutput: r.opt.MaxOutput,
 	})
 }
 
-// Check runs ShellCheck on f. The file's text goes on standard input and the
-// arguments are fixed (the file's path or content is never part of them), so
-// nothing in the analysed file can act as an option; the working directory is
-// the file's own, where ShellCheck looks for a .shellcheckrc. SC1091 is
-// excluded because the native analysis decides, by its own index of the
-// workspace, whether a sourced file is found (WB1101). A file that was skipped
-// (File.Skipped) or whose dialect ShellCheck lacks yields no findings and no
-// error without starting anything. Exit statuses 0 and 1 are success; any
-// other is an error carrying the first line ShellCheck wrote to stderr.
+// Check runs ShellCheck on f; see CheckNotes.
 func (r *Runner) Check(ctx context.Context, f *tree.File) ([]analysis.Diagnostic, error) {
+	ds, _, err := r.CheckNotes(ctx, f)
+	return ds, err
+}
+
+// CheckNotes runs ShellCheck on f and also returns notices about entries of
+// the repo's .shellcheckrc that were not used. The file's text goes on
+// standard input and the arguments are fixed (the file's path or content is
+// never part of them), so nothing in the analysed file can act as an option.
+// The child runs in a neutral directory (extool.NeutralDir), so it finds no
+// .shellcheckrc of the repository (which could make it read outside the
+// workspace or without bound) and no program by a relative name; its own
+// user-level rc still applies. Instead the server reads the repo rc (see
+// readRC): codes it disables are dropped from the result, and its enable list
+// is passed as --enable. SC1090 and SC1091 are excluded: ShellCheck cannot
+// follow sources from here, and the native analysis, which has an index of the
+// workspace, decides what a source resolves to (WB1101). A file that was
+// skipped (File.Skipped) or whose dialect ShellCheck lacks yields nothing and
+// starts nothing. Exit statuses 0 and 1 are success; any other is an error
+// carrying the first line ShellCheck wrote to stderr.
+func (r *Runner) CheckNotes(ctx context.Context, f *tree.File) ([]analysis.Diagnostic, []string, error) {
 	if f == nil || f.Skipped != "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	shell, ok := ShellFlag(f.Dialect)
 	if !ok {
-		return nil, nil
+		return nil, nil, nil
 	}
-	args := []string{"--format=json1", "--shell=" + shell, "--exclude=SC1091", "-"}
-	res, err := r.run(ctx, args, f.Src, dirOf(f.Path))
+	rc := readRC(f.Path, r.opt.Roots)
+	args := []string{"--format=json1", "--shell=" + shell, "--exclude=SC1090,SC1091"}
+	if len(rc.enable) > 0 {
+		args = append(args, "--enable="+strings.Join(rc.enable, ","))
+	}
+	args = append(args, "-")
+	res, err := r.run(ctx, args, f.Src, extool.NeutralDir())
 	if err != nil {
-		return nil, fmt.Errorf("shellcheck: %w", err)
+		return nil, rc.notes, fmt.Errorf("shellcheck: %w", err)
 	}
 	if res.Exit != 0 && res.Exit != 1 {
-		return nil, fmt.Errorf("shellcheck: exit status %d: %s", res.Exit, firstLine(res.Stderr))
+		return nil, rc.notes, fmt.Errorf("shellcheck: exit status %d: %s", res.Exit, firstLine(res.Stderr))
 	}
 	ds, err := Parse(f, res.Stdout)
 	if err != nil {
-		return nil, fmt.Errorf("shellcheck: %w", err)
+		return nil, rc.notes, fmt.Errorf("shellcheck: %w", err)
 	}
-	return ds, nil
+	if len(rc.ranges) > 0 {
+		kept := ds[:0]
+		for _, d := range ds {
+			if code, err := strconv.Atoi(strings.TrimPrefix(d.Rule, "SC")); err == nil && rc.disabled(code) {
+				continue
+			}
+			kept = append(kept, d)
+		}
+		ds = kept
+	}
+	return ds, rc.notes, nil
 }
 
 // Version asks the program for its version: the text after "version: " in
 // the output of --version.
 func (r *Runner) Version(ctx context.Context) (string, error) {
-	res, err := r.run(ctx, []string{"--version"}, nil, "")
+	res, err := r.run(ctx, []string{"--version"}, nil, extool.NeutralDir())
 	if err != nil {
 		return "", fmt.Errorf("shellcheck: %w", err)
 	}
@@ -164,19 +162,6 @@ func (r *Runner) Version(ctx context.Context) (string, error) {
 		}
 	}
 	return "", errors.New("shellcheck: no version line in the output of --version")
-}
-
-// dirOf is the directory of an absolute file path that exists, else "" (the
-// server's own directory).
-func dirOf(path string) string {
-	if !filepath.IsAbs(path) {
-		return ""
-	}
-	dir := filepath.Dir(path)
-	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
-		return ""
-	}
-	return dir
 }
 
 func firstLine(b []byte) string {
@@ -189,10 +174,6 @@ func firstLine(b []byte) string {
 }
 
 // --- the json1 report ---
-
-type jsonReport struct {
-	Comments []comment `json:"comments"`
-}
 
 type comment struct {
 	File      string `json:"file"`
@@ -221,27 +202,42 @@ type replacement struct {
 // the code; level error, warning, info and style map to severities 1 to 4
 // (an unknown level is info); a fix becomes one unsafe Fix whose edits are
 // ShellCheck's replacements. ShellCheck counts columns in code points (a tab
-// is one); they become byte offsets, then positions of f. A position outside
-// the file is clamped to it.
+// is one); they become byte offsets, then positions of f, in time linear in
+// the size of the file and the report. A position outside the file is clamped
+// to it, and a range whose end is before its start ends where it starts. The
+// report must hold a comments array.
 func Parse(f *tree.File, out []byte) ([]analysis.Diagnostic, error) {
-	var rep jsonReport
+	var rep struct {
+		Comments json.RawMessage `json:"comments"`
+	}
 	if err := json.Unmarshal(out, &rep); err != nil {
 		return nil, fmt.Errorf("unreadable ShellCheck output: %w", err)
 	}
-	if rep.Comments == nil && !bytes.Contains(out, []byte(`"comments"`)) {
+	if b := bytes.TrimSpace(rep.Comments); len(b) == 0 || b[0] != '[' {
 		return nil, errors.New("unreadable ShellCheck output: no comments list")
 	}
-	lines := lineStarts(f.Src)
-	at := func(line, col int) tree.Pos { return f.PosAt(offsetOf(f.Src, lines, line, col)) }
-	ds := make([]analysis.Diagnostic, 0, len(rep.Comments))
-	for _, c := range rep.Comments {
+	var comments []comment
+	if err := json.Unmarshal(rep.Comments, &comments); err != nil {
+		return nil, fmt.Errorf("unreadable ShellCheck output: %w", err)
+	}
+	m := newMapper(f)
+	at := func(line, col int) tree.Pos { return f.PosAt(m.offset(line, col)) }
+	span := func(l1, c1, l2, c2 int) tree.Range {
+		start, end := at(l1, c1), at(l2, c2)
+		if end.Offset < start.Offset {
+			end = start
+		}
+		return tree.Range{Start: start, End: end}
+	}
+	ds := make([]analysis.Diagnostic, 0, len(comments))
+	for _, c := range comments {
 		if c.File != "-" {
 			continue
 		}
 		d := analysis.Diagnostic{
 			Rule:     fmt.Sprintf("SC%d", c.Code),
 			Severity: severity(c.Level),
-			Range:    tree.Range{Start: at(c.Line, c.Column), End: at(c.EndLine, c.EndColumn)},
+			Range:    span(c.Line, c.Column, c.EndLine, c.EndColumn),
 			Message:  c.Message,
 			Origin:   OriginShellCheck,
 		}
@@ -249,7 +245,7 @@ func Parse(f *tree.File, out []byte) ([]analysis.Diagnostic, error) {
 			fix := analysis.Fix{Title: fixTitle}
 			for _, rp := range c.Fix.Replacements {
 				fix.Edits = append(fix.Edits, analysis.TextEdit{
-					Range:   tree.Range{Start: at(rp.Line, rp.Column), End: at(rp.EndLine, rp.EndColumn)},
+					Range:   span(rp.Line, rp.Column, rp.EndLine, rp.EndColumn),
 					NewText: rp.Replacement,
 				})
 			}
@@ -272,35 +268,69 @@ func severity(level string) analysis.Severity {
 	return analysis.SevInfo
 }
 
-func lineStarts(src []byte) []int {
-	starts := []int{0}
-	for i, b := range src {
-		if b == '\n' {
-			starts = append(starts, i+1)
-		}
-	}
-	return starts
+// mapper turns a line and a code point column into a byte offset. A line of
+// ASCII needs no walk; any other line is indexed once, on first use.
+type mapper struct {
+	src   []byte
+	lines []int
+	ascii map[int]bool    // line -> is all ASCII
+	runes map[int][]int32 // line -> byte offset (from the line start) of each code point
 }
 
-// offsetOf is the byte offset of the 1-based line and code point column; a
-// line past the end gives the end of the file, a column past the end of the
-// line the end of the line (before its newline).
-func offsetOf(src []byte, lines []int, line, col int) int {
+func newMapper(f *tree.File) *mapper {
+	m := &mapper{src: f.Src, ascii: map[int]bool{}, runes: map[int][]int32{}}
+	m.lines = []int{0}
+	for i, b := range f.Src {
+		if b == '\n' {
+			m.lines = append(m.lines, i+1)
+		}
+	}
+	return m
+}
+
+// offset is the byte offset of the 1-based line and column; a line past the
+// end gives the end of the file, a column past the end of the line the end
+// of the line (before its newline).
+func (m *mapper) offset(line, col int) int {
 	if line < 1 {
 		return 0
 	}
-	if line > len(lines) {
-		return len(src)
+	if line > len(m.lines) {
+		return len(m.src)
 	}
-	start := lines[line-1]
-	end := len(src)
-	if line < len(lines) {
-		end = lines[line] - 1 // the "\n"
+	start, end := m.lines[line-1], len(m.src)
+	if line < len(m.lines) {
+		end = m.lines[line] - 1 // the "\n"
 	}
-	off := start
-	for n := 1; n < col && off < end; n++ {
-		_, size := utf8.DecodeRune(src[off:end])
-		off += size
+	if col <= 1 {
+		return start
 	}
-	return off
+	a, ok := m.ascii[line]
+	if !ok {
+		a = true
+		for _, b := range m.src[start:end] {
+			if b >= utf8.RuneSelf {
+				a = false
+				break
+			}
+		}
+		m.ascii[line] = a
+		if !a {
+			offs := make([]int32, 0, end-start)
+			for off := start; off < end; {
+				offs = append(offs, int32(off-start))
+				_, size := utf8.DecodeRune(m.src[off:end])
+				off += size
+			}
+			m.runes[line] = offs
+		}
+	}
+	if a {
+		return min(start+col-1, end)
+	}
+	offs := m.runes[line]
+	if col-1 >= len(offs) {
+		return end
+	}
+	return start + int(offs[col-1])
 }
