@@ -516,7 +516,7 @@ func TestCandidateCapDropsCallerLocalProof(t *testing.T) {
 func TestHeredocScanGrowth(t *testing.T) {
 	size := 256 << 10
 	if raceBuild {
-		size = 32 << 10
+		size = 128 << 10
 	}
 	for name, unit := range map[string]string{
 		"every three lines": "cat <<EOF\nx\nEOF\n",
@@ -530,7 +530,7 @@ func TestHeredocScanGrowth(t *testing.T) {
 				t.Fatalf("%s: not parsed cleanly", name)
 			}
 			best := time.Hour
-			for k := 0; k < 7; k++ {
+			for k := 0; k < 11; k++ {
 				start := time.Now()
 				codeDollarNames(map[string]bool{}, f, nil)
 				best = min(best, time.Since(start))
