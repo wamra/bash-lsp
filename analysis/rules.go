@@ -153,11 +153,16 @@ func (c *diagCtx) functions() {
 		first[fn.Name] = fn
 	}
 	for _, fn := range c.scan.funcs {
-		if IsBuiltin(fn.Name) && !c.scan.wrappers[fn] {
+		if IsBuiltin(fn.Name) && !c.scan.wrappers[fn] && !interactiveBuiltins[fn.Name] {
 			c.add("WB1104", fn.NameRange, fmt.Sprintf("function %s has the name of a builtin and replaces it", fn.Name))
 		}
 	}
 }
+
+// interactiveBuiltins are builtins a script does not use: a script that
+// defines `help` (a usage message, the common case) or `history` loses
+// nothing.
+var interactiveBuiltins = map[string]bool{"help": true, "history": true, "fc": true, "bind": true, "logout": true, "suspend": true}
 
 // --- WB1105: local outside a function ---
 
@@ -199,13 +204,16 @@ var privateKind = map[ScopeKind]string{ScopeSubshell: "a subshell", ScopeCmdSubs
 // declaration at all: the assignment did not survive the scope. Only reads
 // in the same function (or at file level) as the scope, outside the shell's
 // own and the usual environment variables, in a file whose graph is
-// complete. The first such read per name and function is reported.
+// complete. With `shopt -s lastpipe` in the file a pipeline stage may run in
+// the shell itself, so pipeline stages are not counted. The first such read
+// per name and function is reported.
 func (c *diagCtx) lostAssignments() {
 	s := c.s
 	ents := s.privByFile[c.file]
 	if len(ents) == 0 || s.incomplete[c.file] {
 		return
 	}
+	lastpipe := c.scan.lastpipe
 	type key struct {
 		name string
 		fn   *tree.Node
@@ -217,7 +225,7 @@ func (c *diagCtx) lostAssignments() {
 	}
 	first := map[key]*lost{}
 	for _, e := range ents {
-		if e.sc.Node == nil {
+		if e.sc.Node == nil || lastpipe && e.sc.Kind == ScopePipeline {
 			continue
 		}
 		k := key{e.sym.Name, funcBody(e.sc)}
@@ -249,7 +257,7 @@ func (c *diagCtx) lostAssignments() {
 		if u.Node != nil && u.Node.Kind == tree.KParamExp {
 			r = u.Node.Range
 		}
-		c.add("WB1106", r, fmt.Sprintf("%s was set in %s at line %d; that assignment is lost after it, and this read sees no value",
+		c.add("WB1106", r, fmt.Sprintf("%s was set in %s at line %d; that assignment is lost after it and does not reach this read",
 			u.Name, privateKind[l.sc.Kind], l.sc.Node.Range.Start.Line))
 	}
 }
@@ -304,17 +312,17 @@ func (c *diagCtx) unusedFunctions() {
 // unusedVariables reports a variable that is assigned and never read: a
 // local or a subshell's variable always, a global only under
 // scriptConditions and when not exported. Never `_`, a variable the shell
-// itself uses, a nameref, or one set implicitly (`read`, `for`, `getopts`,
-// ...). A name that any visible file reads unbound (dynamic scope), calls
-// as `"$name"`, or mentions as `$name` inside a string counts as read; so
-// does every name when a visible file uses `${!x}` or a nameref, and a local
-// when a dynamic call sits in its function.
+// itself uses, an upper-case name (an environment variable by convention),
+// a nameref, or one set implicitly (`read`, `for`, `getopts`, ...). A name
+// that any visible file reads unbound (dynamic scope), calls as `"$name"`,
+// or mentions as `$name` inside a string counts as read; so does every name
+// when a visible file uses `${!x}`, a nameref or a dynamic call.
 func (c *diagCtx) unusedVariables() {
 	s := c.s
 	var seen map[*Symbol]bool // symbols with several declarations, looked at already
 	script := -1
 	for _, d := range c.ff.Decls {
-		if d.Kind != DeclVariable || d.Temp || d.Implicit != "" || d.Name == "_" || shellVariable(d.Name) {
+		if d.Kind != DeclVariable || d.Temp || d.Implicit != "" || d.Name == "_" || shellVariable(d.Name) || upperName(d.Name) {
 			continue
 		}
 		sym := s.declSym[d]
@@ -346,13 +354,10 @@ func (c *diagCtx) unusedVariables() {
 			}
 		}
 		u := c.visible()
-		if u.indirect || u.nameref {
+		if u.indirect || u.nameref || u.dynamic {
 			continue
 		}
 		if u = c.visibleReads(); u.reads[d.Name] || global && u.export {
-			continue
-		}
-		if !global && c.dynamicIn(d) {
 			continue
 		}
 		what := "variable"
@@ -362,6 +367,18 @@ func (c *diagCtx) unusedVariables() {
 		dg := c.add("WB1202", d.NameRange, fmt.Sprintf("%s %s is assigned but never read", what, d.Name))
 		dg.Unnecessary = true
 	}
+}
+
+// upperName reports a name with no lower-case letter: by convention an
+// environment or shell variable (TZ, TMPDIR, BASH_XTRACEFD), which the shell
+// or a child process may read when it came in exported.
+func upperName(name string) bool {
+	for i := 0; i < len(name); i++ {
+		if c := name[i]; 'a' <= c && c <= 'z' {
+			return false
+		}
+	}
+	return true
 }
 
 func symFlags(sym *Symbol, f func(VarAttrs) bool) bool {
@@ -380,38 +397,6 @@ func readIn(bs []Binding) bool {
 		}
 	}
 	return false
-}
-
-// dynamicIn reports whether a dynamic call site lies in the scope that
-// holds local or private variable d: the called code may read it.
-func (c *diagCtx) dynamicIn(d *Decl) bool {
-	sites := c.dynSites()
-	if len(sites) == 0 {
-		return false
-	}
-	var n *tree.Node
-	if ps := privateScope(d.Scope); ps != nil {
-		n = ps.Node
-	} else {
-		n = funcBody(d.Scope)
-	}
-	if n == nil {
-		return true
-	}
-	i := sort.SearchInts(sites, n.Range.Start.Offset)
-	return i < len(sites) && sites[i] < n.Range.End.Offset
-}
-
-// dynSites returns the start offsets of the file's dynamic call sites, sorted.
-func (c *diagCtx) dynSites() []int {
-	if c.sites == nil {
-		c.sites = make([]int, 0, len(c.s.dyn[c.file]))
-		for _, site := range c.s.dyn[c.file] {
-			c.sites = append(c.sites, site.rng.Start.Offset)
-		}
-		sort.Ints(c.sites)
-	}
-	return c.sites
 }
 
 // --- WB1401: unquoted expansion in an argument of a file-changing command ---

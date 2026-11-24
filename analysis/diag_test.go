@@ -121,6 +121,7 @@ var ruleTable = []struct {
 			one("mytest() { :; }\n", ""),
 			one("cd() { builtin cd \"$@\" && pwd; }\n", ""),       // a deliberate wrapper
 			one("echo() { command echo \"$@\"; }\necho hi\n", ""), // a deliberate wrapper
+			one("help() { echo usage; }\nhelp\n", ""),             // an interactive-only builtin
 		}},
 	{"WB1105",
 		[]ruleCase{one("#!/bin/bash\nlocal x=1\n", "local")},
@@ -128,6 +129,7 @@ var ruleTable = []struct {
 			one("#!/bin/bash\nf(){ local x; }\nf\n", ""),
 			{files: map[string]string{"x.sh": "local x=1\necho \"$x\"\n", "m.sh": "#!/bin/bash\nf() { source ./x.sh; }\nf\n"}},
 			{files: map[string]string{"x.sh": "#!/bin/bash\nlocal x=1\necho \"$x\"\n", "m.sh": "#!/bin/bash\nf() { source ./x.sh; }\nf\n"}},
+			{files: map[string]string{"x.bats": "#!/usr/bin/env bats\n@test \"t\" { local x=1; echo \"$x\"; }\n"}, file: "x.bats"},
 		}},
 	{"WB1106",
 		[]ruleCase{one("echo hi | read y; echo \"$y\"\n", "$y"), one("( y=2 ); echo \"$y\"\n", "$y")},
@@ -138,6 +140,7 @@ var ruleTable = []struct {
 			one("y=1\n( y=2 )\necho \"$y\"\n", ""),              // the read binds to the outer y
 			one("( PATH=/x; cmd )\necho \"$PATH\"\n", ""),       // an environment variable
 			one("f() { ( y=2 ); }\ng() { echo \"$y\"; }\n", ""), // another function
+			one("shopt -s lastpipe\necho hi | read y; echo \"$y\"\n", ""),
 		}},
 	{"WB1201",
 		[]ruleCase{one("#!/bin/bash\nf(){ :; }\necho hi\n", "f")},
@@ -156,16 +159,21 @@ var ruleTable = []struct {
 			one("f(){ :; }\necho hi\n", ""),                                       // no shebang
 			one("#!/bin/bash\nf(){ :; }\nsource \"$X/plugin.sh\"\necho hi\n", ""), // graph incomplete
 			one("#!/bin/bash\ncommand_not_found_handle(){ :; }\necho hi\n", ""),
+			one("#!/bin/bash\n[[ -n ${_LIB:-} ]] && return\n_LIB=1\nf() { :; }\n", ""), // an include guard: meant to be sourced
 			{files: map[string]string{"x.bats": "#!/usr/bin/env bats\nsetup() { :; }\n@test \"t\" { :; }\n"}, file: "x.bats"},
 		}},
 	{"WB1202",
-		[]ruleCase{one("f(){ local u=1; }; f\n", "u"), one("#!/bin/bash\nX=1\necho hi\n", "X")},
+		[]ruleCase{one("f(){ local u=1; }; f\n", "u"), one("#!/bin/bash\nx=1\necho hi\n", "x")},
 		[]ruleCase{
 			one("f(){ local u=1; echo \"$u\"; }; f\n", ""),
 			one("#!/bin/bash\nexport X=1\necho hi\n", ""),
 			one("#!/bin/bash\nX=1\nexport X\necho hi\n", ""),
 			one("#!/bin/bash\nset -a\nX=1\necho hi\n", ""),
 			one("X=1\n", ""), // a library global
+			one("x=1\n", ""), // a library global
+			one("#!/bin/bash\nTMPDIR=/x\nTZ=UTC\nBASH_XTRACEFD=3\nmktemp\n", ""), // environment names by convention
+			one("#!/bin/bash\nf() { local u=1; }\nf\n\"$handler\" x\n", ""),      // a dynamic call in view
+			one("#!/bin/bash\n[[ -n ${_LIB:-} ]] && return\n_lib=1\n", ""),       // an include guard: meant to be sourced
 			one("#!/bin/bash\ntmp=$(mktemp)\ntrap 'rm -f \"$tmp\"' EXIT\necho hi\n", ""),
 			one("f(){ local u=1; eval 'echo $u'; }; f\n", ""),
 			one("f(){ local u=1; eval \"echo \\$u\"; }; f\n", ""),
@@ -266,11 +274,11 @@ func TestRulesRegistry(t *testing.T) {
 // near a dynamic call, and in a file whose graph is incomplete.
 func TestNoUnusedInLibraries(t *testing.T) {
 	cases := map[string]map[string]string{
-		"library":    {"x.sh": "f() { :; }\nX=1\n"},
-		"handler":    {"x.sh": "#!/bin/bash\nf() { local u=1; \"$handler\" x; }\nX=1\ng() { :; }\nf\n"},
-		"incomplete": {"x.sh": "#!/bin/bash\nsource \"$LIB\"\nf() { :; }\nX=1\necho hi\n"},
+		"library":    {"x.sh": "f() { :; }\nx=1\n"},
+		"handler":    {"x.sh": "#!/bin/bash\nf() { local u=1; }\nx=1\ng() { :; }\nf\n\"$handler\" x\n"},
+		"incomplete": {"x.sh": "#!/bin/bash\nsource \"$LIB\"\nf() { :; }\nx=1\necho hi\n"},
 		"lib sourced by a script": {
-			"x.sh": "#!/bin/bash\nf() { :; }\nX=1\necho hi\n",
+			"x.sh": "#!/bin/bash\nf() { :; }\nx=1\necho hi\n",
 			"m.sh": "#!/bin/bash\n. ./x.sh\n",
 		},
 	}
@@ -559,5 +567,30 @@ func TestDiagnosticsInBoundedTime(t *testing.T) {
 		var n int
 		withinBound(t, name, bound, func() { n = len(s.Diagnostics("/ws/a.sh", DiagOptions{})) })
 		t.Logf("%s: %d findings", name, n)
+	}
+}
+
+// A build from the previous snapshot reuses the scans and mentions of the
+// files whose facts it shares; the edited file is scanned afresh.
+func TestDiagScansCarryOver(t *testing.T) {
+	a, b := "/w/a.sh", "/w/b.sh"
+	fa := Bind(parse.File(a, []byte("#!/bin/bash\nsource ./b.sh\nf() { local u=1; }\nf\n")))
+	fb := Bind(parse.File(b, []byte("g() { echo \"$u\"; }\n")))
+	s1 := Build(map[string]*FileFacts{a: fa, b: fb}, Options{Root: "/w"}, 1)
+	s1.Diagnostics(a, DiagOptions{})
+	if s1.scans[fb] == nil || s1.mentions[fb] == nil {
+		t.Fatal("the visible file was not scanned")
+	}
+	fa2 := Bind(parse.File(a, []byte("#!/bin/bash\nsource ./b.sh\nf() { local u=2; }\nf\n")))
+	s2 := Build(map[string]*FileFacts{a: fa2, b: fb}, Options{Root: "/w", Prev: s1}, 2)
+	if s2.scans[fb] != s1.scans[fb] || s2.mentions[fb] != s1.mentions[fb] {
+		t.Fatal("the unchanged file's scan was not carried over")
+	}
+	if s2.scans[fa] != nil || s2.scans[fa2] != nil {
+		t.Fatal("a stale or premature scan of the edited file")
+	}
+	s2.Diagnostics(a, DiagOptions{})
+	if s2.scans[fa2] == nil {
+		t.Fatal("the edited file was not scanned")
 	}
 }

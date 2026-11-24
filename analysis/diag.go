@@ -150,7 +150,6 @@ type diagCtx struct {
 	out  []Diagnostic
 
 	union *nameUnion // what the file's visibility reads or names, built on first need
-	sites []int      // start offsets of the file's dynamic call sites, sorted, on first need
 }
 
 func (c *diagCtx) add(rule string, r tree.Range, msg string) *Diagnostic {
@@ -184,7 +183,8 @@ func (c *diagCtx) run() {
 // depends only on the file's facts; a snapshot keeps the scans it made.
 type fileScan struct {
 	shebang    bool
-	topCommand bool         // a top-level statement other than a definition, assignment, declaration or source
+	topCommand bool         // a top-level statement other than a definition, assignment, declaration or source, and no top-level return
+	topReturn  bool         // `return` outside every function: the file is meant to be sourced
 	hasGap     bool         // the tree holds an error gap: code that was not analysed
 	topFuncs   []*tree.Node // function definitions that are top-level statements
 	funcs      []*tree.Node // every function definition
@@ -193,6 +193,7 @@ type fileScan struct {
 	quotes     []*tree.Node // unquoted parameter expansions in arguments of file-mutating commands
 	indirect   bool         // `${!` appears: a variable may be read through another's value
 	nameref    bool         // some declaration is a nameref
+	lastpipe   bool         // `lastpipe` appears (shopt -s lastpipe): the last pipeline stage may run in the shell
 }
 
 // fileMentions is what a file names without a binding: words that may name
@@ -320,6 +321,7 @@ func scanFile(ff *FileFacts) *fileScan {
 	src := f.Src
 	sc.shebang = len(src) >= 2 && src[0] == '#' && src[1] == '!'
 	sc.indirect = bytes.Contains(src, []byte("${!"))
+	sc.lastpipe = bytes.Contains(src, []byte("lastpipe"))
 	for _, st := range f.Root.Children {
 		if st.Kind == tree.KErrorGap {
 			sc.hasGap = true
@@ -356,6 +358,12 @@ func scanFile(ff *FileFacts) *fileScan {
 		if u.Kind != UseCall || u.Via != ViaNone || u.ViaAlias || u.Node == nil || u.Node.Kind != tree.KCall {
 			continue
 		}
+		if u.Name == "return" && namedFunc(u.Scope) == nil {
+			sc.topReturn = true
+		}
+		if !inspected[u.Name] {
+			continue
+		}
 		words = words[:0]
 		for _, c := range u.Node.Children {
 			if c.Kind == tree.KWord {
@@ -366,8 +374,21 @@ func scanFile(ff *FileFacts) *fileScan {
 			sc.command(u, words, src)
 		}
 	}
+	if sc.topReturn {
+		sc.topCommand = false
+	}
 	return sc
 }
+
+// inspected are the command names scanFile looks into: the file-changing
+// commands and the prefixes before them, and builtin wrappers.
+var inspected = func() map[string]bool {
+	m := map[string]bool{"sudo": true, "command": true, "builtin": true}
+	for k := range mutating {
+		m[k] = true
+	}
+	return m
+}()
 
 // command collects the WB1401 candidates of a command and notes a wrapper
 // of a builtin (`cd() { builtin cd "$@"; }`).
