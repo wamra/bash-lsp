@@ -243,7 +243,7 @@ func TestSymbolsBadPath(t *testing.T) {
 func TestDoctor(t *testing.T) {
 	out := runOK(t, "doctor", "../../testdata/corpus")
 	wantLines(t, out, "version: dev", "root: ", "files: 9", "bash: 8", "sh: 1", "syntax errors: 2 files",
-		"unresolved sources: 0", "shellcheck: not used in this version")
+		"unresolved sources: 0", "shellcheck: ", "shellcheck memory guard: none")
 }
 
 func TestDoctorBadRoot(t *testing.T) {

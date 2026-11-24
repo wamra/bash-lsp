@@ -48,6 +48,7 @@ var openDir = osOpenDir
 type Profile struct {
 	cands   map[string][]string // name -> the files of that name, in directory order
 	skipped []string
+	dirs    int      // directories given
 	exts    []string // Windows: PATHEXT, lower-cased; nil elsewhere
 
 	mu    sync.Mutex
@@ -64,7 +65,7 @@ type Profile struct {
 // of the three), or on Windows with a PATHEXT extension; a directory, a dangling
 // link or a data file is not.
 func NewProfile(dirs []string) *Profile {
-	p := &Profile{cands: map[string][]string{}, known: map[string]string{}}
+	p := &Profile{cands: map[string][]string{}, known: map[string]string{}, dirs: len(dirs)}
 	if runtime.GOOS == "windows" {
 		p.exts = windowsExts()
 	}
@@ -206,6 +207,15 @@ func (p *Profile) Skipped() []string {
 		return nil
 	}
 	return append([]string(nil), p.skipped...)
+}
+
+// Dirs is the number of directories the profile was given, those skipped
+// included.
+func (p *Profile) Dirs() int {
+	if p == nil {
+		return 0
+	}
+	return p.dirs
 }
 
 // Len is the number of distinct names in the directories read (not all of

@@ -303,3 +303,15 @@ func TestProfileReadsInChunksAndStopsAtCap(t *testing.T) {
 		t.Error("the directory was not closed")
 	}
 }
+
+func TestProfileDirsCountsSkippedToo(t *testing.T) {
+	good := t.TempDir()
+	p := NewProfile([]string{good, "relative", filepath.Join(good, "missing")})
+	if p.Dirs() != 3 || len(p.Skipped()) != 2 {
+		t.Errorf("Dirs() = %d, Skipped() = %q; want 3 and two entries", p.Dirs(), p.Skipped())
+	}
+	var nilp *Profile
+	if nilp.Dirs() != 0 {
+		t.Error("Dirs() of a nil profile")
+	}
+}
