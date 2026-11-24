@@ -539,3 +539,21 @@ func TestFormatRefusesMixedHeredocDelimiter(t *testing.T) {
 		t.Errorf("quoted body: %q %v", out, err)
 	}
 }
+
+// A comment printed without its leading space can become a shebang or a
+// directive that the input did not have; the dialect of the output would then
+// differ from the one the text was read with, so the file is not formatted.
+func TestFormatKeepsDialect(t *testing.T) {
+	src := []byte(" #!sh\n!(0)")
+	out, err := Format("x.sh", src, FormatOptions{})
+	if err == nil {
+		again, err2 := Format("x.sh", out, FormatOptions{})
+		if err2 != nil || !bytes.Equal(again, out) {
+			t.Fatalf("not idempotent: %q -> %q -> %q (%v)", src, out, again, err2)
+		}
+		return
+	}
+	if out != nil || !errors.Is(err, ErrFormatUnsupported) {
+		t.Fatalf("got %q, %v", out, err)
+	}
+}

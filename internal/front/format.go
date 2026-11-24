@@ -282,6 +282,11 @@ func FormatWith(path string, src []byte, o FormatOptions, fallback Dialect) ([]b
 	if err != nil {
 		return nil, err
 	}
+	if DetectWith(path, out, fallback) != p.d {
+		// A comment printed without its leading space can become a shebang or
+		// a directive; the next read would use another grammar.
+		return nil, unsupported("the formatted text would be read as another dialect; not applied")
+	}
 	if !bytes.HasSuffix(p.text, []byte("\n")) {
 		// Printed text always ends in a newline. Without it the tree must
 		// still be the one printed.
