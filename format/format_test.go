@@ -379,3 +379,31 @@ func TestFormatWithFallbackDialect(t *testing.T) {
 		t.Fatalf("shebang wins: %q %v", out, err)
 	}
 }
+
+// An .editorconfig is repo-controlled: an indent beyond MaxIndent is clamped
+// to it, and the clamp is reported in the editorconfig notes.
+func TestEditorconfigIndentIsClamped(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".editorconfig"), []byte("[*]\nindent_style = space\nindent_size = 10000000\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "a.sh")
+	o := OptionsFor(file, dir, Settings{}, nil)
+	if o.Indent != MaxIndent {
+		t.Fatalf("indent %d, want %d", o.Indent, MaxIndent)
+	}
+	out, err := Source(file, []byte("f() {\necho a\n}\n"), o)
+	if err != nil || len(out) > 64 {
+		t.Fatalf("%d bytes, err %v", len(out), err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".editorconfig"), []byte("[*]\nindent_style = space\nindent_size = tab\ntab_width = 99999999\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if o := OptionsFor(file, dir, Settings{}, nil); o.Indent != MaxIndent {
+		t.Fatalf("tab_width: indent %d", o.Indent)
+	}
+	notes := EditorconfigNotes(file, dir)
+	if len(notes) != 1 || !strings.Contains(notes[0], "clamped to 16") {
+		t.Fatalf("notes %q", notes)
+	}
+}

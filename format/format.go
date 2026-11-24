@@ -1,6 +1,7 @@
 package format
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -136,10 +137,25 @@ func OptionsFor(path, root string, s Settings, lsp *LSPOptions) Options {
 	return o
 }
 
+// MaxIndent is the widest indent, in spaces, the formatter is asked for: a
+// larger value in settings is refused, and one in an .editorconfig (which
+// the repository controls) is clamped to it.
+const MaxIndent = 16
+
 // EditorconfigNotes lists the .editorconfig sections that apply to no file
-// because their glob is not supported (see internal/editorconfig).
+// because their glob is not supported (see internal/editorconfig), and the
+// indent_size that was clamped to MaxIndent.
 func EditorconfigNotes(path, root string) []string {
-	_, notes := editorconfig.LookupNotes(path, root, editorconfigReader(root))
+	props, notes := editorconfig.LookupNotes(path, root, editorconfigReader(root))
+	if props["indent_style"] == "space" {
+		size := props["indent_size"]
+		if size == "tab" {
+			size = props["tab_width"]
+		}
+		if n, err := strconv.Atoi(size); err == nil && n > MaxIndent {
+			notes = append(notes, fmt.Sprintf("indent %d clamped to %d", n, MaxIndent))
+		}
+	}
 	return notes
 }
 
@@ -204,7 +220,7 @@ func applyProps(o *Options, props map[string]string) {
 			size = props["tab_width"]
 		}
 		if n, err := strconv.Atoi(size); err == nil && n > 0 {
-			o.Indent = uint(n)
+			o.Indent = uint(min(n, MaxIndent))
 		}
 	}
 	flag := func(dst *bool, keys ...string) {

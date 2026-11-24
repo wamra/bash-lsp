@@ -385,3 +385,17 @@ func TestFinishFormatAnswersCancelledRequest(t *testing.T) {
 		t.Fatalf("reply to a live request: %s", got)
 	}
 }
+
+func TestFormattingClampsEditorconfigIndent(t *testing.T) {
+	root := t.TempDir()
+	put(t, filepath.Join(root, "a.sh"), "")
+	put(t, filepath.Join(root, ".editorconfig"), "[*.sh]\nindent_style = space\nindent_size = 10000000\n")
+	src := "f() {\necho a\n}\n"
+	c := client(t, root)
+	c.openText("a.sh", src)
+	c.waitPush("a.sh")
+	got := apply(t, src, c.formatting("a.sh", nil))
+	if got != "f() {\n"+strings.Repeat(" ", 16)+"echo a\n}\n" {
+		t.Fatalf("%d bytes: %.80q", len(got), got)
+	}
+}

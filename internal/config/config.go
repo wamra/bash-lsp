@@ -108,7 +108,7 @@ const (
 
 	defaultShellCheckTimeout = 10 * time.Second
 	maxShellCheckSeconds     = 120
-	maxIndent                = 16
+	maxIndent                = format.MaxIndent
 )
 
 type kind uint8

@@ -245,3 +245,13 @@ func TestFmtHelpNamesTheLimits(t *testing.T) {
 		t.Fatalf("exit %d out %q", code, out)
 	}
 }
+
+func TestFmtClampsEditorconfigIndent(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, ".editorconfig"), "[*.sh]\nindent_style=space\nindent_size=10000000\n", 0o644)
+	write(t, filepath.Join(dir, "a.sh"), "if a;then\nb\nfi\n", 0o644)
+	code, out, errs := runFmt(t, dir, "a.sh")
+	if code != 0 || out != "if a; then\n"+strings.Repeat(" ", 16)+"b\nfi\n" || !strings.Contains(errs, "clamped to 16") {
+		t.Fatalf("exit %d out %q err %q", code, out, errs)
+	}
+}
