@@ -126,3 +126,39 @@ func TestSourceLineRedactsBeforeCut(t *testing.T) {
 }
 
 func redactedOrShort(s string) bool { return len(s) <= maxSignature && redact.String(s) == s }
+
+// A .Wammy that is a link, even to a directory, would point the program at an
+// index elsewhere: each component below the directory that holds the index is
+// checked, not only the database.
+func TestIndexDBRefusesLinkedIndexDirectory(t *testing.T) {
+	t.Setenv(IndexEnv, "")
+	outside := t.TempDir()
+	mkfile(t, filepath.Join(outside, "code.sqlite"))
+	repo := canon(t, t.TempDir())
+	mkfile(t, filepath.Join(repo, ".git", "HEAD"))
+	if err := os.Symlink(outside, filepath.Join(repo, ".Wammy")); err != nil {
+		t.Skip("no symlinks")
+	}
+	if _, err := indexDB(repo); err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Errorf("linked .Wammy under a repository: %v", err)
+	}
+	plain := canon(t, t.TempDir())
+	if err := os.Symlink(outside, filepath.Join(plain, ".Wammy")); err != nil {
+		t.Fatal(err)
+	}
+	mkfile(t, filepath.Join(plain, "sub", "x.sh"))
+	if _, err := indexDB(filepath.Join(plain, "sub")); err == nil {
+		t.Error("walk-up: a linked .Wammy was accepted")
+	}
+	if _, err := indexDB(plain); err == nil {
+		t.Error("a linked .Wammy was accepted")
+	}
+	// a real .Wammy directory without a database is fine
+	ok := canon(t, t.TempDir())
+	if err := os.MkdirAll(filepath.Join(ok, ".Wammy"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := indexDB(ok); err != nil {
+		t.Errorf("plain .Wammy directory: %v", err)
+	}
+}

@@ -73,8 +73,9 @@ const IndexEnv = "CODE_INDEX_DB"
 // it from a working directory inside root: the nearest directory upward that
 // holds a .git names the repository; with none, the nearest directory upward
 // that holds .Wammy/code.sqlite; with none, root itself. The database must be
-// a regular file: a symlink or other file there is refused, so the program
-// is not pointed through a link at an index elsewhere.
+// a regular file in a real .Wammy directory: a link or other file at either
+// place is refused, so the program is not pointed through a link at an index
+// elsewhere.
 func indexDB(root string) (string, error) {
 	if v := os.Getenv(IndexEnv); v != "" {
 		if abs, err := filepath.Abs(v); err == nil {
@@ -106,7 +107,11 @@ func indexDB(root string) (string, error) {
 			}
 		}
 	}
-	p := filepath.Join(base, ".Wammy", "code.sqlite")
+	dir := filepath.Join(base, ".Wammy")
+	p := filepath.Join(dir, "code.sqlite")
+	if fi, err := os.Lstat(dir); err == nil && !fi.IsDir() {
+		return "", fmt.Errorf("%s is not a directory (a link there is not followed)", dir)
+	}
 	if fi, err := os.Lstat(p); err == nil && !fi.Mode().IsRegular() {
 		return "", fmt.Errorf("the index database %s is not a regular file", p)
 	}
