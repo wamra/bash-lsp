@@ -89,7 +89,7 @@ func NewProfile(dirs []string) *Profile {
 		}
 		left := profileTotalBudget - time.Since(begun)
 		if left <= 0 {
-			p.skip(dir, fmt.Sprintf("time budget of %v for the PATH directories used up", profileTotalBudget))
+			p.skip(dir, fmt.Sprintf("time budget of %v for the PATH directories used up", profileTotalBudget.Round(time.Millisecond)))
 			continue
 		}
 		res, err := p.readDirBounded(dir, maxProfileNames-count, min(left, profileDirTimeout))
@@ -128,7 +128,7 @@ func (p *Profile) readDirBounded(dir string, budget int, limit time.Duration) (d
 	case r := <-done:
 		return r, r.err
 	case <-timer.C:
-		return dirResult{}, fmt.Errorf("timed out after %v", limit)
+		return dirResult{}, fmt.Errorf("timed out after %v", limit.Round(time.Millisecond))
 	}
 }
 

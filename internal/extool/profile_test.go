@@ -358,3 +358,23 @@ func TestProfileTotalBudgetAcrossDirectories(t *testing.T) {
 		t.Errorf("%d directories opened, %d skipped for the budget, Dirs() = %d; skipped: %q", opened.Load(), budget, p.Dirs(), sk)
 	}
 }
+
+// The time-out reason names the bound in whole milliseconds, not the raw
+// duration (a bound cut down by the time left is rarely round).
+func TestProfileTimeoutReasonIsRounded(t *testing.T) {
+	hung := filepath.Join(t.TempDir(), "hung")
+	if runtime.GOOS == "windows" {
+		hung = `C:\hung`
+	}
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	useReader(t, func(dir string) (dirReader, error) {
+		return fakeDir{next: func(int) ([]os.DirEntry, error) { <-release; return nil, io.EOF }}, nil
+	})
+	defer func(d time.Duration) { profileDirTimeout = d }(profileDirTimeout)
+	profileDirTimeout = 60*time.Millisecond + 456*time.Microsecond
+	p := NewProfile([]string{hung})
+	if sk := p.Skipped(); len(sk) != 1 || !strings.HasSuffix(sk[0], ": timed out after 60ms") {
+		t.Errorf("Skipped() = %q", sk)
+	}
+}
