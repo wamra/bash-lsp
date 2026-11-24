@@ -2,8 +2,12 @@
 
 Gives Claude Code a Bash language server: go to definition, find references,
 hover, document and workspace symbols, and syntax diagnostics for `.sh`,
-`.bash`, `.bats` and `.ksh` files. It reads files and never runs them; it starts
-no subprocess and opens no network connection.
+`.bash`, `.bats` and `.ksh` files, and lint findings. It reads files and never
+runs them, and opens no network connection. The one program it may start is
+ShellCheck, to add its findings: only when ShellCheck is found on the `PATH` or
+at the `shellcheck.path` of the user settings, outside the workspace (a
+ShellCheck inside the workspace is never run), and unless `shellcheck.enabled`
+is false in the settings. Without it the native findings are shown alone.
 
 ## What is in the plugin
 

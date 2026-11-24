@@ -6,7 +6,7 @@
 
 Register `bash-lsp mcp --root /path/to/repo` as a stdio server in the MCP client's settings.
 
-Standard output carries JSON-RPC messages, one per line, and nothing else. Log lines go to standard error. The root defaults to the working directory. Settings come from the user file (`$BASH_LSP_CONFIG`, else the user config directory) and `<root>/.bash-lsp.toml`, as for the other commands.
+Standard output carries JSON-RPC messages, one per line, and nothing else. Log lines go to standard error. The root of `mcp` defaults to the working directory. `search` without `--root` instead uses the nearest directory upward from the working directory that holds `.git` or `.bash-lsp.toml` (the working directory if none), and prints paths relative to it. Settings come from the user file (`$BASH_LSP_CONFIG`, else the user config directory) and `<root>/.bash-lsp.toml`, as for the other commands.
 
 ## Tools
 
@@ -21,7 +21,7 @@ Standard output carries JSON-RPC messages, one per line, and nothing else. Log l
 | `list_unresolved` | `paths` (optional) | dynamic and unresolved edges |
 | `get_index_status` | none | generation, file counts by dialect, skipped files, limits met |
 | `search_code` | `text` | native name matches plus code-index full-text hits |
-| `get_diagnostics` | `paths` (optional) | native findings; ShellCheck is not run here |
+| `get_diagnostics` | `paths` (optional) | native findings; ShellCheck is not run here. Fields are `results`, `end_line` and `end_col`; `bash-lsp check --format json` prints `diagnostics`, `endLine`, `endCol` and `fixes` instead |
 
 A symbol is a function name, a root-relative file path, or `path:line:col` with a UTF-16 column, as the other answers print positions. A name defined in several files is refused with the list of `path:line:col` specs that tell the definitions apart.
 
@@ -57,7 +57,7 @@ with the text as one argument after `--`, so a text such as `--mode=auto` cannot
 
 A non-zero exit gives `used: false` and `reason` = the first line code-index wrote to standard error, cut to 200 bytes and redacted. The hits are code-index's own records. There is no database check beforehand.
 
-The run goes through the same runner as ShellCheck: environment filtered to what a program needs (a `PATH` without entries inside the root, `HOME`, locale, temp), a 10 s timeout, 1 MiB of output. Its working directory is the file system root, not the workspace. code-index finds its database from the working directory, so the server names it instead with `CODE_INDEX_DB`. The value is the user's own `$CODE_INDEX_DB` when set. Otherwise it is found the way code-index's own lookup finds it from a directory inside the root: the nearest directory upward that holds a `.git` is the repository and its `.Wammy/code.sqlite` is the index (so `--root repo/scripts` finds the index of `repo`); with no `.git`, the nearest directory upward that holds `.Wammy/code.sqlite`; with none, `<root>/.Wammy/code.sqlite`. A database that is a symlink or any other non-regular file is refused (`used: false`, with the reason). Checked against a real code-index build (index made by `code-index index`, search run by `bash-lsp search` from the file system root): the hits come back and the index is the workspace's.
+The run goes through the same runner as ShellCheck: environment filtered to what a program needs (a `PATH` without entries inside the root, `HOME`, locale, temp), a 10 s timeout, 1 MiB of output. Its working directory is the file system root, not the workspace. code-index finds its database from the working directory, so the server names it instead with `CODE_INDEX_DB`. The value is the user's own `$CODE_INDEX_DB` when set. Otherwise it is found the way code-index's own lookup finds it from a directory inside the root: the nearest directory upward that holds a `.git` is the repository and its `.Wammy/code.sqlite` is the index (so `--root repo/scripts` finds the index of `repo`); with no `.git`, the nearest directory upward that holds `.Wammy/code.sqlite`; with none, `<root>/.Wammy/code.sqlite`. This walk upward leaves the root: a `.git` or a `.Wammy/code.sqlite` in a directory above the root is trusted as the index of this workspace, so a hostile directory above it could supply the database (it is read by code-index, never run). Set `$CODE_INDEX_DB` to pin the database. A database that is a symlink or any other non-regular file is refused (`used: false`, with the reason). Checked against a real code-index build (index made by `code-index index`, search run by `bash-lsp search` from the file system root): the hits come back and the index is the workspace's.
 
 ## Protocol facts
 

@@ -3,7 +3,7 @@
 A Bash language server written in Go. It resolves definitions, references and
 symbols across `source`d files, over LSP on stdio.
 
-Status: milestone 2b is built and not yet released. The crash on crafted
+Status: milestone 3 is built and not yet released. The crash on crafted
 deeply nested input is closed in milestone 2a: the parser stops at 10,000
 levels of nesting with a syntax error (`docs/m2a-acceptance.md`,
 `docs/m2a-nesting-design.md`). Go to definition, references,
@@ -13,15 +13,18 @@ through aliases, through `"$cmd"` calls, and through the strings of `eval`,
 `trap` and `sh -c`, which are reported as candidates with their reason; locals
 are scoped to their function, and a read in a callee that no declaration in view
 explains is linked, as a candidate, to a caller's `local`.
-Syntax errors are reported and the files around them still analysed. The
-graph CLI commands, `extract` (the call graph as code-index's JSON lines),
-watched files and several workspace folders are in. It passes 26 of the 28
-cases of the comparison benchmark (`docs/m2b-acceptance.md`); rename and lint
-are later milestones (the two failing cases are rename and the unquoted
-variable diagnostic), and known gaps are listed in `docs/m2b-acceptance.md`
-and `docs/m1-deferred.md`. Linking into code-index (AC-14, AC-21) needs a
-patch in code-index first (`docs/code-index-integration.md`). There are no
-published binaries and no stable interface yet, and CI has not run.
+Syntax errors are reported and the files around them still analysed. Native
+lint rules with a ShellCheck bridge (`check`, and diagnostics in the editor),
+a formatter (`fmt`, and LSP formatting), the graph CLI commands, `extract` (the
+call graph as code-index's JSON lines), `search` (names plus code-index
+full-text hits) and an MCP server (`mcp`) are in, with watched files and
+several workspace folders. It passes 27 of the 28 cases of the comparison
+benchmark, failing only C24 (rename); C28 (the unquoted variable diagnostic)
+is green (`docs/m3-acceptance.md`). Rename is a later milestone, and known gaps
+are listed in `docs/m3-acceptance.md` and `docs/m1-deferred.md`. Linking into
+code-index (AC-14, AC-21) needs a patch in code-index first
+(`docs/code-index-integration.md`). There are no published binaries and no
+stable interface yet, and CI has not run.
 
 Licence: MIT (see `LICENSE`). Third-party attribution is in `NOTICE`.
 
@@ -60,6 +63,10 @@ bash-lsp ast FILE [--json]        print the syntax tree of one file
 bash-lsp symbols [PATH...] [--json]   functions, aliases and variables; default PATH is .
 bash-lsp doctor [PATH]            workspace report: files, dialects, limits, syntax errors, unresolved sources
 bash-lsp check [paths] [--format text|json] [--shellcheck auto|off] [--fail-on error|warning|info|hint] [--root DIR]
+bash-lsp fmt [-w] [--root DIR] [--] FILE...   format with the in-process printer
+bash-lsp search [--json] [--root DIR] [--] TEXT   native name matches plus code-index hits
+bash-lsp mcp [--root DIR]         MCP server on stdio (docs/mcp.md)
+bash-lsp help | --help | -h       usage (also `COMMAND --help`); an unknown flag is exit 2
 bash-lsp status [--root DIR] [--json]
 bash-lsp callers|callees SYMBOL [--depth N] [--root DIR] [--json]
 bash-lsp refs SYMBOL [--root DIR] [--json]
@@ -79,10 +86,17 @@ The JSON each command prints with `--json` is described in
 
 Positions are 1-based `line:col`, with columns counted in UTF-16 code units
 (the LSP column plus one), printed and accepted alike. A path printed by
-`check`, `symbols` and `fmt` is relative to the current directory when the file
-is under it, otherwise absolute; a path printed by the graph commands
-(`callers` to `cycles`, `status`, `search`) is relative to the workspace root,
-which is the current directory unless `--root` says otherwise. Forward slashes
+`check` and `fmt` is relative to the current directory when the file is under
+it, otherwise absolute. A path printed by `symbols` is relative to the PATH
+argument it came from: to that directory when it is a directory, to the file's
+directory when it is a file (so `symbols lib` prints `util.sh`, not
+`lib/util.sh`, and a PATH is its own workspace root, with no `.git` search). A
+path printed by the graph commands (`callers` to `cycles`, `status`) is
+relative to the workspace root, which is the current directory unless `--root`
+says otherwise; `mcp` likewise defaults to the current directory. `search`
+differs: without `--root` its root is the nearest directory upward from the
+current directory that holds `.git` or `.bash-lsp.toml` (the current directory
+if none), and the paths it prints are relative to that root. Forward slashes
 on every OS. Exit codes: 0 success, 1 runtime
 failure, 2 usage error.
 
@@ -131,6 +145,13 @@ What it does not do:
 - Command substitutions in backquotes are printed as `$( )`.
 
 ## JSON records
+
+The answer of `check --format json` names its fields differently from the MCP
+tool `get_diagnostics`: `check` prints `{"generation", "diagnostics": [...]}`
+with `endLine`, `endCol` and `fixes` on each finding (the names of LSP), while
+`get_diagnostics` returns `{"generation", "results": [...]}` with `end_line` and
+`end_col`, like every other `--json` answer and MCP tool (`docs/mcp.md`). The
+two are not interchangeable.
 
 Every `--json` answer is one object that carries `generation` (the snapshot it
 was computed from). Paths in the graph commands' answers are relative to the
