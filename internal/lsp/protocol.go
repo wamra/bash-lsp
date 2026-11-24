@@ -123,6 +123,13 @@ type Diagnostic struct {
 	Tags     []int  `json:"tags,omitempty"`
 }
 
+// showMessageParams are the parameters of window/showMessage. Type is an
+// LSP MessageType (1 Error, 2 Warning, 3 Info).
+type showMessageParams struct {
+	Type    int    `json:"type"`
+	Message string `json:"message"`
+}
+
 type publishDiagnosticsParams struct {
 	URI         string       `json:"uri"`
 	Diagnostics []Diagnostic `json:"diagnostics"`

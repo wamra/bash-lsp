@@ -32,6 +32,7 @@ type testClient struct {
 	nextID  int
 	replies map[string]*rpcReply
 	diags   map[string][][]Diagnostic
+	shown   []json.RawMessage // params of window/showMessage notifications
 	closed  bool
 
 	// Requests from the server (method set, id set), in arrival order, and
@@ -188,6 +189,8 @@ func (c *testClient) readLoop() {
 			var p publishDiagnosticsParams
 			_ = json.Unmarshal(m.Params, &p)
 			c.diags[p.URI] = append(c.diags[p.URI], p.Diagnostics)
+		} else if m.Method == "window/showMessage" {
+			c.shown = append(c.shown, m.Params)
 		} else if len(m.ID) > 0 && m.Method != "" { // a request from the server
 			r := serverReq{ID: m.ID, Method: m.Method, Params: m.Params}
 			c.serverReqs = append(c.serverReqs, r)
@@ -1076,5 +1079,42 @@ func TestVersionRulesWire(t *testing.T) {
 	c.open("a.sh")
 	if d := c.waitDiag("a.sh"); len(d) != 0 {
 		t.Fatalf("target 4.0-5.3: %+v", d)
+	}
+}
+
+// An unknown rule id in the settings is shown once per session as a
+// warning (MessageType 2) and logged; an id reserved for a rule not built
+// yet is neither. A recovered parser panic is logged with its text and
+// published without it.
+func TestUnknownRuleShownOnce(t *testing.T) {
+	a, b := t.TempDir(), t.TempDir()
+	for _, root := range []string{a, b} {
+		if err := os.WriteFile(filepath.Join(root, "m.sh"), []byte("A=$((0 A\nf() { :; }\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := clientWith(t, clientCfg{folders: []string{a, b}, initOpts: map[string]any{"diagnostics": map[string]any{"disable": []string{"WB9999", "WB1102"}}}})
+	c.root = a
+	c.open("m.sh")
+	d := c.waitDiag("m.sh")
+	if len(d) != 1 || d[0].Code != "WB1003" || strings.Contains(d[0].Message, "runtime error") {
+		t.Fatalf("%+v", d)
+	}
+	c.mu.Lock()
+	shown := append([]json.RawMessage(nil), c.shown...)
+	c.mu.Unlock()
+	if len(shown) != 1 {
+		t.Fatalf("%d messages: %s", len(shown), shown)
+	}
+	var m struct {
+		Type    int    `json:"type"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(shown[0], &m); err != nil || m.Type != 2 || !strings.Contains(m.Message, "WB9999") || strings.Contains(m.Message, "WB1102") {
+		t.Fatalf("%s", shown[0])
+	}
+	logs := c.logs.String()
+	if strings.Contains(logs, `"WB1102"`) || !strings.Contains(logs, "parser failure: runtime error") {
+		t.Fatalf("logs:\n%s", logs)
 	}
 }

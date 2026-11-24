@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"bytes"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -71,7 +72,7 @@ func (s *Snapshot) Diagnostics(path string, opt DiagOptions) []Diagnostic {
 	if ff == nil || ff.File == nil {
 		return out
 	}
-	c := &diagCtx{s: s, file: file, ff: ff, f: ff.File, target: opt.Target}
+	c := &diagCtx{s: s, file: file, ff: ff, f: ff.File, target: opt.Target, disabled: opt.Disabled}
 	if c.target == (VersionRange{}) {
 		c.target = DefaultTarget // no target given: the default range (D-8)
 	}
@@ -85,8 +86,35 @@ func (s *Snapshot) Diagnostics(path string, opt DiagOptions) []Diagnostic {
 		}
 		out = append(out, d)
 	}
+	out = capFindings(c.f, out, opt.Disabled["WB1007"])
 	sortDiagnostics(out)
 	return out
+}
+
+// maxFindings is the most findings Diagnostics returns for one file. Past
+// it the most severe are kept (then the first in the file) and one WB1007
+// says how many were cut: a generated 2 MiB file can otherwise give a
+// quarter of a million findings, 30 MB of JSON per edit.
+const maxFindings = 2000
+
+func capFindings(f *tree.File, ds []Diagnostic, quiet bool) []Diagnostic {
+	if len(ds) <= maxFindings {
+		return ds
+	}
+	slices.SortStableFunc(ds, func(a, b Diagnostic) int {
+		if a.Severity != b.Severity {
+			return int(a.Severity) - int(b.Severity)
+		}
+		return a.Range.Start.Offset - b.Range.Start.Offset
+	})
+	cut := len(ds) - maxFindings
+	ds = ds[:maxFindings]
+	if !quiet {
+		at := f.PosAt(0)
+		ds = append(ds, Diagnostic{Rule: "WB1007", Severity: ruleByID["WB1007"].Default, Range: tree.Range{Start: at, End: at},
+			Message: fmt.Sprintf("%d more findings not shown", cut), Origin: OriginNative})
+	}
+	return ds
 }
 
 func sortDiagnostics(ds []Diagnostic) {
@@ -153,7 +181,11 @@ type diagCtx struct {
 	scan *fileScan
 	out  []Diagnostic
 
-	target VersionRange // the bash versions the file must run on (WB1301)
+	target   VersionRange    // the bash versions the file must run on (WB1301)
+	disabled map[string]bool // rules turned off: they do not run
+
+	oneWords      map[*Symbol]bool    // WB1401: symbols whose every value is one word, on first need
+	unresolvedFns map[*tree.Node]bool // functions of the file that call a name resolving to nothing in view, on first need
 
 	union *nameUnion // what the file's visibility reads or names, built on first need
 }
@@ -163,25 +195,56 @@ func (c *diagCtx) add(rule string, r tree.Range, msg string) *Diagnostic {
 	return &c.out[len(c.out)-1]
 }
 
+// enabled reports whether any of ids is on; it tells ruleRunHook which.
+func (c *diagCtx) enabled(ids ...string) bool {
+	on := false
+	for _, id := range ids {
+		if !c.disabled[id] {
+			on = true
+			if ruleRunHook != nil {
+				ruleRunHook(id)
+			}
+		}
+	}
+	return on
+}
+
+// run computes the findings of the rules that are on; a rule turned off in
+// the settings costs nothing.
 func (c *diagCtx) run() {
 	if c.f.Skipped != "" {
 		// A file skipped for its nesting keeps the syntax error that says so.
-		c.add("WB1002", tree.Range{Start: c.f.PosAt(0), End: c.f.PosAt(0)}, c.f.Skipped)
-		if c.f.Root != nil {
+		if c.enabled("WB1002") {
+			c.add("WB1002", tree.Range{Start: c.f.PosAt(0), End: c.f.PosAt(0)}, c.f.Skipped)
+		}
+		if c.f.Root != nil && c.enabled("WB1001", "WB1003", "WB1005") {
 			c.syntax()
 		}
 		return
 	}
-	c.scan = c.s.scanOf(c.file)
-	c.syntax()
-	c.sources()
-	c.functions()
-	c.localOutside()
-	c.lostAssignments()
-	c.unusedFunctions()
-	c.unusedVariables()
-	c.quoting()
-	c.versions()
+	steps := []struct {
+		ids []string
+		fn  func()
+	}{
+		{[]string{"WB1001", "WB1003", "WB1005"}, c.syntax},
+		{[]string{"WB1008"}, c.directiveIDs},
+		{[]string{"WB1101"}, c.sources},
+		{[]string{"WB1103", "WB1104"}, c.functions},
+		{[]string{"WB1105"}, c.localOutside},
+		{[]string{"WB1106"}, c.lostAssignments},
+		{[]string{"WB1201"}, c.unusedFunctions},
+		{[]string{"WB1202"}, c.unusedVariables},
+		{[]string{"WB1401"}, c.quoting},
+		{[]string{"WB1301", "WB1302"}, c.versions},
+	}
+	for _, st := range steps {
+		if c.enabled(st.ids...) {
+			if c.scan == nil {
+				c.scan = c.s.scanOf(c.file)
+			}
+			st.fn()
+		}
+	}
 }
 
 // --- the per-file scan: one walk of the tree collects every rule's candidates ---
@@ -196,12 +259,13 @@ type fileScan struct {
 	topFuncs   []*tree.Node // function definitions that are top-level statements
 	funcs      []*tree.Node // every function definition
 	wrappers   map[*tree.Node]bool
-	locals     []*tree.Node // `local` commands outside every function
-	quotes     []*tree.Node // unquoted parameter expansions in arguments of file-mutating commands
-	indirect   bool         // `${!` appears: a variable may be read through another's value
-	nameref    bool         // some declaration is a nameref
-	lastpipe   bool         // `lastpipe` appears (shopt -s lastpipe): the last pipeline stage may run in the shell
-	version    versionScan  // evidence for the version rules (versionrules.go)
+	locals     []*tree.Node    // `local` commands outside every function
+	quotes     []*tree.Node    // unquoted parameter expansions in arguments of file-mutating commands
+	indirect   bool            // `${!` appears: a variable may be read through another's value
+	nameref    bool            // some declaration is a nameref
+	lastpipe   bool            // `lastpipe` appears (shopt -s lastpipe): the last pipeline stage may run in the shell
+	localNames map[string]bool // names some function of the file declares local
+	version    versionScan     // evidence for the version rules (versionrules.go)
 }
 
 // fileMentions is what a file names without a binding: words that may name
@@ -219,6 +283,9 @@ type fileMentions struct {
 // shares for every file that did not change: Build carries the entries of
 // those files over (carryDiag), so an edit rescans only the edited file.
 type diagState struct {
+	loaderOnce sync.Once
+	loader     bool // some file sources through a loop variable and that source is unresolved (loopLoader)
+
 	diagMu   sync.Mutex
 	scans    map[*FileFacts]*fileScan
 	mentions map[*FileFacts]*fileMentions
@@ -246,6 +313,23 @@ func (s *Snapshot) carryDiag(prev *Snapshot) {
 			s.words[ff] = w
 		}
 	}
+}
+
+// loopLoader reports whether some file has an unresolved `source` of a
+// loop variable (`for p in plugins/*.sh; do . "$p"; done` whose pattern
+// matched nothing analysable): any script may be one it loads.
+func (s *Snapshot) loopLoader() bool {
+	s.loaderOnce.Do(func() {
+		for _, es := range s.edges {
+			for _, e := range es {
+				if e.Status == SourceUnresolved && e.Ref.loop != nil {
+					s.loader = true
+					return
+				}
+			}
+		}
+	})
+	return s.loader
 }
 
 // scanOf returns the scan of file, made on first use.
@@ -370,6 +454,12 @@ func scanFile(ff *FileFacts) *fileScan {
 			sc.funcs = append(sc.funcs, d.Node)
 		case d.Kind == DeclVariable:
 			sc.nameref = sc.nameref || d.Attrs.Nameref
+			if d.Attrs.Local {
+				if sc.localNames == nil {
+					sc.localNames = map[string]bool{}
+				}
+				sc.localNames[d.Name] = true
+			}
 			if d.Attrs.Local && d.Scope != nil && d.Scope.Func == "" && d.Node != nil {
 				if p := d.Node.Parent; p != nil && p.Kind == tree.KDecl && p.Name == "local" && p != lastLocal {
 					sc.locals = append(sc.locals, p)
@@ -402,10 +492,17 @@ func scanFile(ff *FileFacts) *fileScan {
 			sc.command(u, words, src)
 		}
 	}
-	if sc.topReturn {
+	if sc.topReturn || dualUse(src) {
 		sc.topCommand = false
 	}
 	return sc
+}
+
+// dualUse reports the guard of a file meant to be both run and sourced,
+// `[[ "${BASH_SOURCE[0]}" == "$0" ]]` and its spellings: like a top-level
+// `return`, it marks a library.
+func dualUse(src []byte) bool {
+	return bytes.Contains(src, []byte("BASH_SOURCE")) && (bytes.Contains(src, []byte(`"$0"`)) || bytes.Contains(src, []byte(`${0}`)) || bytes.Contains(src, []byte(` $0 `)))
 }
 
 // inspected are the command names scanFile looks into: the file-changing
@@ -536,8 +633,16 @@ func (w *scanWalker) visit(n *tree.Node, fn *tree.Node, cmdWord bool) {
 		switch {
 		case w.words != nil && !cmdWord:
 			addTokens(w.words, n.Value)
+			for _, f := range strings.Fields(n.Value) { // `ns::work`, `lib.cleanup`, `x@y`: a whole word may name a function
+				w.words[f] = true
+			}
 		case w.m != nil && strings.IndexByte(n.Value, '$') >= 0:
 			addDollarNames(w.m.dollar, n.Value)
+		}
+	case tree.KArithExp:
+		// `$[ expr ]`, the old form of `$(( ))`, which the binder does not read
+		if a, b := n.Range.Start.Offset, n.Range.End.Offset; w.m != nil && a >= 0 && a+2 <= b && b <= len(w.src) && string(w.src[a:a+2]) == "$[" {
+			addIdents(w.m.dollar, string(w.src[a+2:b]))
 		}
 	case tree.KDecl:
 		w.decl(n)
@@ -617,6 +722,13 @@ func (w *scanWalker) mention(n *tree.Node, isCall bool) {
 		if j := wd.Range.Start.Offset - 1; n.Kind == tree.KTest && j >= 2 && j < len(w.src) && w.src[j] == ' ' && w.src[j-2] == '-' && w.src[j-1] == 'v' {
 			addVar(wd)
 		}
+		// `[[ a -gt lim ]]`: the operands of an arithmetic comparison are
+		// arithmetic, where a bare name is a read
+		if n.Kind == tree.KTest && w.arithOperand(n, i) {
+			if t, ok := literalText(wd); ok {
+				addIdents(w.m.dollar, t)
+			}
+		}
 	}
 	if isCall {
 		if name, ok := wordName(words[0]); ok && name == "set" {
@@ -627,6 +739,51 @@ func (w *scanWalker) mention(n *tree.Node, isCall bool) {
 				}
 			}
 		}
+	}
+}
+
+var arithOps = map[string]bool{"-eq": true, "-ne": true, "-lt": true, "-le": true, "-gt": true, "-ge": true}
+
+// arithOperand reports whether word i of the test n stands next to an
+// arithmetic comparison operator (the operators are not nodes: the text
+// between the words holds them).
+func (w *scanWalker) arithOperand(n *tree.Node, i int) bool {
+	words := w.cmd
+	gap := func(a, b int) bool {
+		if a < 0 || b > len(w.src) || a >= b {
+			return false
+		}
+		for _, f := range strings.Fields(string(w.src[a:b])) {
+			if arithOps[f] {
+				return true
+			}
+		}
+		return false
+	}
+	before := n.Range.Start.Offset
+	if i > 0 {
+		before = words[i-1].Range.End.Offset
+	}
+	after := n.Range.End.Offset
+	if i+1 < len(words) {
+		after = words[i+1].Range.Start.Offset
+	}
+	return gap(before, words[i].Range.Start.Offset) || gap(words[i].Range.End.Offset, after)
+}
+
+// addIdents adds every identifier in v (arithmetic text) to m.
+func addIdents(m map[string]bool, v string) {
+	for i := 0; i < len(v); {
+		if !isIdentStart(v[i]) || i > 0 && isIdentChar(v[i-1]) {
+			i++
+			continue
+		}
+		j := i + 1
+		for j < len(v) && isIdentChar(v[j]) {
+			j++
+		}
+		m[v[i:j]] = true
+		i = j
 	}
 }
 
@@ -829,3 +986,6 @@ func (c *diagCtx) visibleWords() map[string]bool {
 	})
 	return u.words
 }
+
+// ruleRunHook, when set (by tests), is told each rule id a run computes.
+var ruleRunHook func(id string)

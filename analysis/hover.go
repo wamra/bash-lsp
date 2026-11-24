@@ -45,7 +45,7 @@ func (s *Snapshot) Hover(path string, offset int) (markdown string, rng tree.Ran
 		return "", tree.Range{}, false
 	}
 	if e := h.edge; e != nil {
-		if e.Status != SourceUnresolved || e.Ref.Word == nil {
+		if e.Status != SourceUnresolved || e.Ref.Word == nil || notAFile(e.Ref.Word) {
 			return "", tree.Range{}, false
 		}
 		if e.Skipped != "" {

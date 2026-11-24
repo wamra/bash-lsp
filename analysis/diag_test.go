@@ -263,11 +263,12 @@ func TestRulesRegistry(t *testing.T) {
 		sc  []string
 	}{
 		"WB1001": {SevError, nil}, "WB1002": {SevInfo, nil}, "WB1003": {SevInfo, nil}, "WB1005": {SevInfo, nil},
-		"WB1101": {SevWarning, nil}, "WB1103": {SevInfo, nil}, "WB1104": {SevInfo, nil},
+		"WB1007": {SevInfo, nil}, "WB1008": {SevInfo, nil},
+		"WB1101": {SevWarning, []string{"SC1090", "SC1091"}}, "WB1103": {SevInfo, nil}, "WB1104": {SevInfo, nil},
 		"WB1105": {SevError, []string{"SC2168"}}, "WB1106": {SevWarning, []string{"SC2030", "SC2031"}},
 		"WB1201": {SevHint, []string{"SC2329"}}, "WB1202": {SevHint, []string{"SC2034"}},
 		"WB1301": {SevWarning, nil}, "WB1302": {SevWarning, []string{"SC3*", "SC2113"}},
-		"WB1401": {SevWarning, []string{"SC2086"}},
+		"WB1401": {SevWarning, []string{"SC2086", "SC2068"}},
 	}
 	rules := Rules()
 	if len(rules) != len(want) {
@@ -315,7 +316,7 @@ func TestWB1401Fix(t *testing.T) {
 		t.Fatalf("%+v", ds)
 	}
 	fx := ds[0].Fixes[0]
-	if !fx.Safe || fx.Title == "" {
+	if fx.Safe || fx.Title == "" { // offered, never safe: quoting changes intended splitting (R69)
 		t.Fatalf("%+v", fx)
 	}
 	if got := applyEdits(src, fx.Edits); got != "rm \"$f\"\n" {
@@ -489,7 +490,7 @@ func TestDiagOptions(t *testing.T) {
 
 // Findings come sorted by offset, then rule.
 func TestDiagnosticsSorted(t *testing.T) {
-	src := "#!/bin/bash\nf(){ local u=1; rm $u; }\nf(){ :; }\nrm $x\nsource ./nope.sh\n"
+	src := "#!/bin/bash\nf(){ local u=$1; rm $u; }\nf(){ :; }\nrm $x\nsource ./nope.sh\n"
 	ds := diagsIn(map[string]string{"x.sh": src}, "x.sh")
 	if len(ds) < 4 {
 		t.Fatalf("%s", describe(src, ds))
@@ -539,7 +540,7 @@ func TestDiagTestdata(t *testing.T) {
 		}
 	}
 	for _, r := range Rules() {
-		if !seen[r.ID] && r.ID != "WB1002" {
+		if !seen[r.ID] && r.ID != "WB1002" && r.ID != "WB1007" { // a 3 MiB file, 2,000 findings: generated in TestRuleTable, TestFindingsCap
 			t.Errorf("no testdata/diag file for %s", r.ID)
 		}
 	}

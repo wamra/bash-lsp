@@ -107,6 +107,9 @@ type server struct {
 	watchDynamic bool     // the client registers didChangeWatchedFiles dynamically
 	roots        []string // the workspace folders as the client spelled them
 	initOpts     json.RawMessage
+	shownMu      sync.Mutex
+	shown        map[string]bool      // messages shown to the user this session (warnOnce)
+	logged       map[string]bool      // internal parser errors logged this session (logInternal)
 	looseDiag    analysis.DiagOptions // settings of documents outside every folder
 
 	started bool
@@ -515,6 +518,7 @@ func (s *server) publish(be backend, d *document, path string) {
 	diags := []Diagnostic{}
 	snap := be.Snapshot()
 	if ff := snap.Facts(path); ff != nil && ff.File != nil {
+		s.logInternal(path, ff.File)
 		conv := ff.File.NewConverter()
 		for _, x := range snap.Diagnostics(path, s.diagOptions(be)) {
 			out := Diagnostic{Severity: int(x.Severity), Code: x.Rule, Source: x.Origin, Message: x.Message}
@@ -550,14 +554,50 @@ func (s *server) settings(root string) analysis.DiagOptions {
 	for _, w := range st.Warnings {
 		s.log.Printf("settings: %s", w)
 	}
-	known := map[string]bool{}
-	for _, r := range analysis.Rules() {
-		known[r.ID] = true
-	}
-	for _, w := range st.CheckRules(func(id string) bool { return known[id] }) {
+	for _, w := range st.CheckRules(analysis.KnownRule) {
 		s.log.Printf("settings: %s", w)
+		s.warnOnce("settings: " + w)
 	}
 	return analysis.DiagOptions{Target: st.Target, Disabled: st.Disabled, Severity: st.Severity}
+}
+
+// messageTypeWarning is LSP MessageType 2, Warning.
+const messageTypeWarning = 2
+
+// warnOnce shows msg to the user (window/showMessage), once per session.
+// Called from the folder opener as well as the loop.
+func (s *server) warnOnce(msg string) {
+	s.shownMu.Lock()
+	defer s.shownMu.Unlock()
+	if s.shown == nil {
+		s.shown = map[string]bool{}
+	}
+	if s.shown[msg] {
+		return
+	}
+	s.shown[msg] = true
+	s.c.notify("window/showMessage", showMessageParams{Type: messageTypeWarning, Message: "bash-lsp " + msg})
+}
+
+// logInternal writes the text of each recovered parser panic of f to the
+// log, once per file and text: the published finding (WB1003) leaves it out.
+func (s *server) logInternal(path string, f *tree.File) {
+	for _, e := range f.Errors {
+		if !e.Internal {
+			continue
+		}
+		k := path + "\x00" + e.Msg
+		s.shownMu.Lock()
+		if s.logged == nil {
+			s.logged = map[string]bool{}
+		}
+		seen := s.logged[k]
+		s.logged[k] = true
+		s.shownMu.Unlock()
+		if !seen {
+			s.log.Printf("%s:%d: %s", path, e.Range.Start.Line, e.Msg)
+		}
+	}
 }
 
 // ---- positions ----

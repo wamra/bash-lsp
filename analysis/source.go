@@ -108,6 +108,15 @@ func (r *resolver) resolve(ref SourceRef) SourceEdge {
 		return e
 	}
 	if lit, ok := literalText(ref.Word); ok && lit != "" {
+		if r.batsLoad(ref) {
+			// bats `load NAME`: NAME.bash, else NAME, beside the test file
+			for _, p := range []string{lit + ".bash", lit} {
+				if t := r.firstExisting(p, r.dir); t != "" {
+					return hit("literal", t)
+				}
+			}
+			return e
+		}
 		if t := r.firstExisting(lit, r.dir, []string{r.root}, r.search); t != "" {
 			return hit("literal", t)
 		}
@@ -119,6 +128,21 @@ func (r *resolver) resolve(ref SourceRef) SourceEdge {
 		return hit("loop-glob", ts...)
 	}
 	return e
+}
+
+// batsLoad reports a bats `load` command (Bind records `load` as a source
+// only in a bats file).
+func (r *resolver) batsLoad(ref SourceRef) bool {
+	if r.ff.File == nil || r.ff.File.Dialect != tree.Bats || ref.Node == nil {
+		return false
+	}
+	for _, w := range ref.Node.Children {
+		if w.Kind == tree.KWord {
+			name, ok, _ := commandName(w)
+			return ok && name == "load"
+		}
+	}
+	return false
 }
 
 // firstExisting tries p as-is when absolute, else against each directory in

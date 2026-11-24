@@ -3,6 +3,7 @@ package analysis
 import (
 	"bytes"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -18,7 +19,9 @@ var rules = []RuleInfo{
 	{"WB1002", "file-skipped", SevInfo, nil, "the file was not parsed (too large, or a dialect that is not supported)"},
 	{"WB1003", "internal-error", SevInfo, nil, "the parser or lowerer failed on this region; it is incomplete"},
 	{"WB1005", "resync-budget", SevInfo, nil, "error recovery used up its budget: the rest of the file is one error gap"},
-	{"WB1101", "unresolved-source", SevWarning, nil, "a `source` whose file is not in the workspace or was skipped for its size"},
+	{"WB1007", "findings-cap", SevInfo, nil, "more findings than are shown for one file"},
+	{"WB1008", "unknown-directive-rule", SevInfo, nil, "a `# bash-lsp disable=` directive names a rule id no rule has"},
+	{"WB1101", "unresolved-source", SevWarning, []string{"SC1090", "SC1091"}, "a `source` whose file is not in the workspace or was skipped for its size"},
 	{"WB1103", "duplicate-function", SevInfo, nil, "a function defined twice at the top level of one file"},
 	{"WB1104", "builtin-name", SevInfo, nil, "a function named like a builtin replaces it"},
 	{"WB1105", "local-outside-function", SevError, []string{"SC2168"}, "`local` outside a function fails"},
@@ -27,7 +30,7 @@ var rules = []RuleInfo{
 	{"WB1202", "unused-variable", SevHint, []string{"SC2034"}, "a variable that is assigned but never read"},
 	{"WB1301", "bash-version", SevWarning, nil, "a feature newer than the oldest bash version the target range names"},
 	{"WB1302", "bash-only-in-sh", SevWarning, []string{"SC3*", "SC2113"}, "a bash-only feature in a file that is an sh script"},
-	{"WB1401", "unquoted-file-argument", SevWarning, []string{"SC2086"}, "an unquoted expansion in an argument of a command that changes files"},
+	{"WB1401", "unquoted-file-argument", SevWarning, []string{"SC2086", "SC2068"}, "an unquoted expansion in an argument of a command that changes files"},
 }
 
 var ruleByID = func() map[string]RuleInfo {
@@ -37,6 +40,13 @@ var ruleByID = func() map[string]RuleInfo {
 	}
 	return m
 }()
+
+// reservedRules are the ids of rules the plan names that are not built yet:
+// settings and directives naming them are not mistakes.
+var reservedRules = map[string]bool{"WB1004": true, "WB1006": true, "WB1102": true}
+
+// KnownRule reports whether id names a native rule, built or reserved.
+func KnownRule(id string) bool { _, ok := ruleByID[id]; return ok || reservedRules[id] }
 
 // Rules lists the native rules.
 func Rules() []RuleInfo {
@@ -103,7 +113,11 @@ func (c *diagCtx) syntax() {
 				r.End = end
 			}
 		}
-		c.add(rule, r, e.Msg)
+		msg := e.Msg
+		if e.Internal { // the panic text is for the log (the server writes it), not the user
+			msg = fmt.Sprintf("internal parser error; this file is analysed up to line %d", e.Range.Start.Line)
+		}
+		c.add(rule, r, msg)
 	}
 	for i, g := range gaps {
 		if !covered[i] {
@@ -116,12 +130,33 @@ func (c *diagCtx) syntax() {
 	}
 }
 
+// --- WB1008: unknown rule id in a directive ---
+
+func (c *diagCtx) directiveIDs() {
+	for _, cm := range c.f.Comments {
+		d, ok := parseDirective(cm.Value)
+		if !ok || d.wb == nil || !aloneOnLine(c.f.Src, cm) {
+			continue
+		}
+		var unknown []string
+		for id := range d.wb {
+			if !KnownRule(id) {
+				unknown = append(unknown, id)
+			}
+		}
+		if len(unknown) > 0 {
+			sort.Strings(unknown)
+			c.add("WB1008", cm.Range, "unknown rule id in a bash-lsp directive: "+strings.Join(unknown, ", "))
+		}
+	}
+}
+
 // --- WB1101: unresolved source ---
 
 func (c *diagCtx) sources() {
 	src := c.f.Src
 	for _, e := range c.s.edges[c.file] {
-		if e.Status != SourceUnresolved || e.Ref.Word == nil {
+		if e.Status != SourceUnresolved || e.Ref.Word == nil || notAFile(e.Ref.Word) {
 			continue
 		}
 		r := e.Ref.Word.Range
@@ -129,18 +164,118 @@ func (c *diagCtx) sources() {
 		if a, b := r.Start.Offset, r.End.Offset; a >= 0 && a <= b && b <= len(src) {
 			text = string(src[a:b])
 		}
-		_, literal := literalText(e.Ref.Word)
+		lit, literal := literalText(e.Ref.Word)
 		switch {
 		case e.Skipped != "":
 			c.add("WB1101", r, fmt.Sprintf("source file is over the %d MiB analysis limit and was skipped: %s (unresolved/%s)",
 				MaxFileBytes>>20, c.s.rel(e.Skipped), ReasonSkippedForSize))
 		case literal:
-			c.add("WB1101", r, fmt.Sprintf("source file not found in the workspace: %s (unresolved/%s)", text, ReasonNotFound))
+			d := c.add("WB1101", r, fmt.Sprintf("source file not found in the workspace: %s (unresolved/%s)", text, ReasonNotFound))
+			if c.outsideWorkspace(lit) || guardedSource(e.Ref, lit, src) {
+				d.Severity = SevInfo
+			}
 		default:
 			d := c.add("WB1101", r, fmt.Sprintf("source path is computed and could not be resolved: %s (unresolved/%s)", text, ReasonNotFound))
 			d.Severity = SevInfo
 		}
 	}
+}
+
+// notAFile reports a `source` operand that names no file to resolve: a
+// device or /proc path (`source /dev/stdin`, `/dev/null`) or a process
+// substitution (`source <(cmd)`).
+func notAFile(w *tree.Node) bool {
+	if len(w.Children) > 0 && w.Children[0].Kind == tree.KProcSubst {
+		return true
+	}
+	lit, ok := literalText(w)
+	return ok && (strings.HasPrefix(lit, "/dev/") || strings.HasPrefix(lit, "/proc/"))
+}
+
+// outsideWorkspace reports a literal path that cannot be a workspace file:
+// absolute outside the root, under the home directory (`~/`), or a bare name
+// that bash looks up in PATH.
+func (c *diagCtx) outsideWorkspace(lit string) bool {
+	switch {
+	case strings.HasPrefix(lit, "~"):
+		return true
+	case !strings.Contains(lit, "/"):
+		return true
+	case filepath.IsAbs(lit):
+		root := c.s.root
+		if root == "" {
+			return true
+		}
+		rel, err := filepath.Rel(root, filepath.Clean(lit))
+		return err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	}
+	return false
+}
+
+// fileTestOps are the test operators that check a file exists or is readable.
+var fileTestOps = map[string]bool{"-f": true, "-r": true, "-e": true, "-s": true}
+
+// guardedSource reports a `source` of lit behind a test on the same path:
+// `[ -f P ] && . P`, `if [[ -r P ]]; then . P; fi`, `test -e P && source P`.
+func guardedSource(ref SourceRef, lit string, src []byte) bool {
+	child := ref.Node
+	for n, depth := ref.Node.Parent, 0; n != nil && depth < 8; n, depth = n.Parent, depth+1 {
+		switch n.Kind {
+		case tree.KFuncDecl, tree.KFile:
+			return false
+		case tree.KAndOr:
+			for _, op := range n.Children {
+				if op == child || op.Range.Start.Offset >= child.Range.Start.Offset {
+					break
+				}
+				if testsPath(op, lit, src) {
+					return true
+				}
+			}
+		case tree.KIf:
+			if len(n.Children) > 0 && n.Children[0] != child && testsPath(n.Children[0], lit, src) {
+				return true
+			}
+		}
+		child = n
+	}
+	return false
+}
+
+// testsPath reports whether n holds a test (`[[ ]]`, `[ ]`, `test`) with a
+// file operator whose operand is lit.
+func testsPath(n *tree.Node, lit string, src []byte) bool {
+	found := false
+	n.Walk(func(k *tree.Node) bool {
+		if found {
+			return false
+		}
+		if k.Kind != tree.KTest && k.Kind != tree.KCall {
+			return true
+		}
+		a, b := k.Range.Start.Offset, k.Range.End.Offset
+		if a < 0 || b > len(src) || a >= b {
+			return false
+		}
+		fields := strings.Fields(string(src[a:b]))
+		if k.Kind == tree.KCall && (len(fields) == 0 || fields[0] != "[" && fields[0] != "test") {
+			return true
+		}
+		op := false
+		for _, f := range fields {
+			op = op || fileTestOps[f]
+		}
+		if !op {
+			return false
+		}
+		for _, w := range k.Children {
+			if t, ok := literalText(w); ok && t == lit {
+				found = true
+			}
+		}
+		return false
+	})
+	return found
 }
 
 // --- WB1103, WB1104: function definitions ---
@@ -267,12 +402,14 @@ func (c *diagCtx) lostAssignments() {
 // --- WB1201, WB1202: unused ---
 
 // scriptConditions are the file conditions for an unused function and an
-// unused global: a script (a shebang and a top-level command) that nothing
-// sources, not bats, whose graph is complete, and where no visible file has
-// a dynamic call or code that was not analysed.
+// unused global: a script (a shebang and a top-level command, no top-level
+// `return` or dual-use guard) that nothing sources, not bats, whose graph is
+// complete, where no visible file has a dynamic call or code that was not
+// analysed, and no file of the workspace loads scripts through a loop
+// variable it could not resolve.
 func (c *diagCtx) scriptConditions() bool {
 	sc := c.scan
-	if !sc.shebang || !sc.topCommand || c.s.sourced[c.file] || c.s.incomplete[c.file] || c.f.Dialect == tree.Bats {
+	if !sc.shebang || !sc.topCommand || c.s.sourced[c.file] || c.s.incomplete[c.file] || c.f.Dialect == tree.Bats || c.s.loopLoader() {
 		return false
 	}
 	u := c.visible()
@@ -312,8 +449,10 @@ func (c *diagCtx) unusedFunctions() {
 }
 
 // unusedVariables reports a variable that is assigned and never read: a
-// local or a subshell's variable always, a global only under
-// scriptConditions and when not exported. Never `_`, a variable the shell
+// local or a subshell's variable (in a library only when its function calls
+// nothing that resolves to nothing in view), a global only under
+// scriptConditions, when not exported and not a value returned to a
+// caller's local; never an accumulator (`+=`). Never `_`, a variable the shell
 // itself uses, an upper-case name (an environment variable by convention),
 // a nameref, or one set implicitly (`read`, `for`, `getopts`, ...). A name
 // the visibility may read by name (readByName: dynamic scope, `"$name"`, a
@@ -340,10 +479,16 @@ func (c *diagCtx) unusedVariables() {
 			}
 			seen[sym] = true
 		}
-		if symFlags(sym, func(a VarAttrs) bool { return a.Exported || a.Nameref }) || readIn(s.bySym[sym]) {
+		if symFlags(sym, func(a VarAttrs) bool { return a.Exported || a.Nameref }) || readIn(s.bySym[sym]) || c.appended(sym) {
 			continue
 		}
 		global := sym.File == ""
+		if global && c.returnValue(sym) {
+			continue
+		}
+		if !global && !c.scriptShaped() && c.unresolvedCallIn(d) {
+			continue
+		}
 		if global {
 			if script < 0 {
 				script = 0
@@ -369,6 +514,81 @@ func (c *diagCtx) unusedVariables() {
 		dg := c.add("WB1202", d.NameRange, fmt.Sprintf("%s %s is assigned but never read", what, d.Name))
 		dg.Unnecessary = true
 	}
+}
+
+// appended reports whether some declaration of sym appends (`xs+=(1)`,
+// `s+=x`): an accumulator, which ShellCheck 0.11.0 does not report either.
+func (c *diagCtx) appended(sym *Symbol) bool {
+	for _, d := range sym.Decls {
+		src := c.s.src(d)
+		i := d.NameRange.End.Offset
+		if i >= 0 && i < len(src) && src[i] == '[' {
+			if j := bytes.IndexByte(src[i:], ']'); j > 0 {
+				i += j + 1
+			}
+		}
+		if i >= 0 && i+1 < len(src) && src[i] == '+' && src[i+1] == '=' {
+			return true
+		}
+	}
+	return false
+}
+
+// returnValue reports whether global sym is assigned inside a function and
+// some function in view declares a local of its name: the assignment may
+// write that caller's local through dynamic scope (a value returned in a
+// variable, `set_it() { result=5; }`).
+func (c *diagCtx) returnValue(sym *Symbol) bool {
+	inFunc := false
+	for _, d := range sym.Decls {
+		if funcBody(d.Scope) != nil {
+			inFunc = true
+			break
+		}
+	}
+	if !inFunc {
+		return false
+	}
+	found := false
+	c.s.visible[c.file].each(func(j int) {
+		if !found && c.s.facts[j] != nil {
+			found = c.s.scanOf(j).localNames[sym.Name]
+		}
+	})
+	return found
+}
+
+// scriptShaped reports a file with a shebang and a top-level command (and
+// no top-level return or dual-use guard): a script, not a library.
+func (c *diagCtx) scriptShaped() bool { return c.scan.shebang && c.scan.topCommand }
+
+// unresolvedCallIn reports whether the function holding local (or private)
+// variable d calls a name with no resolved target in view (none, or only a
+// name match in a file outside the closure): in a library
+// that callee may be a function of a file that sources it, reading d
+// through dynamic scope.
+func (c *diagCtx) unresolvedCallIn(d *Decl) bool {
+	fn := funcBody(d.Scope)
+	if fn == nil {
+		return true
+	}
+	if c.unresolvedFns == nil {
+		c.unresolvedFns = map[*tree.Node]bool{}
+		bound := map[*Use]bool{} // calls with a resolved target; a name match outside the closure may be the reader
+		for k := range c.s.bindings[c.file] {
+			if b := &c.s.bindings[c.file][k]; b.Res == Resolved {
+				bound[b.Use] = true
+			}
+		}
+		for _, u := range c.ff.Uses {
+			if u.Kind == UseCall && u.Via == ViaNone && !u.ViaAlias && !bound[u] && !IsBuiltin(u.Name) {
+				if f := funcBody(u.Scope); f != nil {
+					c.unresolvedFns[f] = true
+				}
+			}
+		}
+	}
+	return c.unresolvedFns[fn]
 }
 
 // upperName reports a name with no lower-case letter: by convention an
@@ -407,19 +627,137 @@ func (c *diagCtx) quoting() {
 	src := c.f.Src
 	bs := c.s.bindings[c.file]
 	for _, p := range c.scan.quotes {
-		if c.integerAt(bs, p) {
-			continue
-		}
 		a, b := p.Range.Start.Offset, p.Range.End.Offset
 		text := string(src[a:b])
+		if (text == "$"+p.Name || text == "${"+p.Name+"}") && c.oneWordAt(bs, p) {
+			continue
+		}
 		d := c.add("WB1401", p.Range, fmt.Sprintf("%s is not quoted: its value is split into words and expanded as a glob; write \"%s\"", text, text))
+		// Never safe: a script may split on purpose (`set -f; IFS=,; rm $list`).
 		d.Fixes = []Fix{{
 			Title: fmt.Sprintf("Quote %s", text),
 			Edits: []TextEdit{{Range: p.Range, NewText: "\"" + text + "\""}},
-			Safe:  !strings.ContainsAny(text, "\"'`\\"),
 		}}
 	}
 }
+
+// oneWordAt reports whether the read of p binds only to variables whose
+// every assignment in view is provably one word without glob characters
+// (oneWord): then the unquoted expansion cannot split or glob.
+func (c *diagCtx) oneWordAt(bs []Binding, p *tree.Node) bool {
+	off := p.NameRange.Start.Offset
+	i := sort.Search(len(bs), func(i int) bool { return bs[i].Use.Range.Start.Offset >= off })
+	found := false
+	for ; i < len(bs) && bs[i].Use.Range.Start.Offset == off; i++ {
+		b := bs[i]
+		if b.Use.Node != p {
+			continue
+		}
+		if b.Sym == nil || b.Res == Unresolved || !c.oneWord(b.Sym) {
+			return false
+		}
+		found = true
+	}
+	return found
+}
+
+// oneWord reports whether every assignment of sym in view is one word
+// without whitespace or glob characters: a literal, an arithmetic
+// expansion, an arithmetic write, a `for` over such literals, or any value
+// of an integer variable. Cached per symbol.
+func (c *diagCtx) oneWord(sym *Symbol) bool {
+	if v, ok := c.oneWords[sym]; ok {
+		return v
+	}
+	ok := c.oneWordUncached(sym)
+	if c.oneWords == nil {
+		c.oneWords = map[*Symbol]bool{}
+	}
+	c.oneWords[sym] = ok
+	return ok
+}
+
+func (c *diagCtx) oneWordUncached(sym *Symbol) bool {
+	s := c.s
+	if symFlags(sym, func(a VarAttrs) bool { return a.Integer }) {
+		return true
+	}
+	assigned := false
+	for _, d := range sym.Decls {
+		if d.Temp || !s.visible[c.file].has(s.declFile[d]) {
+			continue
+		}
+		switch {
+		case d.Implicit == "arith":
+		case d.Implicit == "for":
+			if !forOverWords(d.Node) {
+				return false
+			}
+		case d.Implicit == "" && d.Node != nil && d.Node.Kind == tree.KAssign:
+			if !s.assigns(d) {
+				continue // `local x`: declares, assigns nothing
+			}
+			if !s.plainAssign(d) || !oneWordValue(d.Node) {
+				return false
+			}
+		default:
+			return false
+		}
+		assigned = true
+	}
+	return assigned
+}
+
+// plainAssign reports `name=value` (no `+=`, subscript or array).
+func (s *Snapshot) plainAssign(d *Decl) bool {
+	if a := d.Attrs; a.Nameref || a.Array || a.Assoc {
+		return false
+	}
+	src := s.src(d)
+	i := d.NameRange.End.Offset
+	return i+1 <= len(src) && i < len(src) && src[i] == '=' && (i+1 == len(src) || src[i+1] != '(')
+}
+
+// oneWordValue reports whether the value of assignment n is a non-empty
+// literal without whitespace or glob characters, or one arithmetic
+// expansion.
+func oneWordValue(n *tree.Node) bool {
+	var w *tree.Node
+	for _, k := range n.Children {
+		if k.Kind == tree.KWord {
+			w = k
+		}
+	}
+	if w == nil {
+		return false
+	}
+	if len(w.Children) == 1 && w.Children[0].Kind == tree.KArithExp {
+		return true
+	}
+	t, ok := literalText(w)
+	return ok && safeWord(t)
+}
+
+// forOverWords reports a `for` loop over literal words, each safeWord.
+func forOverWords(n *tree.Node) bool {
+	if n == nil || n.Kind != tree.KFor {
+		return false
+	}
+	words := 0
+	for _, k := range n.Children {
+		if k.Kind != tree.KWord {
+			continue
+		}
+		t, ok := literalText(k)
+		if !ok || !safeWord(t) {
+			return false
+		}
+		words++
+	}
+	return words > 0
+}
+
+func safeWord(t string) bool { return t != "" && !strings.ContainsAny(t, " \t\n*?[") }
 
 // integerAt reports whether the read of p binds to a variable with the
 // integer attribute.

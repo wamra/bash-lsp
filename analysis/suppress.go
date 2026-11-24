@@ -21,9 +21,11 @@ import (
 // before the first command applies to the whole file; otherwise to the
 // command or block that follows it.
 var (
-	wbDirectiveRe = regexp.MustCompile(`^bash-lsp\s+(?:.*\s)?disable=(\S+)`)
+	wbDirectiveRe = regexp.MustCompile(`^bash-lsp\s+(?:.*\s)?disable=(.*)$`)
 	scDirectiveRe = regexp.MustCompile(`^shellcheck\s+(?:.*\s)?disable=(\S+)`)
 	scCodeRe      = regexp.MustCompile(`^SC(\d{4})$`)
+	bareCodeRe    = regexp.MustCompile(`^\d{4}$`)
+	listSepRe     = regexp.MustCompile(`[,\s]+`)
 )
 
 type directive struct {
@@ -88,8 +90,10 @@ func codeSpan(c string) (lo, hi int, ok bool) {
 func parseDirective(text string) (d directive, ok bool) {
 	if m := wbDirectiveRe.FindStringSubmatch(text); m != nil {
 		d.wb = map[string]bool{}
-		for _, id := range strings.Split(m[1], ",") {
-			d.wb[strings.TrimSpace(id)] = true
+		for _, id := range listSepRe.Split(strings.TrimSpace(m[1]), -1) {
+			if id != "" {
+				d.wb[id] = true
+			}
 		}
 		return d, true
 	}
@@ -106,6 +110,14 @@ func parseDirective(text string) (d directive, ok bool) {
 		a, b, isRange := strings.Cut(code, "-")
 		if !isRange {
 			b = a
+		}
+		// ShellCheck 0.11.0 takes a code without its SC prefix (`disable=2086`)
+		// and refuses a lower-case prefix (`sc2086`: SC1072, SC1073).
+		if bareCodeRe.MatchString(a) {
+			a = "SC" + a
+		}
+		if bareCodeRe.MatchString(b) {
+			b = "SC" + b
 		}
 		x, _, okA := codeSpan(a)
 		_, y, okB := codeSpan(b)
@@ -128,7 +140,7 @@ func suppress(f *tree.File, ds []Diagnostic) []Diagnostic {
 	var dirs []directive
 	for _, c := range f.Comments {
 		d, ok := parseDirective(c.Value)
-		if !ok {
+		if !ok || !aloneOnLine(f.Src, c) {
 			continue
 		}
 		if c.Range.Start.Offset < firstCmd {
@@ -195,18 +207,58 @@ func suppress(f *tree.File, ds []Diagnostic) []Diagnostic {
 	return out
 }
 
-// nextCommand returns the statement that follows comment c: the first
-// statement after it among the children of the node holding it, else of
-// that node's ancestors.
+// aloneOnLine reports whether comment c is the only thing on its line: a
+// directive after a command applies to nothing (ShellCheck refuses one
+// there, SC1126).
+func aloneOnLine(src []byte, c *tree.Node) bool {
+	o := c.Range.Start.Offset
+	for i := o - 1; i >= 0 && i < len(src) && src[i] != '\n'; i-- {
+		if src[i] != ' ' && src[i] != '\t' {
+			return false
+		}
+	}
+	return true
+}
+
+// bodies are the nodes a directive cannot reach out of: a compound command
+// or a body. A directive with no command after it in one covers nothing.
+var bodies = map[tree.Kind]bool{tree.KFile: true, tree.KIf: true, tree.KWhile: true, tree.KFor: true, tree.KCStyleFor: true,
+	tree.KCase: true, tree.KBlock: true, tree.KSubshell: true, tree.KFuncDecl: true, tree.KCoproc: true, tree.KTime: true,
+	tree.KCmdSubst: true, tree.KProcSubst: true}
+
+// nextCommand returns the statement that follows comment c in the body
+// that holds it (a body's first statement when what follows is a body, as
+// the `then` part after a directive inside `if`); nil when the body has no
+// statement after it.
 func nextCommand(c *tree.Node) *tree.Node {
 	end := c.Range.End.Offset
 	for n := c.Parent; n != nil; n = n.Parent {
 		kids := n.Children
 		i := sort.Search(len(kids), func(i int) bool { return kids[i].Range.Start.Offset >= end })
 		for ; i < len(kids); i++ {
-			if k := kids[i]; k.Kind == tree.KStmt {
-				return k
+			if s := firstStmt(kids[i]); s != nil {
+				return s
 			}
+		}
+		if bodies[n.Kind] {
+			return nil
+		}
+	}
+	return nil
+}
+
+// firstStmt returns n when it is a statement, else the first statement in
+// n when n is a body or compound command, else nil.
+func firstStmt(n *tree.Node) *tree.Node {
+	if n.Kind == tree.KStmt {
+		return n
+	}
+	if !bodies[n.Kind] {
+		return nil
+	}
+	for _, k := range n.Children {
+		if s := firstStmt(k); s != nil {
+			return s
 		}
 	}
 	return nil
