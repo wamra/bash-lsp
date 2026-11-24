@@ -159,7 +159,7 @@ func (s *Snapshot) LimitsHit() []string {
 	for file, l := range s.renLim {
 		for c, n := range l {
 			if n.n > 0 {
-				add(file, n.line, renameCapFormats[c], n.n, renameCapBounds[c])
+				add(file, n.line, renameCapFormats[c], n.n, renameCapBound(renameCap(c)))
 			}
 		}
 	}

@@ -70,6 +70,9 @@ const (
 	reasonReachCap        = "dynamic scope: the call graph around the name is too large to check"
 	reasonNameReference   = "the name is also written where the analysis finds no use of it (unset, type, declare -n, export -f, test -v, trap or eval strings, indirection)"
 	reasonSpecialVar      = "the new name is a special shell variable"
+	reasonSpecialSource   = "renaming a shell-special variable: the shell itself reads or sets it"
+	reasonDynamicCall     = "dynamic scope: a function that declares a local of this name makes a call the analysis cannot follow, which may reach code that reads or writes the name"
+	reasonNewNameInString = "the new name appears in an eval or trap string that an edited function reaches, where it would read the renamed symbol"
 	reasonCalledCommand   = "the new name is called as a command in view, so those calls would reach the renamed function"
 	reasonSameName        = "the new name is the old name"
 	reasonInexactName     = "inexact-name" // the text of a site is not exactly the name (an exclusion reason)
@@ -79,7 +82,6 @@ const (
 	maxRenameSites  = 100000 // edits plus exclusions; above it the plan is refused with RefuseTooMany
 	maxRenameOthers = 1000   // declarations listed in RenamePlan.Others
 	maxRenameByName = 256    // same-named functions a rename by name tells apart
-	maxRenameReach  = 20000  // call-graph nodes a dynamic-scope check visits
 	maxRefusalSites = 100    // sites listed in one refusal
 	// maxExcludedText is the most bytes of source text an exclusion keeps, cut on
 	// a rune boundary. The text is raw: the encoder that sends it outward
@@ -87,6 +89,10 @@ const (
 	// past the redaction patterns.
 	maxExcludedText = 4096
 )
+
+// maxRenameReach is the number of call-graph nodes a dynamic-scope check
+// visits; a variable only so that a test can lower it.
+var maxRenameReach = 20000
 
 // renameCap names a bound of rename that a LimitsHit line reports.
 type renameCap uint8
@@ -110,8 +116,19 @@ var renameCapFormats = [...]string{
 	capReach:  "rename reach cap: %d dynamic-scope checks visited more than %d call-graph nodes and refused",
 }
 
-var renameCapBounds = [...]int{capOthers: maxRenameOthers, capSites: maxRefusalSites, capText: maxExcludedText,
-	capByName: maxRenameByName, capReach: maxRenameReach}
+func renameCapBound(c renameCap) int {
+	switch c {
+	case capOthers:
+		return maxRenameOthers
+	case capSites:
+		return maxRefusalSites
+	case capText:
+		return maxExcludedText
+	case capByName:
+		return maxRenameByName
+	}
+	return maxRenameReach
+}
 
 // noteRenameCap records that a rename met bound c at line of file.
 func (s *Snapshot) noteRenameCap(c renameCap, file, line int) {
@@ -559,6 +576,9 @@ func (s *Snapshot) planSymbol(sym *Symbol, newName string, cursor *renameSite) (
 	if newName == sym.Name {
 		return nil, s.refuse(RefuseNoOp, reasonSameName, nil)
 	}
+	if sym.Kind == DeclVariable && specialVariable(sym.Name) {
+		return nil, s.refuse(RefuseConflict, reasonSpecialSource, nil)
+	}
 	var files []int // the edited files, in path order
 	for _, e := range rs.edits {
 		if f := s.idx[e.Path]; len(files) == 0 || files[len(files)-1] != f {
@@ -573,6 +593,9 @@ func (s *Snapshot) planSymbol(sym *Symbol, newName string, cursor *renameSite) (
 		return nil, ref
 	}
 	if ref := s.dynamicScopeRefusal(sym, newName, rs, union); ref != nil {
+		return nil, ref
+	}
+	if ref := s.newNameInStringRefusal(newName, rs, union); ref != nil {
 		return nil, ref
 	}
 	if ref := s.unreadableRefusal(sym.Name, files, union, rs.edits); ref != nil {
@@ -732,6 +755,7 @@ func (s *Snapshot) renameConflicts(sym *Symbol, newName string, files []int, uni
 	if sym.Kind != DeclVariable {
 		inView(s.funcSyms[newName])
 		inView(s.aliasSyms[newName])
+		declared := len(out)
 		union.each(func(f int) {
 			for _, u := range s.facts[f].Uses {
 				if u.Kind == UseCall && u.Name == newName && u.Via == ViaNone && !u.ViaAlias {
@@ -742,7 +766,10 @@ func (s *Snapshot) renameConflicts(sym *Symbol, newName string, files []int, uni
 		if len(out) == 0 {
 			return nil
 		}
-		return conflict(newName + " is already a name in the scope of this rename, or a command called in view")
+		if declared == 0 {
+			return conflict(reasonCalledCommand)
+		}
+		return conflict(newName + " is already a name in the scope of this rename")
 	}
 	if specialVariable(newName) {
 		return conflict(reasonSpecialVar)
@@ -814,212 +841,6 @@ func (s *Snapshot) scopeNode(file int, sc *Scope) Node {
 	return Node{Path: s.paths[file]}
 }
 
-// varAccessNodes returns the graph nodes that read or write the variable name
-// in the files of in, where it is not shadowed by a local of that name in the
-// same function: the nodes whose accesses dynamic scope may join to a local of
-// a function that calls them.
-func (s *Snapshot) varAccessNodes(name string, in bitset) map[Node]bool {
-	out := map[Node]bool{}
-	in.each(func(f int) {
-		ff := s.facts[f]
-		note := func(sc *Scope) {
-			if fn := funcBody(sc); fn != nil && s.locals[f][fn][name] {
-				return
-			}
-			out[s.scopeNode(f, sc)] = true
-		}
-		for _, u := range ff.Uses {
-			if u.Kind != UseCall && u.Name == name {
-				note(u.Scope)
-			}
-		}
-	})
-	return out
-}
-
-// localDeclarers returns, with the declaration places, the function nodes of
-// in that declare name local.
-func (s *Snapshot) localDeclarers(name string, in bitset) ([]Node, []Location) {
-	var nodes []Node
-	var sites []Location
-	in.each(func(f int) {
-		for fn, names := range s.locals[f] {
-			if !names[name] {
-				continue
-			}
-			d := s.funcDeclOf(f, fn)
-			if d == nil {
-				continue
-			}
-			nodes = append(nodes, Node{Path: s.paths[f], Func: s.declSym[d]})
-			if ls := s.localSyms[localKey{f, fn, name}]; ls != nil {
-				sites = append(sites, s.symbolDecls(ls)...)
-			}
-		}
-	})
-	return nodes, sites
-}
-
-// reachFrom returns every node the call graph reaches from starts (starts
-// included), by resolved and candidate calls and sources; ok is false when
-// the search met more than maxRenameReach nodes.
-func (s *Snapshot) reachFrom(starts []Node) (map[Node]bool, bool) {
-	g := s.adjacency()
-	seen := make(map[Node]bool, len(starts))
-	queue := append([]Node(nil), starts...)
-	for _, n := range starts {
-		seen[n] = true
-	}
-	for len(queue) > 0 {
-		n := queue[0]
-		queue = queue[1:]
-		for _, i := range g.out[n] {
-			to := g.steps[i].To
-			if !seen[to] {
-				if len(seen) >= maxRenameReach {
-					return seen, false
-				}
-				seen[to] = true
-				queue = append(queue, to)
-			}
-		}
-	}
-	return seen, true
-}
-
-// reachesAny reports whether the call graph from starts reaches a node of
-// targets; ok is false when the search was cut.
-func (s *Snapshot) reachesAny(starts []Node, targets map[Node]bool) (found, ok bool) {
-	if len(starts) == 0 || len(targets) == 0 {
-		return false, true
-	}
-	r, ok := s.reachFrom(starts)
-	for n := range targets {
-		if r[n] {
-			return true, ok
-		}
-	}
-	return false, ok
-}
-
-// dynamicScopeRefusal refuses a rename of a variable that changes what
-// dynamic scope makes of it. A function's local is seen by everything that
-// function calls, so a use reached through calls from a function that declares
-// a local of the name reads that local, not the global. Renaming only one side
-// moves the use from one variable to the other. Four cases:
-//   - a global renamed, while a function with a local of the old name reaches
-//     a use of the global;
-//   - a global renamed onto the name of a local of a function that reaches one
-//     of its uses (capture);
-//   - a local renamed, while a function it calls (directly or through others)
-//     reads or writes the old name, or the new one (capture);
-//   - a prefix assignment of the name on a command that calls a function that
-//     reads or writes it.
-//
-// Variables private to a subshell are not checked.
-func (s *Snapshot) dynamicScopeRefusal(sym *Symbol, newName string, rs *renameSet, union bitset) *RenameRefusal {
-	if sym.Kind != DeclVariable || (sym.File != "" && sym.Private != 0) {
-		return nil
-	}
-	old := sym.Name
-	accOld := s.varAccessNodes(old, union)
-	cut := func(site Location) *RenameRefusal {
-		s.noteRenameCapAt(capReach, site.Path, site.Range.Start.Line)
-		return s.refuse(RefuseDynamicScope, reasonReachCap, []Location{site})
-	}
-	site0 := rs.edits[0]
-	if sym.File == "" { // a global
-		starts, sites := s.localDeclarers(old, union)
-		if found, ok := s.reachesAny(starts, accOld); found {
-			return s.refuse(RefuseDynamicScope, reasonDynamicScope, sites)
-		} else if !ok {
-			return cut(site0)
-		}
-		starts, sites = s.localDeclarers(newName, union)
-		editNodes := map[Node]bool{}
-		for _, e := range rs.edits {
-			if f, ok := s.idx[e.Path]; ok {
-				editNodes[s.nodeAt(f, e.Range.Start.Offset)] = true
-			}
-		}
-		if found, ok := s.reachesAny(starts, editNodes); found {
-			return s.refuse(RefuseConflict, reasonDynamicCapture, sites)
-		} else if !ok {
-			return cut(site0)
-		}
-	} else { // a local
-		fn := funcBody(sym.Decls[0].Scope)
-		file := s.idx[sym.File]
-		if d := s.funcDeclOf(file, fn); fn != nil && d != nil {
-			start := []Node{{Path: sym.File, Func: s.declSym[d]}}
-			if found, ok := s.reachesAny(start, accOld); found {
-				return s.refuse(RefuseDynamicScope, reasonDynamicScope, s.symbolDecls(sym))
-			} else if !ok {
-				return cut(site0)
-			}
-			if found, ok := s.reachesAny(start, s.varAccessNodes(newName, union)); found {
-				return s.refuse(RefuseConflict, reasonDynamicCapture, s.symbolDecls(sym))
-			} else if !ok {
-				return cut(site0)
-			}
-		}
-	}
-	return s.prefixAssignmentRefusal(old, accOld, union, site0)
-}
-
-// nodeAt is the graph node whose code holds offset of file.
-func (s *Snapshot) nodeAt(file, offset int) Node {
-	c := s.CallerAt(s.paths[file], offset)
-	return Node{Path: c.Path, Func: c.Func}
-}
-
-// prefixAssignmentRefusal refuses when `name=v cmd` appears in view and cmd is
-// a function that reaches an access of name: the assignment reaches that
-// access through the environment of the call, and no rename of the symbol
-// edits it.
-func (s *Snapshot) prefixAssignmentRefusal(name string, access map[Node]bool, union bitset, edit Location) *RenameRefusal {
-	var sites []Location
-	cutAt := Location{}
-	union.each(func(f int) {
-		ff := s.facts[f]
-		for _, d := range ff.Decls {
-			if !d.Temp || d.Name != name || d.Node == nil {
-				continue
-			}
-			call := d.Node
-			for call != nil && call.Kind != tree.KCall {
-				call = call.Parent
-			}
-			if call == nil {
-				continue
-			}
-			var starts []Node
-			for _, b := range s.bindings[f] {
-				if b.Use.Node == call && b.Use.Kind == UseCall && b.Sym != nil && b.Sym.Kind == DeclFunction {
-					for _, fd := range b.Sym.Decls {
-						starts = append(starts, Node{Path: s.paths[s.declFile[fd]], Func: b.Sym})
-					}
-				}
-			}
-			found, ok := s.reachesAny(starts, access)
-			if !ok {
-				cutAt = s.declLoc(d)
-			}
-			if found {
-				sites = append(sites, s.declLoc(d))
-			}
-		}
-	})
-	if cutAt.Path != "" {
-		s.noteRenameCapAt(capReach, cutAt.Path, cutAt.Range.Start.Line)
-		return s.refuse(RefuseDynamicScope, reasonReachCap, []Location{cutAt})
-	}
-	if len(sites) > 0 {
-		return s.refuse(RefuseDynamicScope, reasonPrefixAssign, sites)
-	}
-	return nil
-}
-
 // errorGaps lists the error gaps of file: the regions the parser cut out
 // because it could not read them.
 func (s *Snapshot) errorGaps(file int) []tree.Range {
@@ -1039,11 +860,15 @@ func (s *Snapshot) errorGaps(file int) []tree.Range {
 
 // wordAt returns the offsets in text where word occurs as a whole word:
 // not next to a letter, digit or underscore.
-func wordAt(text []byte, word string) []int {
+func wordAt(text []byte, word string) []int { return wordAtIn(text, word, "") }
+
+// wordAtIn is wordAt where the bytes of joiners also count as part of a word:
+// a path, an option or a label in a string that the shell reads again.
+func wordAtIn(text []byte, word, joiners string) []int {
 	var out []int
 	w := []byte(word)
 	isWord := func(c byte) bool {
-		return c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+		return c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || strings.IndexByte(joiners, c) >= 0
 	}
 	for from := 0; from <= len(text)-len(w); {
 		i := bytes.Index(text[from:], w)
@@ -1144,184 +969,4 @@ func (r *renameSet) covered(path string, offset int) bool {
 		return true
 	}
 	return i > 0 && offset < sp[i-1][1]
-}
-
-// nameReferenceRefusal refuses when the files in view write the name where the
-// binder finds no use of it, and the rename would leave that text behind:
-// the arguments of unset, type, `command -v`, `test -v` and `[[ -v ]]`, of
-// declare, typeset, local, readonly and export with -n, -f or -F, the strings
-// of trap and eval, and, for a variable, a literal value equal to the name in
-// a file that expands indirectly (`${!ref}`) or declares namerefs. A place that
-// an edit or an exclusion covers is already accounted for.
-func (s *Snapshot) nameReferenceRefusal(sym *Symbol, union bitset, rs *renameSet) *RenameRefusal {
-	old := sym.Name
-	var sites []Location
-	union.each(func(f int) {
-		ff := s.facts[f]
-		if ff.File == nil || ff.File.Root == nil {
-			return
-		}
-		src := ff.File.Src
-		path := s.paths[f]
-		note := func(from, to int) {
-			if from < 0 || to > len(src) || from > to {
-				return
-			}
-			for _, at := range wordAt(src[from:to], old) {
-				off := from + at
-				if rs.covered(path, off) {
-					continue
-				}
-				sites = append(sites, Location{Path: path, Range: tree.Range{Start: ff.File.PosAt(off), End: ff.File.PosAt(off + len(old))}})
-			}
-		}
-		indirect := false
-		ff.File.Root.Walk(func(n *tree.Node) bool {
-			switch n.Kind {
-			case tree.KParamExp:
-				if a := n.Range.Start.Offset; a >= 0 && a+3 <= len(src) && string(src[a:a+3]) == "${!" {
-					indirect = true
-				}
-			case tree.KTest:
-				s.noteTestV(src, n, note)
-			case tree.KCall:
-				s.noteCallReferences(src, n, note)
-			case tree.KDecl:
-				s.noteDeclReferences(src, n, note)
-			}
-			return true
-		})
-		if sym.Kind == DeclVariable {
-			nameref := false
-			for _, d := range ff.Decls {
-				nameref = nameref || d.Attrs.Nameref
-			}
-			if indirect || nameref {
-				for _, d := range ff.Decls {
-					if d.Kind == DeclVariable && d.Literal == old && !rs.covered(path, d.NameRange.Start.Offset) {
-						sites = append(sites, Location{Path: path, Range: d.NameRange})
-					}
-				}
-			}
-		}
-	})
-	if len(sites) > 0 {
-		return s.refuse(RefuseNameReference, reasonNameReference, sites)
-	}
-	return nil
-}
-
-// wordSpans returns the source offsets of the KWord children of n.
-func wordSpans(n *tree.Node) [][2]int {
-	var out [][2]int
-	for _, c := range n.Children {
-		if c.Kind == tree.KWord {
-			out = append(out, [2]int{c.Range.Start.Offset, c.Range.End.Offset})
-		}
-	}
-	return out
-}
-
-func spanText(src []byte, sp [2]int) string {
-	if sp[0] < 0 || sp[1] > len(src) || sp[0] > sp[1] {
-		return ""
-	}
-	return string(src[sp[0]:sp[1]])
-}
-
-// noteCallReferences notes the name-bearing arguments of the commands whose
-// arguments name functions or variables without being uses.
-func (s *Snapshot) noteCallReferences(src []byte, n *tree.Node, note func(from, to int)) {
-	words := wordSpans(n)
-	if len(words) < 2 {
-		return
-	}
-	cmd := spanText(src, words[0])
-	args := words[1:]
-	hasFlag := func(flags ...string) bool {
-		for _, a := range args {
-			if slices.Contains(flags, spanText(src, a)) {
-				return true
-			}
-		}
-		return false
-	}
-	all := false
-	switch cmd {
-	case "unset", "type", "trap", "eval":
-		all = true
-	case "command":
-		all = hasFlag("-v", "-V")
-	case "test", "[":
-		all = hasFlag("-v")
-	}
-	if all {
-		for _, a := range args {
-			if t := spanText(src, a); !isOptionWord(t) {
-				note(a[0], a[1])
-			}
-		}
-	}
-}
-
-// isOptionWord reports whether t is a bare option such as -f or -nr.
-func isOptionWord(t string) bool {
-	if len(t) < 2 || t[0] != '-' {
-		return false
-	}
-	for _, c := range []byte(t[1:]) {
-		if c < 'A' || c > 'z' || c > 'Z' && c < 'a' {
-			return false
-		}
-	}
-	return true
-}
-
-// noteDeclReferences notes the arguments of a declaration builtin that names
-// functions or namerefs: -n, -f and -F.
-func (s *Snapshot) noteDeclReferences(src []byte, n *tree.Node, note func(from, to int)) {
-	named := false
-	for _, c := range n.Children {
-		t := spanText(src, [2]int{c.Range.Start.Offset, c.Range.End.Offset})
-		if strings.HasPrefix(t, "-") && strings.ContainsAny(t[1:], "nfF") {
-			named = true
-		}
-	}
-	if !named {
-		return
-	}
-	for _, c := range n.Children {
-		t := spanText(src, [2]int{c.Range.Start.Offset, c.Range.End.Offset})
-		if !strings.HasPrefix(t, "-") {
-			note(c.Range.Start.Offset, c.Range.End.Offset)
-		}
-	}
-}
-
-// noteTestV notes the operand of -v in a `[[ ]]` test.
-func (s *Snapshot) noteTestV(src []byte, n *tree.Node, note func(from, to int)) {
-	a, b := n.Range.Start.Offset, n.Range.End.Offset
-	if a < 0 || b > len(src) || a > b {
-		return
-	}
-	text := src[a:b]
-	var toks [][2]int
-	for i := 0; i < len(text); {
-		for i < len(text) && (text[i] == ' ' || text[i] == '\t' || text[i] == '\n') {
-			i++
-		}
-		j := i
-		for j < len(text) && text[j] != ' ' && text[j] != '\t' && text[j] != '\n' {
-			j++
-		}
-		if j > i {
-			toks = append(toks, [2]int{i, j})
-		}
-		i = j
-	}
-	for k := 0; k+1 < len(toks); k++ {
-		if string(text[toks[k][0]:toks[k][1]]) == "-v" {
-			note(a+toks[k+1][0], a+toks[k+1][1])
-		}
-	}
 }
