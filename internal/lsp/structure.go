@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"encoding/json"
+	"os"
 	"sort"
 
 	"github.com/wamra/bash-lsp/analysis"
@@ -189,7 +190,14 @@ func (s *server) documentLink(raw json.RawMessage) (any, *rpcError) {
 	snap := be.Snapshot()
 	links := snap.Links(path)
 	cs := converters{}
-	out := make([]documentLink, 0, len(links))
+	out := make([]documentLink, 0, len(links)+1)
+	// The shebang interpreter: one stat of the exact path on the first line,
+	// a link only for a regular file (or a symlink to one).
+	if l, ok := snap.Shebang(path); ok {
+		if st, err := os.Stat(l.Target); err == nil && st.Mode().IsRegular() {
+			links = append([]analysis.Link{l}, links...)
+		}
+	}
 	for _, l := range links {
 		out = append(out, documentLink{Range: s.rangeIn(cs, snap, path, l.Range), Target: s.uriOf(l.Target), Tooltip: l.Tooltip})
 	}

@@ -187,24 +187,51 @@ func TestAC09DocumentLink(t *testing.T) {
 
 func TestDocumentLinkShebangAndGlob(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("no absolute /bin/sh")
+		t.Skip("shebang paths are Unix paths")
 	}
 	ws := t.TempDir()
-	writeFile(t, ws, "a.sh", "#!/bin/sh\nfor f in mods/*.sh; do . \"$f\"; done\n")
+	tools := t.TempDir()
+	interp := filepath.Join(tools, "myinterp")
+	writeFile(t, tools, "myinterp", "")
+	if err := os.Mkdir(filepath.Join(tools, "adir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(interp, filepath.Join(tools, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	loop := "for f in mods/*.sh; do . \"$f\"; done\n"
+	writeFile(t, ws, "a.sh", "#!"+interp+"\n"+loop)
+	writeFile(t, ws, "viaalias.sh", "#!"+filepath.Join(tools, "alias")+" -e\n")
+	writeFile(t, ws, "missing.sh", "#!"+filepath.Join(tools, "nothing")+"\n")
+	writeFile(t, ws, "dir.sh", "#!"+filepath.Join(tools, "adir")+"\n")
+	writeFile(t, ws, "env.sh", "#!usr/bin/env bash\n")
 	if err := os.MkdirAll(filepath.Join(ws, "mods"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	writeFile(t, ws, "mods/m1.sh", "m1() { :; }\n")
 	writeFile(t, ws, "mods/m2.sh", "m2() { :; }\n")
 	c := client(t, ws)
-	c.open("a.sh")
-	raw := c.call("textDocument/documentLink", map[string]any{"textDocument": map[string]any{"uri": c.uri("a.sh")}})
-	var links []documentLink
-	if err := json.Unmarshal(raw, &links); err != nil {
-		t.Fatalf("%v: %s", err, raw)
+	links := func(rel string) []documentLink {
+		c.open(rel)
+		raw := c.call("textDocument/documentLink", map[string]any{"textDocument": map[string]any{"uri": c.uri(rel)}})
+		var out []documentLink
+		if err := json.Unmarshal(raw, &out); err != nil {
+			t.Fatalf("%v: %s", err, raw)
+		}
+		return out
 	}
-	if len(links) != 1 || !strings.HasSuffix(links[0].Target, "/bin/sh") || links[0].Range != (Range{Position{0, 2}, Position{0, 9}}) {
-		t.Fatalf("links: %s", raw)
+	// the glob loader gives no link; the shebang gives one, first
+	ls := links("a.sh")
+	if len(ls) != 1 || !strings.HasSuffix(ls[0].Target, "/myinterp") || ls[0].Range != (Range{Position{0, 2}, Position{0, 2 + len(interp)}}) {
+		t.Fatalf("a.sh: %+v", ls)
+	}
+	if ls := links("viaalias.sh"); len(ls) != 1 || !strings.HasSuffix(ls[0].Target, "/alias") {
+		t.Fatalf("a symlink to a file: %+v", ls)
+	}
+	for _, rel := range []string{"missing.sh", "dir.sh", "env.sh"} {
+		if ls := links(rel); len(ls) != 0 {
+			t.Fatalf("%s: %+v", rel, ls)
+		}
 	}
 }
 

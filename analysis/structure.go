@@ -1,7 +1,6 @@
 package analysis
 
 import (
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -263,21 +262,15 @@ type Link struct {
 }
 
 // Links returns the links of path in source order: each `source` or `.` word
-// with exactly one target, each executed workspace file, and the shebang
-// interpreter when it is an absolute path to an existing file. A `source` with
-// several targets (a glob loader) or none gives no link.
+// with exactly one target and each executed workspace file. A `source` with
+// several targets (a glob loader) or none gives no link. The shebang is not
+// here: Shebang names it and the caller checks that the file exists.
 func (s *Snapshot) Links(path string) []Link {
 	file, ok := s.idx[path]
 	if !ok {
 		return nil
 	}
-	f := s.facts[file].File
 	var out []Link
-	if f != nil {
-		if l, ok := shebangLink(f); ok {
-			out = append(out, l)
-		}
-	}
 	for _, se := range s.edges[file] {
 		if se.Status != SourceResolved || len(se.Targets) != 1 {
 			continue
@@ -299,8 +292,20 @@ func (s *Snapshot) Links(path string) []Link {
 	return out
 }
 
-// shebangLink links the interpreter of a `#!` first line.
-func shebangLink(f *tree.File) (Link, bool) {
+// Shebang returns the interpreter of the `#!` first line of path as a link
+// candidate: its range, the absolute path text as Target, and the tooltip.
+// ok is false when there is no shebang or the interpreter is not an absolute
+// path (`#!/usr/bin/env bash` names `/usr/bin/env` only). It does not look at
+// the file system: the caller checks that Target exists.
+func (s *Snapshot) Shebang(path string) (Link, bool) {
+	file, ok := s.idx[path]
+	if !ok {
+		return Link{}, false
+	}
+	f := s.facts[file].File
+	if f == nil {
+		return Link{}, false
+	}
 	src := f.Src
 	if len(src) < 3 || src[0] != '#' || src[1] != '!' {
 		return Link{}, false
@@ -321,9 +326,6 @@ func shebangLink(f *tree.File) (Link, bool) {
 	}
 	interp := rest[:n]
 	if interp == "" || !filepath.IsAbs(interp) {
-		return Link{}, false
-	}
-	if st, err := os.Stat(interp); err != nil || st.IsDir() {
 		return Link{}, false
 	}
 	return Link{Range: tree.Range{Start: f.PosAt(start), End: f.PosAt(start + n)}, Target: interp,

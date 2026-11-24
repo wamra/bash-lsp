@@ -2,9 +2,7 @@ package analysis
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -179,28 +177,32 @@ func TestLinksGlobLoaderGivesNone(t *testing.T) {
 	}
 }
 
-func TestLinksShebang(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("no absolute /bin/sh")
-	}
-	q := buildMem(t, map[string]string{"a.sh": "#!/bin/sh\nx=1\n", "b.sh": "#!/usr/bin/env bash\n", "c.sh": "#!/no/such/interp\n", "d.sh": "#!sh\n"})
-	if got := linkStrs(q, q.s.Links(q.abs("a.sh"))); len(got) != 1 || !strings.HasPrefix(got[0], "1:") || !strings.HasSuffix(got[0], "→ /bin/sh") {
-		t.Fatalf("a.sh: %v", got)
-	}
-	ls := q.s.Links(q.abs("a.sh"))
-	if ls[0].Target != "/bin/sh" || text(q.src("a.sh"), ls[0].Range) != "/bin/sh" {
-		t.Fatalf("a.sh link: %+v", ls[0])
-	}
-	ls = q.s.Links(q.abs("b.sh"))
-	if _, err := os.Stat("/usr/bin/env"); err == nil {
-		if len(ls) != 1 || ls[0].Target != "/usr/bin/env" || text(q.src("b.sh"), ls[0].Range) != "/usr/bin/env" {
-			t.Fatalf("env shebang: %+v", ls)
+func TestShebang(t *testing.T) {
+	abs := func(p string) string { return filepath.Join(string(filepath.Separator), filepath.FromSlash(p)) }
+	q := buildMem(t, map[string]string{
+		"a.sh": "#!" + abs("no/such/sh") + "\nx=1\n",
+		"b.sh": "#! " + abs("no/such/env") + " bash\n",
+		"c.sh": "#!sh\n",
+		"d.sh": "x=1\n#!" + abs("no/such/sh") + "\n",
+		"e.sh": "#!" + abs("no/such/sh"),
+	})
+	for _, f := range []string{"a.sh", "b.sh", "e.sh"} {
+		l, ok := q.s.Shebang(q.abs(f))
+		want := abs(map[string]string{"a.sh": "no/such/sh", "b.sh": "no/such/env", "e.sh": "no/such/sh"}[f])
+		if !ok || l.Target != want || text(q.src(f), l.Range) != want || l.Range.Start.Line != 1 {
+			t.Fatalf("%s: %+v %v", f, l, ok)
+		}
+		if got := q.s.Links(q.abs(f)); len(got) != 0 {
+			t.Fatalf("%s: Links holds the shebang: %+v", f, got)
 		}
 	}
 	for _, f := range []string{"c.sh", "d.sh"} {
-		if got := q.s.Links(q.abs(f)); len(got) != 0 {
-			t.Fatalf("%s: %+v", f, got)
+		if l, ok := q.s.Shebang(q.abs(f)); ok {
+			t.Fatalf("%s: %+v", f, l)
 		}
+	}
+	if _, ok := q.s.Shebang("/nope"); ok {
+		t.Fatal("unknown path")
 	}
 }
 
