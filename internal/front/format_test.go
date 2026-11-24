@@ -557,3 +557,20 @@ func TestFormatKeepsDialect(t *testing.T) {
 		t.Fatalf("got %q, %v", out, err)
 	}
 }
+
+// A text with no final newline stays without one only when the text left
+// after dropping the printed newline does not end in a newline itself: after a
+// line continuation at the end the next pass would add one, so the file is not
+// formatted.
+func TestFormatNoFinalNewlineIsFixedPoint(t *testing.T) {
+	for _, src := range []string{"\\\\\\\n ", "a \\\n ", "a\\\n", "echo \\\n  "} {
+		out, err := Format("x.sh", []byte(src), FormatOptions{})
+		if err != nil {
+			continue
+		}
+		again, err := Format("x.sh", out, FormatOptions{})
+		if err != nil || !bytes.Equal(again, out) {
+			t.Errorf("%q -> %q -> %q (%v)", src, out, again, err)
+		}
+	}
+}

@@ -293,7 +293,7 @@ func FormatWith(path string, src []byte, o FormatOptions, fallback Dialect) ([]b
 		trimmed := bytes.TrimSuffix(out, []byte("\n"))
 		g, err := parseStrictLang(path, out, lang)
 		h, err2 := parseStrictLang(path, trimmed, lang)
-		if err != nil || err2 != nil || treeSig(g) != treeSig(h) {
+		if err != nil || err2 != nil || treeSig(g) != treeSig(h) || bytes.HasSuffix(trimmed, []byte("\n")) {
 			return nil, unsupported("the text without its final newline would not parse to the same script; not applied")
 		}
 		out = trimmed
