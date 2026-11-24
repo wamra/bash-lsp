@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -214,4 +215,34 @@ func TestHoverLongDeclarationCut(t *testing.T) {
 	if len([]rune(first)) != 120 {
 		t.Fatalf("%d: %q", len(first), first)
 	}
+}
+
+// A read bound only through dynamic scope is labelled as such (FDS-006) and
+// lists every candidate caller local, up to maxCallSites with a count of the
+// rest; it is not presented as the caller's local for certain.
+func TestHoverDynamicScopeRead(t *testing.T) {
+	q := buildMem(t, map[string]string{
+		"m.sh": "outer() { local v=1; inner; }\n" +
+			"other() { local v=2; inner; }\n" +
+			"inner() { echo \"$v\"; }\n",
+	})
+	md, ok := q.hover("m.sh", "$v", 0, 1)
+	if !ok {
+		t.Fatal("no hover")
+	}
+	wantLines(t, md, "candidate/dynamic-scope", "`local v=1` in `outer` at `m.sh:1`", "`local v=2` in `other` at `m.sh:2`")
+	noLine(t, md, "Local to `outer`")
+	noLine(t, md, "Value: `1`")
+
+	var b strings.Builder
+	for i := 0; i < maxCallSites+3; i++ {
+		b.WriteString(fmt.Sprintf("c%d() { local w=%d; g; }\n", i, i))
+	}
+	b.WriteString("g() { echo \"$w\"; }\n")
+	q = buildMem(t, map[string]string{"n.sh": b.String()})
+	md, _ = q.hover("n.sh", "$w", 0, 1)
+	if got := strings.Count(md, "`local w="); got != maxCallSites {
+		t.Fatalf("%d caller locals shown, want %d:\n%s", got, maxCallSites, md)
+	}
+	wantLines(t, md, "8 candidate caller locals", "and 3 more")
 }

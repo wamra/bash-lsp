@@ -50,6 +50,8 @@ func (s *Snapshot) Hover(path string, offset int) (markdown string, rng tree.Ran
 		if h.decl.Kind == DeclFunction {
 			rng = h.decl.Node.Range
 		}
+	case len(h.binds) > 0 && h.binds[0].Reason == ReasonDynamicScope:
+		return s.hoverDynamicScope(h.binds), h.binds[0].Use.Range, true
 	case len(h.binds) > 0:
 		sym = h.binds[0].Sym
 		rng = h.binds[0].Use.Range
@@ -432,6 +434,43 @@ func (s *Snapshot) hoverVariable(sym *Symbol) string {
 	}
 	if len(sym.Decls) == 1 && d.Literal != "" {
 		sb.WriteString("Value: `" + d.Literal + "`\n")
+	}
+	return sb.String()
+}
+
+// hoverDynamicScope describes a variable read that no declaration in view
+// explains, bound only to callers' locals through dynamic scope (FDS-006):
+// labelled candidate/dynamic-scope, with every candidate local listed (in
+// path and offset order, the first maxCallSites shown and the rest counted).
+func (s *Snapshot) hoverDynamicScope(binds []Binding) string {
+	var sb strings.Builder
+	sb.WriteString(fence(binds[0].Use.Name))
+	sb.WriteString("No declaration in view; at run time the value may come from a caller's `local` (" +
+		Candidate.String() + "/" + ReasonDynamicScope + ").\n")
+	var ds []*Decl
+	for _, b := range binds {
+		if b.Sym != nil && len(b.Sym.Decls) > 0 {
+			ds = append(ds, b.Sym.Decls[0])
+		}
+	}
+	sort.SliceStable(ds, func(i, j int) bool {
+		pi, pj := s.paths[s.declFile[ds[i]]], s.paths[s.declFile[ds[j]]]
+		if pi != pj {
+			return pi < pj
+		}
+		return ds[i].NameRange.Start.Offset < ds[j].NameRange.Start.Offset
+	})
+	noun := "locals"
+	if len(ds) == 1 {
+		noun = "local"
+	}
+	fmt.Fprintf(&sb, "%d candidate caller %s:\n", len(ds), noun)
+	for i, d := range ds {
+		if i == maxCallSites {
+			fmt.Fprintf(&sb, "- and %d more\n", len(ds)-maxCallSites)
+			break
+		}
+		fmt.Fprintf(&sb, "- `%s` in `%s` at %s\n", declSource(d, s.src(d)), s.declSym[d].Func, s.spot(d))
 	}
 	return sb.String()
 }
