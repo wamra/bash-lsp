@@ -260,10 +260,19 @@ func (s *server) didChangeFolders(raw json.RawMessage) *rpcError {
 	if !changed {
 		return nil
 	}
+	s.refolder()
+	return nil
+}
+
+// refolder reconciles the served folders with the declared ones and, when the
+// set changed, re-homes the open documents (see rehome). A call that changes
+// nothing publishes nothing.
+func (s *server) refolder() {
 	old := s.folders
 	s.folders = s.reconcile(s.declared, old)
 	dropped := map[backend]bool{}
-	for _, f := range old {
+	same := len(old) == len(s.folders)
+	for i, f := range old {
 		kept := false
 		for _, g := range s.folders {
 			kept = kept || g == f
@@ -271,10 +280,17 @@ func (s *server) didChangeFolders(raw json.RawMessage) *rpcError {
 		if !kept {
 			dropped[f.ws] = true
 		}
+		same = same && i < len(s.folders) && s.folders[i] == f
+	}
+	if same {
+		return
 	}
 	s.rehome(dropped)
-	return nil
 }
+
+// isGitignore reports whether path names a .gitignore file: the only files
+// whose change can alter which directories a folder's walk reaches.
+func isGitignore(path string) bool { return filepath.Base(path) == ".gitignore" }
 
 // sameRoot reports whether two resolved roots name one directory: equal
 // spellings, or the same directory on disk (a case variant on a
@@ -384,6 +400,8 @@ func (s *server) didChangeWatched(raw json.RawMessage) *rpcError {
 	}
 	s.wait()
 	var order []*folder
+	ignores := false
+	full := map[*folder]bool{}
 	paths := map[*folder][]string{}
 	for _, ch := range p.Changes {
 		path, err := workspace.PathFromURI(ch.URI)
@@ -398,9 +416,22 @@ func (s *server) didChangeWatched(raw json.RawMessage) *rpcError {
 			order = append(order, f)
 		}
 		paths[f] = append(paths[f], filepath.Clean(path))
+		if isGitignore(path) {
+			// An open .gitignore keeps its buffer, which the walk never
+			// reads, so the whole folder is refreshed from disk.
+			ignores = true
+			full[f] = true
+		}
 	}
 	for _, f := range order {
-		f.ws.Refresh(paths[f]...)
+		if full[f] {
+			f.ws.Refresh()
+		} else {
+			f.ws.Refresh(paths[f]...)
+		}
+	}
+	if ignores {
+		s.refolder()
 	}
 	return nil
 }
@@ -419,6 +450,11 @@ func (s *server) didSave(raw json.RawMessage) *rpcError {
 		return nil
 	}
 	if f, _ := s.folderOfClient(path); f != nil {
+		if isGitignore(path) {
+			f.ws.Refresh()
+			s.refolder()
+			return nil
+		}
 		f.ws.Refresh(filepath.Clean(path))
 	}
 	return nil

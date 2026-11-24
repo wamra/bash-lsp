@@ -378,3 +378,124 @@ func TestInitializeDuplicateRootsRemovedOnce(t *testing.T) {
 		})
 	}
 }
+
+// ---- a .gitignore edit moves a nested folder between backends ----
+
+// gitignoreTree is h with a nested folder h/vendor/other (o.sh defines of,
+// bad.sh is a syntax error). rootIgnore is h/.gitignore ("" for none).
+func gitignoreTree(t *testing.T, rootIgnore string) (h, nested string) {
+	h = filepath.Join(t.TempDir(), "h")
+	nested = filepath.Join(h, "vendor", "other")
+	put(t, filepath.Join(h, "m.sh"), "echo outer\n")
+	put(t, filepath.Join(nested, "o.sh"), "of() { :; }\n")
+	put(t, filepath.Join(nested, "bad.sh"), "if then\n")
+	if rootIgnore != "" {
+		put(t, filepath.Join(h, ".gitignore"), rootIgnore)
+	}
+	return h, nested
+}
+
+const ofSym = "vendor/other/o.sh:1 of"
+
+func countSym(c *testClient, want string) int {
+	n := 0
+	for _, s := range c.symbols("") {
+		if s == want {
+			n++
+		}
+	}
+	return n
+}
+
+// pushes drains and counts the diagnostics pushed for rel since the last call
+// (after a round trip, so earlier notifications have been handled).
+func (c *testClient) pushes(rel string) int {
+	c.symbols("")
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := len(c.diags[c.uri(rel)])
+	c.diags[c.uri(rel)] = nil
+	return n
+}
+
+func TestGitignoreEditMovesNestedRoot(t *testing.T) {
+	const bad = "vendor/other/bad.sh"
+	type edit func(t *testing.T, c *testClient, h string)
+	write := func(rel, text string, typ int) edit {
+		return func(t *testing.T, c *testClient, h string) {
+			put(t, filepath.Join(h, filepath.FromSlash(rel)), text)
+			c.watched(c.ev(rel, typ))
+		}
+	}
+	remove := func(rel string) edit {
+		return func(t *testing.T, c *testClient, h string) {
+			if err := os.Remove(filepath.Join(h, filepath.FromSlash(rel))); err != nil {
+				t.Fatal(err)
+			}
+			c.watched(c.ev(rel, 3))
+		}
+	}
+	save := func(rel, text string) edit {
+		return func(t *testing.T, c *testClient, h string) {
+			put(t, filepath.Join(h, filepath.FromSlash(rel)), text)
+			c.notify("textDocument/didSave", map[string]any{"textDocument": map[string]any{"uri": c.uri(rel)}})
+		}
+	}
+	for _, tc := range []struct {
+		name      string
+		ignore    string // h/.gitignore at the start
+		sub       string // h/vendor/.gitignore at the start
+		edit      edit
+		moves     bool // the nested root changes backend
+		nestedNow bool // after the edit the nested root has its own backend
+	}{
+		{"ignore line removed", "vendor/*\n", "", write(".gitignore", "", 2), true, false},
+		{"ignore line added", "*.log\n", "", write(".gitignore", "vendor/*\n", 2), true, true},
+		{"ignore line removed, saved", "vendor/*\n", "", save(".gitignore", ""), true, false},
+		{"nested .gitignore changes", "", "other/\n", write("vendor/.gitignore", "*.log\n", 2), true, false},
+		{"nested .gitignore gains the line", "", "*.log\n", write("vendor/.gitignore", "other/\n", 2), true, true},
+		{"root .gitignore deleted", "vendor/*\n", "", remove(".gitignore"), true, false},
+		{"root .gitignore created", "", "", write(".gitignore", "vendor/*\n", 1), true, true},
+		{"edit that keeps reachability", "vendor/*\n", "", write(".gitignore", "vendor/*\n*.log\n", 2), false, true},
+		{"edit that keeps reachability, outer serves", "", "", write(".gitignore", "*.log\n", 2), false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, nested := gitignoreTree(t, tc.ignore)
+			if tc.sub != "" {
+				put(t, filepath.Join(h, "vendor", ".gitignore"), tc.sub)
+			}
+			c := clientWith(t, clientCfg{folders: []string{h, nested}})
+			c.root = h
+			c.open(bad)
+			c.pushes(bad)
+			if n := countSym(c, ofSym); n != 1 {
+				t.Fatalf("before: %q listed %d times", ofSym, n)
+			}
+			tc.edit(t, c, h)
+			if n := countSym(c, ofSym); n != 1 {
+				t.Errorf("after: %q listed %d times, want once (%v)", ofSym, n, c.symbols(""))
+			}
+			want := 0
+			if tc.moves {
+				want = 1
+			}
+			if n := c.pushes(bad); n != want {
+				t.Errorf("%d pushes for %s, want %d", n, bad, want)
+			}
+			// The same state as a fresh initialize on the files as they are now.
+			fresh := clientWith(t, clientCfg{folders: []string{h, nested}})
+			fresh.root = h
+			if a, b := c.symbols(""), fresh.symbols(""); !eq(a, b...) {
+				t.Errorf("symbols %v, a fresh initialize gives %v", a, b)
+			}
+			// The open document is served by the backend that owns it now:
+			// its hover paths are relative to that backend's root.
+			c.open("vendor/other/o.sh")
+			hov := c.hoverText("vendor/other/o.sh", "of()", 0)
+			freshHov := func() string { fresh.open("vendor/other/o.sh"); return fresh.hoverText("vendor/other/o.sh", "of()", 0) }()
+			if hov != freshHov {
+				t.Errorf("hover %q, a fresh initialize gives %q", hov, freshHov)
+			}
+		})
+	}
+}
