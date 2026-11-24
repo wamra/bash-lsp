@@ -731,7 +731,7 @@ func multiGuardShape(chain, users int) string {
 			fmt.Fprintf(&sb, "%s%d() { %s; }\n", p, i, next)
 		}
 	}
-	sb.WriteString("q0() { chk; }\nw0\nx0\nq0\ny0\nz0\n")
+	sb.WriteString("zq() { chk; }\nw0\nx0\nzq\ny0\nz0\n")
 	for i := 0; i < users; i++ {
 		fmt.Fprintf(&sb, "u%d() { declare -A m%d; }\n", i, i)
 	}
@@ -750,6 +750,11 @@ func TestVersionGuardSearchIsDeterministic(t *testing.T) {
 			keys = append(keys, fmt.Sprintf("%s:%d", d.Rule, d.Range.Start.Line))
 		}
 		finds[strings.Join(keys, ",")] = true
+	}
+	for l := range lines {
+		if l == "" {
+			t.Fatal("the shape does not exhaust the search budget: no LimitsHit line")
+		}
 	}
 	if len(lines) != 1 || len(finds) != 1 {
 		t.Fatalf("%d distinct LimitsHit lines, %d distinct finding sets over 40 fresh snapshots", len(lines), len(finds))
@@ -829,5 +834,48 @@ func TestDynamicScopeCapKeepsFirstCallers(t *testing.T) {
 		if !lines[l] {
 			t.Errorf("the local of the caller on line %d is not bound", l)
 		}
+	}
+}
+
+// n guard functions, each called at the top level, and n users of a bash 4
+// feature: the version-guard path must not cost more than linear in n.
+func TestVersionGuardManyTopCallsGrowth(t *testing.T) {
+	n := 500
+	if raceBuild {
+		n = 250
+	}
+	var times []time.Duration
+	for i := 0; i < 4; i++ {
+		k := n << i
+		var sb strings.Builder
+		sb.WriteString("#!/bin/bash\n")
+		for j := 0; j < k; j++ {
+			fmt.Fprintf(&sb, "g%d() { [ \"${BASH_VERSINFO[0]}\" -ge 4 ] || exit 1; }\n", j)
+		}
+		for j := 0; j < k; j++ {
+			fmt.Fprintf(&sb, "g%d\n", j)
+		}
+		for j := 0; j < k; j++ {
+			fmt.Fprintf(&sb, "u%d() { declare -A m%d; }\n", j, j)
+		}
+		src := sb.String()
+		best := time.Hour
+		for r := 0; r < 5; r++ {
+			s := diagWorld(sh(src), Options{})
+			start := time.Now()
+			var done bool
+			if !withinBound(t, fmt.Sprintf("diagnostics n=%d", k), 20*time.Second, func() {
+				s.Diagnostics(diagRoot+"/x.sh", DiagOptions{Target: VersionRange{Min: BashVersion{Major: 3, Minor: 2}}})
+				done = true
+			}) || !done {
+				return
+			}
+			best = min(best, time.Since(start))
+		}
+		times = append(times, best)
+	}
+	t.Logf("best of 5 at n, 2n, 4n, 8n: %v", times)
+	if overall := math.Cbrt(float64(times[3]) / float64(max(times[0], time.Millisecond))); overall > 2.5 {
+		t.Errorf("grew x%.2f per doubling over three doublings (%v)", overall, times)
 	}
 }

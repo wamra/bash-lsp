@@ -121,6 +121,8 @@ type versionScan struct {
 	// majors of each function's own checks; wraps the guard functions each
 	// function calls unconditionally at its top level (guardAvoids).
 	topCalls map[string]uint16
+	// topOrder is the keys of topCalls in name order, set once topCalls is complete.
+	topOrder []string
 	own      map[string]uint16
 	wraps    map[string][]string
 	avoids   map[guardQuery]bool
@@ -331,6 +333,7 @@ func (vs *versionScan) finish(uses []*Use) {
 			vs.wraps[fn.Name] = append(vs.wraps[fn.Name], u.Name)
 		}
 	}
+	vs.topOrder = slices.Sorted(maps.Keys(vs.topCalls))
 }
 
 // topLevelCallIn is the function whose body holds call as one of its own
@@ -366,7 +369,7 @@ func topLevelCallIn(call *tree.Node) *tree.Node {
 func (vs *versionScan) topGuarded(fn string, need int, cut *bool) bool {
 	// In name order: the callees share the step budget, so the order decides
 	// which searches run out of it.
-	for _, callee := range slices.Sorted(maps.Keys(vs.topCalls)) {
+	for _, callee := range vs.topOrder {
 		m := vs.topCalls[callee]
 		if m>>min(need, 10) == 0 { // bits need..10 and 11 (unknown)
 			continue
