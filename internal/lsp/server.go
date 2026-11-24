@@ -108,11 +108,14 @@ type server struct {
 
 	started bool
 	ready   chan struct{} // closed when folders is set
-	// folders are the open workspace folders, in the client's order. Set by
-	// the opener goroutine before ready is closed; after that, read and
-	// changed on the message loop only.
-	folders []*folder
-	loose   *docsOnly // documents outside every folder
+	// folders are the open workspace folders, in the client's order; a
+	// folder nested inside another is not among them (see folders.go).
+	// declared are all the folders the client named. Both are set by the
+	// opener goroutine before ready is closed; after that, read and changed
+	// on the message loop only.
+	folders  []*folder
+	declared []declaredFolder
+	loose    *docsOnly // documents outside every folder
 
 	docs  map[string]*document // open documents by canonical path
 	byURI map[string]string    // canonical path of an open document by its URI
@@ -368,7 +371,8 @@ func (s *server) startWorkspace() {
 				s.folders = nil
 			}
 		}()
-		s.folders = s.openFolders(s.roots)
+		s.declared = s.declare(s.roots)
+		s.folders = s.reconcile(s.declared, nil)
 	}()
 }
 

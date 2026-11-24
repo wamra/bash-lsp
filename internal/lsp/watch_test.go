@@ -395,29 +395,30 @@ func TestMultiRootIsolation(t *testing.T) {
 	}
 }
 
-// Nested roots: a file belongs to the innermost root only.
+// Nested roots (ruling R58): the inner folder is served by the outer
+// folder's backend, so both see each other and each file is listed once.
 func TestNestedRoots(t *testing.T) {
 	outer := t.TempDir()
 	inner := filepath.Join(outer, "inner")
-	put(t, filepath.Join(outer, "top.sh"), "top_fn() { :; }\ninner_fn\n")
+	put(t, filepath.Join(outer, "top.sh"), "top_fn() { :; }\nsource ./inner/lib.sh\ninner_fn\n")
 	put(t, filepath.Join(inner, "lib.sh"), "inner_fn() { :; }\n")
-	put(t, filepath.Join(inner, "use.sh"), "source ./lib.sh\ninner_fn\ntop_fn\n")
+	put(t, filepath.Join(inner, "use.sh"), "source ./lib.sh\ninner_fn\nsource ../top.sh\ntop_fn\n")
 	for name, order := range map[string][]string{"outer first": {outer, inner}, "inner first": {inner, outer}} {
 		t.Run(name, func(t *testing.T) {
 			c := clientWith(t, clientCfg{folders: order})
 			c.root = outer
-			if got := c.symbols("_fn"); !eq(got, "inner/lib.sh:1 inner_fn", "top.sh:1 top_fn") && !eq(got, "top.sh:1 top_fn", "inner/lib.sh:1 inner_fn") {
+			if got := c.symbols("_fn"); !eq(got, "inner/lib.sh:1 inner_fn", "top.sh:1 top_fn") {
 				t.Fatalf("each file once: %v", got)
 			}
 			c.open("inner/use.sh")
 			if got := c.definition("inner/use.sh", "inner_fn", 0); !eq(got, "inner/lib.sh:1") {
 				t.Fatalf("definition in the inner root: %v", got)
 			}
-			if got := c.definition("inner/use.sh", "top_fn", 0); len(got) != 0 {
-				t.Fatalf("the inner root sees the outer: %v", got)
+			if got := c.definition("inner/use.sh", "top_fn", 0); !eq(got, "top.sh:1") {
+				t.Fatalf("the inner folder does not reach the outer one's file: %v", got)
 			}
-			if got := c.definition("top.sh", "inner_fn", 0); len(got) != 0 {
-				t.Fatalf("the outer root sees the inner: %v", got)
+			if got := c.definition("top.sh", "inner_fn", 0); !eq(got, "inner/lib.sh:1") {
+				t.Fatalf("the outer folder does not reach the inner one's file: %v", got)
 			}
 		})
 	}
@@ -470,7 +471,7 @@ func TestWorkspaceFoldersAddedAndRemoved(t *testing.T) {
 	if got := c.symbols("same_fn"); !eq(got, "a/lib.sh:1 same_fn") {
 		t.Fatalf("after no-op changes: %v", got)
 	}
-	// A nested folder added at runtime takes its subtree from the outer one.
+	// A nested folder added at runtime stays served by the outer one.
 	c.folders([]string{base}, []string{a})
 	if got := c.symbols("same_fn"); !eq(got, "a/lib.sh:1 same_fn", "b/lib.sh:1 same_fn") {
 		t.Fatalf("base as the only root: %v", got)

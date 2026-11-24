@@ -12,19 +12,30 @@ import (
 
 // ---- workspace folders ----
 //
-// One workspace per folder. A file belongs to exactly one: the folder whose
-// root holds it, the innermost when folders nest (an enclosing folder's
-// workspace excludes the subtree of a folder inside it). A document outside
-// every folder is served by the loose backend, which holds only the open
-// documents outside every folder (as the server does without a root). Each
-// workspace sees only its own files: a `source` that leads into another
-// folder is not followed, and no answer (definition, references, symbols,
-// call hierarchy) crosses folders. workspace/symbol merges the folders.
+// One workspace per outermost folder. A folder nested inside another
+// workspace folder is served by the outer folder's backend: it is not
+// excluded from the outer walk and gets no backend of its own (ruling R58),
+// so answers are the same whether or not the nested folder is also named.
+// Removing the outer folder while the inner remains gives the inner its own
+// backend; removing the inner while the outer remains changes nothing;
+// adding an outer folder after the inner absorbs the inner. A document
+// outside every folder is served by the loose backend, which holds only the
+// open documents outside every folder (as the server does without a root).
+// Each workspace sees only its own files: a `source` that leads into a
+// folder that is not nested in it is not followed, and no answer
+// (definition, references, symbols, call hierarchy) crosses workspaces.
+// workspace/symbol merges them.
 
-// folder is one workspace folder.
+// folder is one served workspace folder.
 type folder struct {
 	client string // the root as the client spelled it, cleaned
 	ws     *workspace.Workspace
+}
+
+// declaredFolder is a folder the client named, served or not.
+type declaredFolder struct {
+	client string // as the client spelled it, cleaned
+	real   string // resolveRoot(client); "" when it does not resolve
 }
 
 // resolveRoot is the absolute, symlink-resolved spelling of a root; "" when
@@ -41,56 +52,69 @@ func resolveRoot(p string) string {
 	return real
 }
 
-// openFolders opens the roots one after the other, each without the
-// subtrees of the others nested in it, so no file is read or parsed twice
-// and the cost is the sum of the folders (a root that resolves but fails to
-// open is given back to its enclosing folder afterwards, by one re-walk). A root that does not open is
-// logged and left out; one that resolves to a root already open is a
-// duplicate.
-func (s *server) openFolders(roots []string) []*folder {
-	reals := make([]string, len(roots))
-	for i, r := range roots {
-		reals[i] = resolveRoot(r)
-	}
-	var out []*folder
-	for i, r := range roots {
-		if reals[i] == "" {
+// declare records the client's folders. A root that does not resolve is
+// logged and kept (it serves nothing).
+func (s *server) declare(roots []string) []declaredFolder {
+	out := make([]declaredFolder, 0, len(roots))
+	for _, r := range roots {
+		r = filepath.Clean(r)
+		real := resolveRoot(r)
+		if real == "" {
 			s.log.Printf("cannot open workspace folder %s: it does not resolve", r)
-			continue
 		}
-		if s.servedRoot(out, reals[i]) {
-			continue
-		}
-		var others []string
-		for j, o := range reals {
-			if j != i && o != "" {
-				others = append(others, o)
-			}
-		}
-		ws, err := workspace.OpenExcluding(r, workspace.Limits{}, others)
-		if err != nil {
-			s.log.Printf("cannot open workspace folder %s: %v", r, err)
-			continue
-		}
-		out = append(out, &folder{client: r, ws: ws})
-	}
-	// Each folder was opened without every root that resolved; only the
-	// folders that opened exclude (as at runtime). A no-op unless a root
-	// failed to open inside another.
-	open := make([]string, len(out))
-	for i, f := range out {
-		open[i] = f.ws.Root()
-	}
-	for _, f := range out {
-		f.ws.SetExcluded(open)
+		out = append(out, declaredFolder{client: r, real: real})
 	}
 	return out
 }
 
-// servedRoot reports whether one of fs has real as its root.
-func (s *server) servedRoot(fs []*folder, real string) bool {
+// reconcile returns the folders that serve the declared ones: each declared
+// root not inside a served folder, outermost first, reusing a folder of
+// existing with the same root and opening the others (each file is read and
+// parsed once: no two served folders overlap). A root that does not open is
+// logged and left out, so a folder nested in it is served instead. A root
+// that is already served (a duplicate) adds nothing. The result is in the
+// client's order.
+func (s *server) reconcile(declared []declaredFolder, existing []*folder) []*folder {
+	order := make([]int, len(declared))
+	for i := range order {
+		order[i] = i
+	}
+	// An enclosing root is a prefix of the roots inside it, so shorter first
+	// puts every outer root before its nested ones.
+	sort.SliceStable(order, func(x, y int) bool { return len(declared[order[x]].real) < len(declared[order[y]].real) })
+	var out []*folder
+	at := map[*folder]int{}
+	for _, i := range order {
+		d := declared[i]
+		if d.real == "" || s.covered(out, d.real) {
+			continue
+		}
+		var f *folder
+		for _, e := range existing {
+			if e.ws.IsRoot(d.real) {
+				f = e
+				break
+			}
+		}
+		if f == nil {
+			ws, err := workspace.Open(d.client, workspace.Limits{})
+			if err != nil {
+				s.log.Printf("cannot open workspace folder %s: %v", d.client, err)
+				continue
+			}
+			f = &folder{client: d.client, ws: ws}
+		}
+		out = append(out, f)
+		at[f] = i
+	}
+	sort.SliceStable(out, func(x, y int) bool { return at[out[x]] < at[out[y]] })
+	return out
+}
+
+// covered reports whether one of fs holds real (its root or below).
+func (s *server) covered(fs []*folder, real string) bool {
 	for _, f := range fs {
-		if f.ws.IsRoot(real) {
+		if f.ws.Contains(real) {
 			return true
 		}
 	}
@@ -163,12 +187,12 @@ func (s *server) toClient(p string) string {
 }
 
 // didChangeFolders applies workspace/didChangeWorkspaceFolders: removed
-// folders are dropped with their workspaces, added ones are opened,
-// enclosing folders give up or take back the subtrees of nested ones, and
-// open documents move to whatever serves them now and are published again
-// from there. Known limit: the opening and the re-walks run synchronously
-// on the message loop, so requests wait for them (docs/m1-deferred.md, "M3
-// limits").
+// folders leave the declared list, added ones join it, and the served
+// folders are reconciled with it (see reconcile): a served folder no longer
+// needed is dropped with its workspace, a newly outermost one is opened.
+// Open documents move to whatever serves them now and are published again
+// from there. Known limit: the opening runs synchronously on the message
+// loop, so requests wait for it (docs/m1-deferred.md, "M3 limits").
 func (s *server) didChangeFolders(raw json.RawMessage) *rpcError {
 	var p didChangeWorkspaceFoldersParams
 	if rerr := decode(raw, &p); rerr != nil {
@@ -176,7 +200,6 @@ func (s *server) didChangeFolders(raw json.RawMessage) *rpcError {
 	}
 	s.wait()
 	changed := false
-	dropped := map[backend]bool{}
 	for _, wf := range p.Event.Removed {
 		path, err := workspace.PathFromURI(wf.URI)
 		if err != nil {
@@ -185,10 +208,9 @@ func (s *server) didChangeFolders(raw json.RawMessage) *rpcError {
 		}
 		path = filepath.Clean(path)
 		real := resolveRoot(path)
-		for i, f := range s.folders {
-			if f.client == path || real != "" && f.ws.IsRoot(real) {
-				dropped[f.ws] = true
-				s.folders = append(s.folders[:i:i], s.folders[i+1:]...)
+		for i, d := range s.declared {
+			if d.client == path || real != "" && s.sameRoot(d.real, real) {
+				s.declared = append(s.declared[:i:i], s.declared[i+1:]...)
 				changed = true
 				break
 			}
@@ -200,41 +222,54 @@ func (s *server) didChangeFolders(raw json.RawMessage) *rpcError {
 			s.log.Printf("ignoring added folder %q: %v", wf.URI, err)
 			continue
 		}
-		path = filepath.Clean(path)
-		real := resolveRoot(path)
-		if real == "" {
-			s.log.Printf("cannot open workspace folder %s: it does not resolve", path)
+		d := s.declare([]string{path})[0]
+		dup := false
+		for _, e := range s.declared {
+			if d.real != "" && s.sameRoot(e.real, d.real) {
+				dup = true
+				break
+			}
+		}
+		if d.real == "" || dup {
 			continue
 		}
-		if s.servedRoot(s.folders, real) {
-			continue
-		}
-		ws, err := workspace.OpenExcluding(path, workspace.Limits{}, s.folderRoots())
-		if err != nil {
-			s.log.Printf("cannot open workspace folder %s: %v", path, err)
-			continue
-		}
-		s.folders = append(s.folders, &folder{client: path, ws: ws})
+		s.declared = append(s.declared, d)
 		changed = true
 	}
 	if !changed {
 		return nil
 	}
-	roots := s.folderRoots()
-	for _, f := range s.folders {
-		f.ws.SetExcluded(roots) // only the roots nested in f count; a no-op when unchanged
+	old := s.folders
+	s.folders = s.reconcile(s.declared, old)
+	dropped := map[backend]bool{}
+	for _, f := range old {
+		kept := false
+		for _, g := range s.folders {
+			kept = kept || g == f
+		}
+		if !kept {
+			dropped[f.ws] = true
+		}
 	}
 	s.rehome(dropped)
 	return nil
 }
 
-// folderRoots are the roots of the open folders.
-func (s *server) folderRoots() []string {
-	out := make([]string, len(s.folders))
-	for i, f := range s.folders {
-		out[i] = f.ws.Root()
+// sameRoot reports whether two resolved roots name one directory: equal
+// spellings, or both the root of one served folder (its case rule).
+func (s *server) sameRoot(x, y string) bool {
+	if x == y {
+		return true
 	}
-	return out
+	if x == "" || y == "" {
+		return false
+	}
+	for _, f := range s.folders {
+		if f.ws.IsRoot(x) && f.ws.IsRoot(y) {
+			return true
+		}
+	}
+	return false
 }
 
 // rehome moves each open document whose backend or canonical path changed:
