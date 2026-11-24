@@ -90,11 +90,60 @@ func TestGitignoreWorkIsBounded(t *testing.T) {
 		w.mu.Lock()
 		evals := w.ignBudget.Evals()
 		w.mu.Unlock()
-		if evals > maxIgnoreEvals {
-			t.Fatalf("%d evaluations over the budget of %d", evals, maxIgnoreEvals)
+		if limit := maxIgnoreEvals + (files+2)*ignoreEvalsPerEntry; evals > limit {
+			t.Fatalf("%d evaluations over the budget of %d", evals, limit)
 		}
 		hit := w.Report().LimitsHit
-		if len(hit) != 1 || !strings.Contains(hit[0], "ignore evaluation limit of") {
+		if len(hit) != 1 || !strings.Contains(hit[0], "ignore evaluation limit reached") {
+			t.Fatalf("LimitsHit %q", hit)
+		}
+	})
+	// An ordinary repository: a short .gitignore that excludes node_modules and
+	// vendor, and many files that match none of its rules. The budget grows
+	// with the entries visited, so it is not met, and the directories stay out.
+	t.Run("ordinary repository", func(t *testing.T) {
+		root := t.TempDir()
+		var gi strings.Builder
+		gi.WriteString("node_modules/\nvendor/\n")
+		for i := 0; i < 150; i++ {
+			fmt.Fprintf(&gi, "*.gen%d\n", i)
+		}
+		write(t, filepath.Join(root, ".gitignore"), gi.String())
+		const ordinary = 10000
+		for i := 0; i < ordinary; i++ {
+			write(t, filepath.Join(root, fmt.Sprintf("d%d", i%50), fmt.Sprintf("f%d.sh", i)), "echo\n")
+		}
+		for _, d := range []string{"node_modules", "vendor"} {
+			for i := 0; i < 300; i++ {
+				write(t, filepath.Join(root, "zz_node", d, fmt.Sprintf("x%d.sh", i)), "echo\n")
+			}
+		}
+		w := open(t, root)
+		r := w.Report()
+		if r.Files != ordinary || len(r.LimitsHit) != 0 {
+			t.Fatalf("%d files (want %d), LimitsHit %q", r.Files, ordinary, r.LimitsHit)
+		}
+	})
+	// Dir-only rules are not dropped when the evaluations run out: a hostile
+	// file of file rules meets the limit, and the excluded directory stays out.
+	t.Run("excluded directories survive the limit", func(t *testing.T) {
+		root := t.TempDir()
+		var gi strings.Builder
+		gi.WriteString("node_modules/\n")
+		for i := 0; i < maxIgnoreRules/2; i++ {
+			fmt.Fprintf(&gi, "pad%d.sh\n", i)
+		}
+		write(t, filepath.Join(root, ".gitignore"), gi.String())
+		files := 2*maxIgnoreEvals/(maxIgnoreRules/2) + 20
+		for i := 0; i < files; i++ {
+			write(t, filepath.Join(root, fmt.Sprintf("f%d.sh", i)), "echo\n")
+		}
+		write(t, filepath.Join(root, "node_modules", "n.sh"), "echo\n")
+		w := open(t, root)
+		if n := len(rels(w)); n != files {
+			t.Fatalf("%d files, want %d (node_modules must stay out)", n, files)
+		}
+		if hit := w.Report().LimitsHit; len(hit) != 1 || !strings.Contains(hit[0], "evaluation limit reached") {
 			t.Fatalf("LimitsHit %q", hit)
 		}
 	})

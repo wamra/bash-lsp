@@ -2,6 +2,7 @@ package ignore
 
 import (
 	"fmt"
+	"math/rand"
 	"strings"
 	"testing"
 )
@@ -106,7 +107,7 @@ func TestNonASCIIPatterns(t *testing.T) {
 // The deepest matcher with a verdict decides, and the matchers above it are
 // not evaluated: the work does not multiply with the nesting.
 func TestSetDoesNotReEvaluateAncestors(t *testing.T) {
-	b := NewBudget(1<<20, 1<<20)
+	b := NewBudget(1<<20, 1<<20, 0)
 	var rules strings.Builder
 	for i := 0; i < 1000; i++ {
 		fmt.Fprintf(&rules, "never%d\n", i)
@@ -129,7 +130,7 @@ func TestSetDoesNotReEvaluateAncestors(t *testing.T) {
 }
 
 func TestBudgetStopsApplyingRules(t *testing.T) {
-	b := NewBudget(3, 5)
+	b := NewBudget(3, 5, 0)
 	m := b.ParseFold("", []byte("a\nb\n# c\nc\nd\ne\n"), false)
 	if len(m.rules) != 3 {
 		t.Fatalf("%d rules compiled, want 3", len(m.rules))
@@ -148,10 +149,79 @@ func TestBudgetStopsApplyingRules(t *testing.T) {
 	if b.Evals() > 5 {
 		t.Fatalf("%d evaluations over the budget of 5", b.Evals())
 	}
-	if h := b.Hit(); len(h) != 2 || !strings.Contains(h[1], "evaluation limit of 5") {
+	if h := b.Hit(); len(h) != 2 || !strings.Contains(h[1], "evaluation limit reached (5 plus 0") {
 		t.Fatalf("hit %q", h)
 	}
 	if (*Budget)(nil).Hit() != nil {
 		t.Fatal("nil budget hit")
+	}
+}
+
+// A rule that excludes a directory outlives the budget: it has an allowance
+// of its own, spent on directories only, and the rules past the limit are
+// the ones other than dir-only.
+func TestDirOnlyRulesOutliveTheBudget(t *testing.T) {
+	b := NewBudget(2, 4, 0)
+	m := b.ParseFold("", []byte("node_modules/\na\nb\nc\nd\nvendor/\n"), false)
+	if len(m.rules) != 4 { // node_modules/, a, b, vendor/
+		t.Fatalf("%d rules compiled, want 4", len(m.rules))
+	}
+	set := (&Set{}).WithBudget(b)
+	set.Add(m)
+	for i := 0; i < 10; i++ {
+		set.Ignored("zzz", false)
+	}
+	if !set.Ignored("node_modules", true) || !set.Ignored("x/vendor", true) {
+		t.Fatal("a dir-only rule was dropped by the budget")
+	}
+	if set.Ignored("a", false) {
+		t.Fatal("a file rule applied after the budget ran out")
+	}
+	if len(b.Hit()) != 2 {
+		t.Fatalf("hit %q", b.Hit())
+	}
+}
+
+// Set.Ignored looks deepest first; it has to give the answer of the plain
+// forward evaluation (every rule, last match wins) on any rules.
+func TestSetMatchesForwardEvaluation(t *testing.T) {
+	r := rand.New(rand.NewSource(1))
+	pats := []string{"*.log", "build/", "!keep.log", "/a", "a/b", "!a/b", "*.sh", "!x.sh", "d/", "**/z", "q?", "!*.tmp", "tmp"}
+	paths := []string{"a", "a/b", "a/b/c.log", "build", "x/build", "keep.log", "x.sh", "d/x.sh", "d", "z", "a/z", "qa", "t.tmp", "tmp/y", "s/keep.log"}
+	for n := 0; n < 300; n++ {
+		set := &Set{}
+		var ms []*Matcher
+		for _, base := range []string{"", "a", "a/b"}[:1+r.Intn(3)] {
+			var lines []string
+			for i := r.Intn(8); i > 0; i-- {
+				lines = append(lines, pats[r.Intn(len(pats))])
+			}
+			m := Parse(base, []byte(strings.Join(lines, "\n")))
+			set.Add(m)
+			ms = append(ms, m)
+		}
+		for _, p := range paths {
+			for _, dir := range []bool{false, true} {
+				want := false
+				for _, m := range ms {
+					for _, rl := range m.rules {
+						rel := p
+						if m.Base != "" {
+							if !m.inBase(p) {
+								continue
+							}
+							rel = p[len(m.Base)+1:]
+						}
+						if rl.dirOnly && !dir || !rl.re.MatchString(rel) {
+							continue
+						}
+						want = !rl.negate
+					}
+				}
+				if got := set.Ignored(p, dir); got != want {
+					t.Fatalf("round %d %q dir=%v: got %v want %v", n, p, dir, got, want)
+				}
+			}
+		}
 	}
 }

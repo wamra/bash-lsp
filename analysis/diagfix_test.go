@@ -184,7 +184,7 @@ func TestUnresolvedSourceSeverity(t *testing.T) {
 		"[ -f ./other.conf ] && . ./local.conf\n":                                {SevWarning},
 		"source \"$X/a.sh\"\n":                                                   {SevInfo},
 		"# shellcheck disable=SC1091\nsource ./nope.sh\n":                        nil,
-		"echo a\n# shellcheck disable=SC1090\nsource \"$X\"\nsource ./nope.sh\n": {SevWarning}, // "$X/a.sh" is SC1091 to ShellCheck (round 3)
+		"echo a\n# shellcheck disable=SC1090\nsource \"$X\"\nsource ./nope.sh\n": {SevWarning}, // "$X/a.sh" is SC1091 to ShellCheck
 		"# shellcheck source=/dev/null\nsource \"$X/a.sh\"\n":                    nil,
 	}
 	for src, want := range cases {

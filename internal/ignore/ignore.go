@@ -26,9 +26,10 @@ type rule struct {
 // Matcher holds the rules of one ignore file whose directory is Base
 // (slash-separated, relative to the workspace root; "" for the root).
 type Matcher struct {
-	Base  string
-	rules []rule
-	fold  bool
+	Base   string
+	rules  []rule
+	dirIdx []int // indexes in rules of the dir-only rules
+	fold   bool
 }
 
 // Parse compiles the lines of an ignore file located in directory base.
@@ -42,26 +43,44 @@ func ParseFold(base string, data []byte, fold bool) *Matcher {
 	return (*Budget)(nil).ParseFold(base, data, fold)
 }
 
-// Budget bounds the work of the ignore files of one walk, in counts: the
-// rules compiled and the rule evaluations made. A repository controls its
-// .gitignore files, and the cost is rules times paths times nesting. When a
-// count runs out the walk stops applying rules from there: rules beyond the
-// rule budget are not compiled, and once the evaluation budget is spent
-// nothing is reported ignored. Files are then included rather than hidden,
-// which is the conservative answer for an analyser: nothing is skipped
-// silently, and the file limits still bound what is read. A nil Budget is
-// unlimited.
+// Budget bounds the work of the ignore files of one walk, in counts. A
+// repository controls its .gitignore files, and the cost is rules times paths
+// times nesting, so the allowance grows with the entries the walk visits:
+// evaluations are a fixed floor plus a per-entry allowance times entries
+// visited (Visit), so an ordinary tree never meets it; compiled rules are
+// capped. Rules that exclude a directory (dir-only, "node_modules/") have a
+// budget of their own that is spent only on directories, and are the last
+// to go: they keep a walk out of trees it must not enter. Past a limit the
+// rules concerned are ignored from there on, which is not exact either way:
+// a file a dropped rule would hide is included, and one a dropped negation
+// would bring back stays ignored. The file limits still bound what is read.
+// A nil Budget is unlimited.
 type Budget struct {
-	rulesLeft, evalsLeft int
-	rulesHit, evalsHit   bool
-	maxRules, maxEvals   int
-	evals                int
+	rulesLeft, dirRulesLeft int // compiled rules still allowed: all other rules, dir-only rules
+	evalsLeft, dirEvalsLeft int // evaluations still allowed: all other rules, dir-only rules
+	perEntry                int
+	rulesHit, evalsHit      bool
+	maxRules, floor         int
+	evals                   int
 }
 
-// NewBudget returns a Budget of maxRules compiled rules and maxEvals
-// evaluations.
-func NewBudget(maxRules, maxEvals int) *Budget {
-	return &Budget{rulesLeft: maxRules, evalsLeft: maxEvals, maxRules: maxRules, maxEvals: maxEvals}
+// NewBudget returns a Budget of maxRules compiled rules of each kind and, for
+// evaluations, floor plus perEntry for every entry passed to Visit.
+func NewBudget(maxRules, floor, perEntry int) *Budget {
+	return &Budget{rulesLeft: maxRules, dirRulesLeft: maxRules, evalsLeft: floor, dirEvalsLeft: floor,
+		perEntry: perEntry, maxRules: maxRules, floor: floor}
+}
+
+// Visit adds the allowance of one more entry (a file or a directory) the walk
+// is about to test.
+func (b *Budget) Visit(isDir bool) {
+	if b == nil {
+		return
+	}
+	b.evalsLeft += b.perEntry
+	if isDir {
+		b.dirEvalsLeft += b.perEntry
+	}
 }
 
 // Evals is how many rule evaluations have been charged.
@@ -74,10 +93,10 @@ func (b *Budget) Hit() []string {
 	}
 	var out []string
 	if b.rulesHit {
-		out = append(out, fmt.Sprintf("ignore rule limit of %d reached: later .gitignore rules not applied, files they would hide are included", b.maxRules))
+		out = append(out, fmt.Sprintf("ignore rule limit of %d reached: later .gitignore rules are ignored, so a later negation can be lost", b.maxRules))
 	}
 	if b.evalsHit {
-		out = append(out, fmt.Sprintf("ignore evaluation limit of %d reached: .gitignore rules not applied to later paths, files they would hide are included", b.maxEvals))
+		out = append(out, fmt.Sprintf("ignore evaluation limit reached (%d plus %d per entry): some .gitignore rules are not applied to later paths, so a file may be included that git ignores, or stay ignored after a negation", b.floor, b.perEntry))
 	}
 	return out
 }
@@ -92,19 +111,34 @@ func (b *Budget) ParseFold(base string, data []byte, fold bool) *Matcher {
 		} else {
 			line, data = data, nil
 		}
-		if b != nil && b.rulesLeft <= 0 {
-			// A blank line or a comment would not have been a rule.
-			if t := bytes.TrimSpace(line); len(t) > 0 && t[0] != '#' {
-				b.rulesHit = true
-				return m
+		if b != nil {
+			// Decide by the text, before compiling: a dir-only rule ends in "/".
+			t := bytes.TrimSpace(line)
+			if len(t) == 0 || t[0] == '#' {
+				continue
 			}
-			continue
+			if bytes.HasSuffix(t, []byte("/")) {
+				if b.dirRulesLeft <= 0 {
+					b.rulesHit = true
+					continue
+				}
+			} else if b.rulesLeft <= 0 {
+				b.rulesHit = true
+				continue
+			}
 		}
 		if r, ok := parseLine(strings.TrimRight(string(line), "\r"), fold); ok {
-			m.rules = append(m.rules, r)
 			if b != nil {
-				b.rulesLeft--
+				if r.dirOnly {
+					b.dirRulesLeft--
+				} else {
+					b.rulesLeft--
+				}
 			}
+			if r.dirOnly {
+				m.dirIdx = append(m.dirIdx, len(m.rules))
+			}
+			m.rules = append(m.rules, r)
 		}
 	}
 	return m
@@ -225,19 +259,44 @@ func (m *Matcher) inBase(rel string) bool {
 // Match evaluates rel (slash-separated, relative to the workspace root) and
 // returns the verdict of the last rule that matches, or None.
 func (m *Matcher) Match(rel string, isDir bool) Result {
-	res, _ := m.match(rel, isDir, nil)
-	return res
+	return m.match(rel, isDir, nil)
 }
 
-// match is Match that charges each rule it evaluates to b and stops when b
-// runs out (ok false). It looks from the last rule back and stops at the
-// first that matches, which is the last match.
-func (m *Matcher) match(rel string, isDir bool, b *Budget) (res Result, ok bool) {
+// match is Match that charges each rule it evaluates to b. It looks from
+// the last rule back and stops at the first that matches, which is the last
+// match. When the evaluations of b ran out, only dir-only rules are looked at
+// (and only for a directory), while their own allowance lasts.
+func (m *Matcher) match(rel string, isDir bool, b *Budget) Result {
 	if m.Base != "" {
 		if !m.inBase(rel) {
-			return None, true
+			return None
 		}
 		rel = rel[len(m.Base)+1:]
+	}
+	verdict := func(r *rule) Result {
+		if r.negate {
+			return Included
+		}
+		return Ignored
+	}
+	if b != nil && b.evalsLeft <= 0 {
+		b.evalsHit = true
+		if !isDir {
+			return None
+		}
+		for i := len(m.dirIdx) - 1; i >= 0; i-- {
+			r := &m.rules[m.dirIdx[i]]
+			if b.dirEvalsLeft <= 0 {
+				b.evalsHit = true
+				return None
+			}
+			b.dirEvalsLeft--
+			b.evals++
+			if r.re.MatchString(rel) {
+				return verdict(r)
+			}
+		}
+		return None
 	}
 	for i := len(m.rules) - 1; i >= 0; i-- {
 		r := &m.rules[i]
@@ -245,21 +304,26 @@ func (m *Matcher) match(rel string, isDir bool, b *Budget) (res Result, ok bool)
 			continue
 		}
 		if b != nil {
-			if b.evalsLeft <= 0 {
-				b.evalsHit = true
-				return None, false
+			if r.dirOnly {
+				if b.dirEvalsLeft <= 0 {
+					b.evalsHit = true
+					continue
+				}
+				b.dirEvalsLeft--
+			} else {
+				if b.evalsLeft <= 0 {
+					b.evalsHit = true
+					continue
+				}
+				b.evalsLeft--
 			}
-			b.evalsLeft--
 			b.evals++
 		}
 		if r.re.MatchString(rel) {
-			if r.negate {
-				return Included, true
-			}
-			return Ignored, true
+			return verdict(r)
 		}
 	}
-	return None, true
+	return None
 }
 
 // Set is an ordered list of matchers: outer directories first. Later (deeper)
@@ -283,11 +347,7 @@ func (s *Set) Clone() *Set { return &Set{ms: append([]*Matcher(nil), s.ms...), b
 // deepest matcher that has one. Matchers above it are not evaluated.
 func (s *Set) Ignored(rel string, isDir bool) bool {
 	for i := len(s.ms) - 1; i >= 0; i-- {
-		res, ok := s.ms[i].match(rel, isDir, s.budget)
-		if !ok {
-			return false
-		}
-		switch res {
+		switch s.ms[i].match(rel, isDir, s.budget) {
 		case Ignored:
 			return true
 		case Included:

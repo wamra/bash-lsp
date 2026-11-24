@@ -260,8 +260,9 @@ const maxIgnoreBytes = 1 << 20
 // ignore.Budget): rules compiled over all the .gitignore files, and rule
 // evaluations over all the paths. Real trees use a small fraction of both.
 const (
-	maxIgnoreRules = 20000
-	maxIgnoreEvals = 1000000
+	maxIgnoreRules      = 20000
+	maxIgnoreEvals      = 1000000 // floor of the evaluations
+	ignoreEvalsPerEntry = 500     // added for every entry the walk visits
 )
 
 // Workspace is safe for concurrent use.
@@ -1041,7 +1042,7 @@ func (w *Workspace) walk() (cands []candidate) {
 	w.depthHit = map[string]string{}
 	w.unlisted = map[string]string{} // a full walk lists large directories again
 	visited := map[string]bool{w.key(w.root): true}
-	w.ignBudget = ignore.NewBudget(maxIgnoreRules, maxIgnoreEvals)
+	w.ignBudget = ignore.NewBudget(maxIgnoreRules, maxIgnoreEvals, ignoreEvalsPerEntry)
 	var rec func(dir, real, rel string, set *ignore.Set, depth int)
 	rec = func(dir, real, rel string, set *ignore.Set, depth int) {
 		if data, ok := w.readConfig(filepath.Join(dir, ".gitignore"), maxIgnoreBytes); ok {
@@ -1054,6 +1055,7 @@ func (w *Workspace) walk() (cands []candidate) {
 		}
 		for _, de := range ents {
 			name := de.Name()
+			w.ignBudget.Visit(de.IsDir() || de.Type()&os.ModeSymlink != 0)
 			full := filepath.Join(dir, name)
 			relp := name
 			if rel != "" {
@@ -1275,7 +1277,7 @@ func (w *Workspace) ignoredPath(rel string, dir bool) bool {
 	if n := len(parts) - 1; dir && n+1 > w.lim.MaxDirDepth || n > w.lim.MaxDirDepth {
 		return true // the walk does not enter a directory this deep
 	}
-	b := ignore.NewBudget(maxIgnoreRules, maxIgnoreEvals)
+	b := ignore.NewBudget(maxIgnoreRules, maxIgnoreEvals, ignoreEvalsPerEntry)
 	set := (&ignore.Set{}).WithBudget(b)
 	d, relDir := w.root, ""
 	for i, part := range parts {
@@ -1288,6 +1290,7 @@ func (w *Workspace) ignoredPath(rel string, dir bool) bool {
 			relp = relDir + "/" + part
 		}
 		isDir := i < len(parts)-1 || dir
+		b.Visit(isDir)
 		if set.Ignored(relp, isDir) || w.exclude.Ignored(relp, isDir) {
 			return true
 		}
