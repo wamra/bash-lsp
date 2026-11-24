@@ -1,5 +1,7 @@
 package analysis
 
+import "sort"
+
 // The builtin list: bash builtins and reserved words. A command with one of
 // these names and no function or alias of that name in view gets no call edge
 // and no name-match-outside-closure candidate.
@@ -67,3 +69,13 @@ func init() {
 // IsBuiltin reports whether name is a bash builtin or reserved word (see the
 // list's sources above).
 func IsBuiltin(name string) bool { return builtins[name] }
+
+// BuiltinNames lists the builtins and reserved words, sorted.
+func BuiltinNames() []string {
+	out := make([]string, 0, len(builtins))
+	for n := range builtins {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}

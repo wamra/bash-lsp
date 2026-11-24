@@ -543,3 +543,61 @@ func TestCLINoticesAreRedacted(t *testing.T) {
 		t.Errorf("doctor holds the secret:\n%s", out)
 	}
 }
+
+func TestDoctorHelpLines(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the helpers are not used on Windows")
+	}
+	root := t.TempDir()
+	putFile(t, root, "a.sh", "#!/bin/bash\necho hi\n")
+
+	// Nothing on the PATH profile: absent.
+	emptyPath(t)
+	out := runOK(t, "doctor", root)
+	wantLines(t, out, "help: absent\n", "man: absent\n")
+
+	// Both programs on the PATH profile, outside the workspace: available, with the path.
+	bin := t.TempDir()
+	for _, n := range []string{"bash", "man"} {
+		putFile(t, bin, n, "#!/bin/sh\n")
+		if err := os.Chmod(filepath.Join(bin, n), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin)
+	real, err := filepath.EvalSymlinks(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out = runOK(t, "doctor", root)
+	wantLines(t, out, "help: available ("+filepath.Join(real, "bash")+")\n", "man: available ("+filepath.Join(real, "man")+")\n")
+
+	// A configured path inside the workspace: refused, with the reason.
+	putFile(t, root, "bash", "#!/bin/sh\n")
+	if err := os.Chmod(filepath.Join(root, "bash"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	userConfig(t, "[help]\nbash_path = \""+filepath.Join(root, "bash")+"\"\n")
+	out = runOK(t, "doctor", root)
+	wantLines(t, out, "help: refused ", "it is inside the workspace folder", "man: available (")
+
+	// help.enabled = false: both lines say so.
+	userConfig(t, "[help]\nenabled = false\n")
+	out = runOK(t, "doctor", root)
+	wantLines(t, out, "help: disabled (help.enabled = false)\n", "man: disabled (help.enabled = false)\n")
+}
+
+func TestDoctorHelpLinesAreRedacted(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the helpers are not used on Windows")
+	}
+	emptyPath(t)
+	root := t.TempDir()
+	putFile(t, root, "a.sh", "echo\n")
+	userConfig(t, "[help]\nbash_path = \"/nowhere/token=sekrit123456/bash\"\nman_path = \"/nowhere/token=sekrit123456/man\"\n")
+	out := runOK(t, "doctor", root)
+	if strings.Contains(out, "sekrit123456") {
+		t.Errorf("doctor holds the secret:\n%s", out)
+	}
+	wantLines(t, out, "help: refused ", "man: refused ")
+}

@@ -350,6 +350,7 @@ func (s *server) toolFor(be backend) *scTool {
 // dropTools forgets the tools, so the next run builds them from the current
 // settings and folders. Loop only.
 func (s *server) dropTools() {
+	s.helpTools = nil
 	s.looseTool = nil
 	for _, f := range s.folders {
 		f.tool = nil
@@ -791,6 +792,9 @@ func restartKeys(old, st config.Settings) []string {
 // findings stay and a document whose findings did not change is not sent.
 func (s *server) applySettings(be backend, old, st config.Settings) {
 	s.epoch++
+	if old.Help != st.Help {
+		delete(s.helpTools, be)
+	}
 	scChanged := old.ShellCheck != st.ShellCheck
 	var docs []*document
 	for _, d := range s.docs {

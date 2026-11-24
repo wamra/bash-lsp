@@ -14,6 +14,7 @@ import (
 	"github.com/wamra/bash-lsp/analysis"
 	"github.com/wamra/bash-lsp/internal/config"
 	"github.com/wamra/bash-lsp/internal/extool"
+	"github.com/wamra/bash-lsp/internal/helpdoc"
 	"github.com/wamra/bash-lsp/internal/redact"
 	"github.com/wamra/bash-lsp/internal/shellcheck"
 	"github.com/wamra/bash-lsp/internal/workspace"
@@ -550,9 +551,9 @@ func runShellCheck(r *shellcheck.Runner, snap *analysis.Snapshot, targets []chec
 
 // doctorTools prints what `doctor` reports about the settings and the external
 // programs of the workspace at root: the settings files read and the repo
-// settings refused, the target, the PATH profile, ShellCheck and code-index. It
-// uses the settings and profile the workspace was opened with, and starts at
-// most one program, ShellCheck with --version.
+// settings refused, the target, the PATH profile, ShellCheck, the help and man
+// programs, and code-index. It uses the settings and profile the workspace was
+// opened with, and starts at most one program, ShellCheck with --version.
 func doctorTools(root string, st config.Settings, prof *extool.Profile, stdout io.Writer) {
 	roots := []string{root}
 
@@ -595,6 +596,9 @@ func doctorTools(root string, st config.Settings, prof *extool.Profile, stdout i
 	fmt.Fprintf(stdout, "path profile: %d dirs (%d skipped)\n", prof.Dirs(), len(prof.Skipped()))
 	for _, s := range prof.Skipped() {
 		fmt.Fprintf(stdout, "  skipped: %s\n", s)
+	}
+	for _, line := range helpdoc.New(extool.Run, st, prof, roots).Lines() {
+		fmt.Fprintln(stdout, redact.String(line))
 	}
 	switch ci, ref, ok := extool.Find("code-index", st.CodeIndexPath, prof, roots); {
 	case ref != nil:

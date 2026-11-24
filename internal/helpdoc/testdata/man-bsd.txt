@@ -1,0 +1,31 @@
+SAMPLE(1)                   General Commands Manual                   SAMPLE(1)
+
+NAME
+     sample – invented tool for the parser tests
+
+SYNOPSIS
+     sample [-@ABc] [--color=when]
+            [-D format] [file ...]
+
+DESCRIPTION
+     This page is made up for the tests. A wrapped description line may start
+     with a flag name,
+             -I is specified.
+     but that line is indented deeper than an option line.
+
+     The following options are available:
+
+     -@      Show invented extra keys.
+
+     -A      Include invented entries.
+
+     -D format
+             Use the given invented format.
+
+     --color=when
+             Colour output when asked.
+
+     -A      Repeated flag, listed once.
+
+SEE ALSO
+     nothing(1)

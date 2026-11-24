@@ -1,0 +1,8 @@
+read: read [-ers] [-u fd] [-t secs] [-p text] [-a arr] [-n count] [-d char] [var ...]
+    Synthetic sample: takes one line of input and splits it into names.
+    This paragraph is invented for the test and describes nothing real.
+
+    Options are listed above; the last line states the exit status.
+readonly: readonly [-af] [name[=value] ...] or readonly -p
+    Synthetic sample: marks names as constant.
+    Another invented line.
