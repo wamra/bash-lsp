@@ -1,10 +1,18 @@
 // Package ignore implements .gitignore-style pattern matching, used for the
 // .gitignore files the workspace walk honours.
+//
+// With fold (ParseFold) patterns and Base match case-insensitively by simple
+// Unicode case folding. Git on a case-insensitive volume (core.ignoreCase)
+// folds ASCII letters only, which was confirmed by experiment; the volume
+// itself (APFS) folds fully. Neither this package nor git treats names that
+// differ only by normalisation form (NFC against NFD) or by multi-letter
+// folding (ß against SS) as equal.
 package ignore
 
 import (
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 type rule struct {
@@ -119,10 +127,15 @@ func globToRegexp(g string) string {
 		case '\\':
 			if i+1 < len(g) {
 				i++
-				b.WriteString(regexp.QuoteMeta(string(g[i])))
+				_, n := utf8.DecodeRuneInString(g[i:])
+				b.WriteString(regexp.QuoteMeta(g[i : i+n]))
+				i += n - 1
 			}
 		default:
-			b.WriteString(regexp.QuoteMeta(string(c)))
+			// A literal is a whole rune, not one byte of it.
+			_, n := utf8.DecodeRuneInString(g[i:])
+			b.WriteString(regexp.QuoteMeta(g[i : i+n]))
+			i += n - 1
 		}
 	}
 	return b.String()

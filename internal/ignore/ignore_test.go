@@ -70,3 +70,31 @@ func TestParseFold(t *testing.T) {
 		t.Error("Parse differs from ParseFold(false)")
 	}
 }
+
+func TestNonASCIIPatterns(t *testing.T) {
+	nfc, nfd := "é.txt", "é.txt"
+	cases := []struct {
+		name, pat, rel string
+		fold, want     bool
+	}{
+		{"literal itself", nfc, nfc, false, true},
+		{"literal in dir", "dossier/" + nfc, "dossier/" + nfc, false, true},
+		{"literal other name", nfc, "e.txt", false, false},
+		{"class", "[éa].txt", nfc, false, true},
+		{"class miss", "[éa].txt", "b.txt", false, false},
+		{"question mark is one rune", "?.txt", nfc, false, true},
+		{"star", "*é.txt", "x" + nfc, false, true},
+		{"escaped", "\\é.txt", nfc, false, true},
+		{"fold upper pattern", "É.txt", nfc, true, true},
+		{"fold off upper pattern", "É.txt", nfc, false, false},
+		{"NFC pattern, NFD name", nfc, nfd, true, false},
+		{"sharp s is not SS", "straße", "STRASSE", true, false},
+	}
+	for _, c := range cases {
+		s := &Set{}
+		s.Add(ParseFold("", []byte(c.pat+"\n"), c.fold))
+		if got := s.Ignored(c.rel, false); got != c.want {
+			t.Errorf("%s: pattern %q on %q (fold %v) = %v, want %v", c.name, c.pat, c.rel, c.fold, got, c.want)
+		}
+	}
+}
