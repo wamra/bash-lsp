@@ -1,0 +1,544 @@
+package shellcheck
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/wamra/bash-lsp/analysis"
+	"github.com/wamra/bash-lsp/internal/extool"
+	"github.com/wamra/bash-lsp/parse"
+	"github.com/wamra/bash-lsp/tree"
+)
+
+// report prints one ShellCheck finding whose message is msg: the fake tools
+// use it to tell the test what they saw.
+func report(msg string) {
+	b, _ := json.Marshal(msg)
+	fmt.Printf(`{"comments":[{"file":"-","line":1,"endLine":1,"column":1,"endColumn":2,"level":"info","code":1,"message":%s,"fix":null}]}`, b)
+}
+
+// The test binary re-executed as a fake ShellCheck (WB_FAKE_TOOL=<mode>).
+var fakeModes = map[string]func(){
+	"json":  func() { fmt.Print(os.Getenv("WB_FAKE_OUT")); os.Exit(1) },
+	"clean": func() { fmt.Print(`{"comments":[]}`) },
+	"env":   func() { report(strings.Join(os.Environ(), "\n")) },
+	"argv": func() {
+		b, _ := io.ReadAll(os.Stdin)
+		wd, _ := os.Getwd()
+		report(fmt.Sprintf("%s\x00%s\x00%s", strings.Join(os.Args[1:], "\n"), wd, b))
+	},
+	"exit2":   func() { fmt.Fprint(os.Stderr, "\nfirst line\nsecond line"); os.Exit(2) },
+	"version": func() { fmt.Print("ShellCheck - shell script analysis tool\nversion: 9.9.9\nlicense: GPL\n") },
+	"flood": func() {
+		chunk := bytes.Repeat([]byte("x"), 64<<10)
+		for {
+			if _, err := os.Stdout.Write(chunk); err != nil {
+				os.Exit(9)
+			}
+		}
+	},
+	"sleep": func() { time.Sleep(time.Hour) },
+	"gate": func() { // count concurrent runs through a shared directory
+		dir := os.Getenv("WB_GATE")
+		me := filepath.Join(dir, fmt.Sprint(os.Getpid()))
+		os.WriteFile(me, nil, 0o644)
+		time.Sleep(300 * time.Millisecond)
+		ents, _ := os.ReadDir(dir)
+		report(fmt.Sprint(len(ents)))
+		os.Remove(me)
+	},
+}
+
+func TestMain(m *testing.M) {
+	if mode := os.Getenv("WB_FAKE_TOOL"); mode != "" {
+		f, ok := fakeModes[mode]
+		if !ok {
+			os.Exit(64)
+		}
+		f()
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
+// fakeRunner is a Runner whose tool is the test binary in the given mode;
+// extra is passed through the environment filter (test hook).
+func fakeRunner(t *testing.T, mode string, o Options, extra ...string) *Runner {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := New(extool.Tool{Name: "shellcheck", Path: exe}, o)
+	r.extraEnv = append([]string{"WB_FAKE_TOOL=" + mode}, extra...)
+	return r
+}
+
+func bashFile(path, src string) *tree.File { return parse.FileAs(path, []byte(src), tree.Bash) }
+
+func TestCheckDropsGHCRTS(t *testing.T) {
+	t.Setenv("GHCRTS", "-M1m")
+	t.Setenv("SHELLCHECK_OPTS", "-e SC2086")
+	t.Setenv("WB_SECRET", "s")
+	r := fakeRunner(t, "env", Options{})
+	ds, err := r.Check(context.Background(), bashFile(filepath.Join(t.TempDir(), "a.sh"), "echo hi\n"))
+	if err != nil || len(ds) != 1 {
+		t.Fatalf("Check = %v, %v", ds, err)
+	}
+	seen := ds[0].Message
+	for _, name := range []string{"GHCRTS=", "SHELLCHECK_OPTS=", "WB_SECRET="} {
+		if strings.Contains(seen, name) {
+			t.Errorf("the tool saw %s", name)
+		}
+	}
+	if !strings.Contains(seen, "WB_FAKE_TOOL=env") || !strings.Contains(seen, "PATH=") {
+		t.Errorf("the tool's environment lost what it needs:\n%s", seen)
+	}
+}
+
+func TestCheckArgsDirAndStdin(t *testing.T) {
+	dir := t.TempDir()
+	r := fakeRunner(t, "argv", Options{})
+	src := "--version\n$(touch pwned)\n"
+	f := bashFile(filepath.Join(dir, "sub", "--evil name.sh"), src)
+	os.MkdirAll(filepath.Join(dir, "sub"), 0o755)
+	ds, err := r.Check(context.Background(), f)
+	if err != nil || len(ds) != 1 {
+		t.Fatalf("Check = %v, %v", ds, err)
+	}
+	seen := ds[0].Message
+	parts := strings.SplitN(seen, "\x00", 3)
+	if len(parts) != 3 {
+		t.Fatalf("report %q", seen)
+	}
+	if want := "--format=json1\n--shell=bash\n--exclude=SC1091\n-"; parts[0] != want {
+		t.Errorf("args = %q, want %q", parts[0], want)
+	}
+	wantDir, _ := filepath.EvalSymlinks(filepath.Join(dir, "sub"))
+	if gotDir, _ := filepath.EvalSymlinks(parts[1]); gotDir != wantDir {
+		t.Errorf("cwd = %s, want %s", parts[1], wantDir)
+	}
+	if parts[2] != src {
+		t.Errorf("stdin = %q, want %q", parts[2], src)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "sub", "pwned")); err == nil {
+		t.Error("analysed text was executed")
+	}
+}
+
+func TestCheckShellFlagPerDialect(t *testing.T) {
+	for d, want := range map[tree.Dialect]string{tree.Bash: "bash", tree.Bats: "bash", tree.POSIX: "sh", tree.Mksh: "ksh"} {
+		got, ok := ShellFlag(d)
+		if !ok || got != want {
+			t.Errorf("ShellFlag(%v) = %q, %v; want %q", d, got, ok, want)
+		}
+	}
+	for _, d := range []tree.Dialect{tree.Zsh, 0, 99} {
+		if s, ok := ShellFlag(d); ok {
+			t.Errorf("ShellFlag(%v) = %q, true", d, s)
+		}
+	}
+}
+
+// A file that is skipped or has a dialect ShellCheck lacks is never sent.
+func TestCheckSendsNothingForSkippedOrZsh(t *testing.T) {
+	r := New(extool.Tool{Name: "shellcheck", Path: "/nonexistent/never-started"}, Options{})
+	skipped := bashFile("/x/a.sh", "echo $a\n")
+	skipped.Skipped = "over the limit"
+	zsh := parse.FileAs("/x/b.zsh", []byte("echo $a\n"), tree.Zsh)
+	for _, f := range []*tree.File{skipped, zsh, nil} {
+		ds, err := r.Check(context.Background(), f)
+		if err != nil || len(ds) != 0 {
+			t.Errorf("Check = %v, %v; want nothing and no error", ds, err)
+		}
+	}
+}
+
+func TestCheckExitCodes(t *testing.T) {
+	f := bashFile("/x/a.sh", "echo hi\n")
+	// 0 and 1 are success.
+	if _, err := fakeRunner(t, "clean", Options{}).Check(context.Background(), f); err != nil {
+		t.Errorf("exit 0: %v", err)
+	}
+	r := fakeRunner(t, "json", Options{}, `WB_FAKE_OUT={"comments":[]}`)
+	if _, err := r.Check(context.Background(), f); err != nil {
+		t.Errorf("exit 1: %v", err)
+	}
+	// 2 is an error with the first non-empty stderr line.
+	_, err := fakeRunner(t, "exit2", Options{}).Check(context.Background(), f)
+	if err == nil || !strings.Contains(err.Error(), "first line") || strings.Contains(err.Error(), "second line") {
+		t.Errorf("exit 2: %v", err)
+	}
+	// Garbage on stdout is an error, not a panic.
+	r = fakeRunner(t, "json", Options{}, "WB_FAKE_OUT=not json")
+	if _, err := r.Check(context.Background(), f); err == nil {
+		t.Error("garbage output: no error")
+	}
+}
+
+func TestCheckBoundsFloodAndHang(t *testing.T) {
+	f := bashFile("/x/a.sh", "echo hi\n")
+	_, err := fakeRunner(t, "flood", Options{MaxOutput: 1 << 20}).Check(context.Background(), f)
+	if !errors.Is(err, extool.ErrOutputCap) {
+		t.Errorf("flood: %v", err)
+	}
+	start := time.Now()
+	_, err = fakeRunner(t, "sleep", Options{Timeout: 400 * time.Millisecond}).Check(context.Background(), f)
+	if !errors.Is(err, extool.ErrTimeout) || time.Since(start) > time.Second {
+		t.Errorf("hang: %v after %v", err, time.Since(start))
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(150*time.Millisecond, cancel)
+	if _, err = fakeRunner(t, "sleep", Options{}).Check(ctx, f); !errors.Is(err, context.Canceled) {
+		t.Errorf("cancel: %v", err)
+	}
+}
+
+// At most Concurrency children run at once; a waiting Check gives up when its
+// context ends.
+func TestCheckConcurrencyLimit(t *testing.T) {
+	gate := t.TempDir()
+	r := fakeRunner(t, "gate", Options{Concurrency: 2}, "WB_GATE="+gate)
+	var peak atomic.Int64
+	note := func(msg string) {
+		var n int64
+		fmt.Sscan(msg, &n)
+		for {
+			p := peak.Load()
+			if n <= p || peak.CompareAndSwap(p, n) {
+				return
+			}
+		}
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ds, err := r.Check(context.Background(), bashFile("/x/a.sh", "echo\n"))
+			if err != nil || len(ds) != 1 {
+				t.Errorf("Check = %v, %v", ds, err)
+				return
+			}
+			note(ds[0].Message)
+		}()
+	}
+	wg.Wait()
+	if p := peak.Load(); p < 1 || p > 2 {
+		t.Errorf("peak concurrency %d, want 1 or 2", p)
+	}
+
+	one := fakeRunner(t, "sleep", Options{Concurrency: 1, Timeout: 5 * time.Second})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { _, err := one.Check(ctx, bashFile("/x/a.sh", "echo\n")); done <- err }()
+	time.Sleep(200 * time.Millisecond)
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel2()
+	if _, err := one.Check(ctx2, bashFile("/x/a.sh", "echo\n")); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("a waiting Check: %v", err)
+	}
+	cancel()
+	<-done
+}
+
+func TestVersion(t *testing.T) {
+	v, err := fakeRunner(t, "version", Options{}).Version(context.Background())
+	if err != nil || v != "9.9.9" {
+		t.Errorf("Version = %q, %v", v, err)
+	}
+	if _, err := fakeRunner(t, "clean", Options{}).Version(context.Background()); err == nil {
+		t.Error("output with no version line is accepted")
+	}
+}
+
+func TestOptionDefaults(t *testing.T) {
+	r := New(extool.Tool{}, Options{})
+	if r.opt.Timeout != 10*time.Second || r.opt.MaxOutput != 4<<20 || r.opt.Concurrency != 2 || cap(r.sem) != 2 {
+		t.Errorf("defaults = %+v", r.opt)
+	}
+}
+
+// --- Parse, on output captured from ShellCheck 0.11.0 ---
+
+func fixture(t *testing.T, name string) (*tree.File, []byte) {
+	t.Helper()
+	src, err := os.ReadFile(filepath.Join("..", "..", "testdata", "shellcheck", name+".sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := os.ReadFile(filepath.Join("..", "..", "testdata", "shellcheck", name+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bashFile("/w/"+name+".sh", string(src)), out
+}
+
+// applyEdits applies edits (non-overlapping, at distinct offsets) to src.
+func applyEdits(src []byte, edits []analysis.TextEdit) string {
+	es := slices.Clone(edits)
+	slices.SortFunc(es, func(a, b analysis.TextEdit) int { return b.Range.Start.Offset - a.Range.Start.Offset })
+	out := slices.Clone(src)
+	for _, e := range es {
+		out = append(out[:e.Range.Start.Offset], append([]byte(e.NewText), out[e.Range.End.Offset:]...)...)
+	}
+	return string(out)
+}
+
+func TestParseEmojiLine(t *testing.T) {
+	f, out := fixture(t, "emoji")
+	ds, err := Parse(f, out)
+	if err != nil || len(ds) != 1 {
+		t.Fatalf("Parse = %v, %v", ds, err)
+	}
+	d := ds[0]
+	if d.Rule != "SC2086" || d.Severity != analysis.SevInfo || d.Origin != "shellcheck" || d.Message == "" {
+		t.Errorf("diagnostic = %+v", d)
+	}
+	// ShellCheck counts code points: `echo "😀" $x` has $x at columns 10-12; the
+	// emoji is 4 bytes, so the byte range starts 3 bytes later and the UTF-16
+	// range 1 unit later.
+	if got := string(f.Src[d.Range.Start.Offset:d.Range.End.Offset]); got != "$x" {
+		t.Fatalf("range covers %q", got)
+	}
+	if d.Range.Start.Line != 3 || d.Range.Start.Col != 13 || d.Range.End.Col != 15 {
+		t.Errorf("range = %+v", d.Range)
+	}
+	if l, c := f.ToUTF16(d.Range.Start); l != 2 || c != 10 {
+		t.Errorf("UTF-16 start = %d:%d, want 2:10", l, c)
+	}
+	if l, c := f.ToUTF16(d.Range.End); l != 2 || c != 12 {
+		t.Errorf("UTF-16 end = %d:%d, want 2:12", l, c)
+	}
+	if len(d.Fixes) != 1 || d.Fixes[0].Title != "ShellCheck: apply fix" || d.Fixes[0].Safe {
+		t.Fatalf("fixes = %+v", d.Fixes)
+	}
+	if got, want := applyEdits(f.Src, d.Fixes[0].Edits), "#!/bin/bash\nx=$1\necho \"😀\" \"$x\"\n"; got != want {
+		t.Errorf("fixed text = %q, want %q", got, want)
+	}
+}
+
+func TestParseTabLine(t *testing.T) {
+	f, out := fixture(t, "tab")
+	ds, err := Parse(f, out)
+	if err != nil || len(ds) != 2 {
+		t.Fatalf("Parse = %v, %v", ds, err)
+	}
+	// A tab is one column.
+	for _, d := range ds {
+		if got := string(f.Src[d.Range.Start.Offset:d.Range.End.Offset]); got != "$x" {
+			t.Errorf("line %d: range covers %q", d.Range.Start.Line, got)
+		}
+		if got := applyEdits(f.Src, d.Fixes[0].Edits); strings.Count(got, `"$x"`) != 1 {
+			t.Errorf("fixed text = %q", got)
+		}
+	}
+}
+
+func TestParseCRLFFile(t *testing.T) {
+	f, out := fixture(t, "crlf")
+	if !bytes.Contains(f.Src, []byte("\r\n")) {
+		t.Fatal("the fixture lost its carriage returns")
+	}
+	ds, err := Parse(f, out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var quoting, cr int
+	for _, d := range ds {
+		switch d.Rule {
+		case "SC2086":
+			quoting++
+			if got := string(f.Src[d.Range.Start.Offset:d.Range.End.Offset]); got != "$x" {
+				t.Errorf("SC2086 covers %q", got)
+			}
+		case "SC1017":
+			cr++
+			if d.Severity != analysis.SevError {
+				t.Errorf("SC1017 severity %v", d.Severity)
+			}
+			if got := string(f.Src[d.Range.Start.Offset:min(d.Range.End.Offset+1, len(f.Src))]); !strings.HasPrefix(got, "\r") {
+				t.Errorf("SC1017 at %+v is not at a carriage return: %q", d.Range, got)
+			}
+		}
+	}
+	if quoting != 2 || cr != 4 {
+		t.Errorf("SC2086 x%d, SC1017 x%d; want 2 and 4", quoting, cr)
+	}
+}
+
+func TestParseCodesLevelsAndFiles(t *testing.T) {
+	f, out := fixture(t, "fix")
+	ds, err := Parse(f, out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var codes []string
+	for _, d := range ds {
+		codes = append(codes, fmt.Sprintf("%s/%d", d.Rule, d.Severity))
+		if d.Rule == "SC2154" && len(d.Fixes) != 0 {
+			t.Error("a finding with fix null has a fix")
+		}
+	}
+	if want := []string{"SC2086/3", "SC2154/2", "SC2086/3"}; !slices.Equal(codes, want) {
+		t.Errorf("codes = %v, want %v", codes, want)
+	}
+	for level, want := range map[string]analysis.Severity{"error": 1, "warning": 2, "info": 3, "style": 4, "weird": 3} {
+		js := fmt.Sprintf(`{"comments":[{"file":"-","line":1,"endLine":1,"column":1,"endColumn":2,"level":%q,"code":2000,"message":"m","fix":null}]}`, level)
+		ds, err := Parse(f, []byte(js))
+		if err != nil || len(ds) != 1 || ds[0].Severity != want {
+			t.Errorf("level %s: %v %v", level, ds, err)
+		}
+	}
+	// Only comments about the standard input count.
+	js := `{"comments":[{"file":"other.sh","line":1,"endLine":1,"column":1,"endColumn":2,"level":"error","code":2000,"message":"m","fix":null}]}`
+	if ds, err := Parse(f, []byte(js)); err != nil || len(ds) != 0 {
+		t.Errorf("other file: %v %v", ds, err)
+	}
+	// Positions beyond the file are clamped; never a panic.
+	js = `{"comments":[{"file":"-","line":99,"endLine":100,"column":50,"endColumn":60,"level":"error","code":2000,"message":"m","fix":{"replacements":[{"line":0,"endLine":-3,"column":0,"endColumn":9999,"replacement":"x","precedence":1,"insertionPoint":"afterEnd"}]}}]}`
+	ds, err = Parse(f, []byte(js))
+	if err != nil || len(ds) != 1 || ds[0].Range.End.Offset > len(f.Src) {
+		t.Errorf("clamp: %v %v", ds, err)
+	}
+	for _, bad := range []string{"", "x", `{"comments":`, `[]`} {
+		if _, err := Parse(f, []byte(bad)); err == nil && bad != `[]` {
+			t.Errorf("Parse(%q) accepted", bad)
+		}
+	}
+}
+
+// --- against the installed ShellCheck ---
+
+func realRunner(t *testing.T) *Runner {
+	t.Helper()
+	tool, ref, ok := extool.Find("shellcheck", "", extool.ProfileFromEnv(), nil)
+	if !ok {
+		t.Skipf("shellcheck is not installed (refusal: %v)", ref)
+	}
+	return New(tool, Options{})
+}
+
+// analyse returns the native findings of path as the workspace would.
+func analyse(t *testing.T, root, path string) (*tree.File, []analysis.Diagnostic) {
+	t.Helper()
+	files := map[string][]byte{}
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.HasSuffix(p, ".sh") {
+			b, rerr := os.ReadFile(p)
+			if rerr != nil {
+				return rerr
+			}
+			files[p] = b
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := analysis.Analyze(files, analysis.Options{Root: root})
+	return parse.File(path, files[path]), s.Diagnostics(path, analysis.DiagOptions{})
+}
+
+func TestAC13(t *testing.T) {
+	r := realRunner(t)
+	root, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "ac13"))
+	path := filepath.Join(root, "main.sh")
+	f, native := analyse(t, root, path)
+	sc, err := r.Check(context.Background(), f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged := analysis.Merge(native, sc)
+	if !slices.ContainsFunc(native, func(d analysis.Diagnostic) bool { return d.Rule == "WB1401" }) {
+		t.Error("the native analysis found no WB1401 to de-duplicate: the test proves nothing")
+	}
+	text := func(d analysis.Diagnostic) string { return string(f.Src[d.Range.Start.Offset:d.Range.End.Offset]) }
+	lineOf := func(d analysis.Diagnostic) string {
+		return strings.Split(string(f.Src), "\n")[d.Range.Start.Line-1]
+	}
+	var sc2086, sc2154 []analysis.Diagnostic
+	for _, d := range merged {
+		switch d.Rule {
+		case "WB1401":
+			t.Errorf("WB1401 survived the merge: %+v", d)
+		case "SC2086":
+			sc2086 = append(sc2086, d)
+		case "SC2154":
+			sc2154 = append(sc2154, d)
+		}
+	}
+	if len(sc2086) != 2 {
+		t.Fatalf("SC2086 count = %d, want 2: %+v", len(sc2086), merged)
+	}
+	if !strings.Contains(lineOf(sc2086[0]), "rm $f") || !strings.Contains(lineOf(sc2086[1]), "echo $undefined_thing") {
+		t.Errorf("SC2086 on lines %q and %q", lineOf(sc2086[0]), lineOf(sc2086[1]))
+	}
+	if len(sc2154) != 1 || text(sc2154[0]) != "$undefined_thing" {
+		t.Fatalf("SC2154 = %+v", sc2154)
+	}
+	for i, want := range []string{`"$f"`, `"$undefined_thing"`} {
+		d := sc2086[i]
+		if len(d.Fixes) != 1 {
+			t.Fatalf("SC2086 #%d has %d fixes", i, len(d.Fixes))
+		}
+		fixed := applyEdits(f.Src, d.Fixes[0].Edits)
+		if !strings.Contains(fixed, want) || strings.Count(fixed, want) != 1 {
+			t.Errorf("fix #%d gives %q, want it to contain %s", i, fixed, want)
+		}
+	}
+}
+
+func TestNoSC1091OnResolvedSource(t *testing.T) {
+	r := realRunner(t)
+	root, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "corpus"))
+	path := filepath.Join(root, "main.sh")
+	f, native := analyse(t, root, path)
+	sc, err := r.Check(context.Background(), f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range analysis.Merge(native, sc) {
+		if d.Rule == "SC1091" || d.Rule == "WB1101" {
+			t.Errorf("unexpected %s at line %d: %s", d.Rule, d.Range.Start.Line, d.Message)
+		}
+	}
+	if v, err := r.Version(context.Background()); err != nil || v == "" {
+		t.Errorf("Version = %q, %v", v, err)
+	}
+}
+
+// BenchmarkCheck times one real ShellCheck run on the AC-13 fixture (process
+// start, parse of the report); it skips when ShellCheck is not installed.
+func BenchmarkCheck(b *testing.B) {
+	tool, _, ok := extool.Find("shellcheck", "", extool.ProfileFromEnv(), nil)
+	if !ok {
+		b.Skip("shellcheck is not installed")
+	}
+	r := New(tool, Options{})
+	path, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "ac13", "main.sh"))
+	src, err := os.ReadFile(path)
+	if err != nil {
+		b.Fatal(err)
+	}
+	f := parse.File(path, src)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := r.Check(context.Background(), f); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

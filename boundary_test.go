@@ -5,6 +5,7 @@ import (
 	"go/token"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -19,22 +20,62 @@ const (
 	vendoredParser = "github.com/wamra/bash-lsp/internal/front/syntax"
 )
 
-// forbidden reports why a non-test file may not import p: milestone 1 starts
-// no subprocess and opens no network connection (net/url only parses URIs).
-func forbidden(p string) string {
+// execPackage is the one package whose non-test files may import os/exec:
+// every external program the server starts goes through its runner.
+const execPackage = "internal/extool"
+
+// forbidden reports why the non-test file at slashed (a slash-separated path
+// relative to the repo root) may not import p: only execPackage starts a
+// subprocess, and nothing opens a network connection (net/url only parses
+// URIs).
+func forbidden(slashed, p string) string {
 	switch {
 	case p == "os/exec":
-		return "M1 starts no subprocess"
+		if path.Dir(slashed) == execPackage {
+			return ""
+		}
+		return "only " + execPackage + " starts a subprocess"
 	case p == "net" || strings.HasPrefix(p, "net/") && p != "net/url":
-		return "M1 makes no network access"
+		return "the server makes no network access"
 	}
 	return ""
+}
+
+// TestForbiddenExec plants os/exec imports in a list of file paths: only a
+// file directly in internal/extool is allowed one.
+func TestForbiddenExec(t *testing.T) {
+	for _, c := range []struct {
+		file string
+		ok   bool
+	}{
+		{"internal/extool/run.go", true},
+		{"internal/extool/find.go", true},
+		{"internal/shellcheck/shellcheck.go", false},
+		{"internal/extool/sub/run.go", false},
+		{"internal/extoolx/run.go", false},
+		{"extool/run.go", false},
+		{"analysis/diag.go", false},
+		{"cmd/bash-lsp/main.go", false},
+		{"run.go", false},
+	} {
+		if got := forbidden(c.file, "os/exec") == ""; got != c.ok {
+			t.Errorf("os/exec in %s: allowed = %v, want %v", c.file, got, c.ok)
+		}
+	}
+	for _, p := range []string{"net", "net/http", "net/rpc"} {
+		if forbidden("internal/extool/run.go", p) == "" {
+			t.Errorf("%s is allowed in internal/extool", p)
+		}
+	}
+	if forbidden("analysis/x.go", "net/url") != "" {
+		t.Error("net/url is refused")
+	}
 }
 
 // TestOnlyFrontImportsParser walks every .go file in the repo and fails if a
 // file outside internal/front imports the vendored parser, if any file
 // imports the upstream module it was copied from, or if a non-test file
-// imports os/exec or a network package.
+// imports a network package or, outside internal/extool, os/exec.
 func TestOnlyFrontImportsParser(t *testing.T) {
 	skip := map[string]bool{".git": true, ".scratch": true, "testdata": true}
 	checked := 0
@@ -72,7 +113,7 @@ func TestOnlyFrontImportsParser(t *testing.T) {
 			if !front && (p == vendoredParser || strings.HasPrefix(p, vendoredParser+"/")) {
 				t.Errorf("%s imports %q: only internal/front may import the parser", slashed, p)
 			}
-			if why := forbidden(p); why != "" && !test {
+			if why := forbidden(slashed, p); why != "" && !test {
 				t.Errorf("%s imports %q: %s", slashed, p, why)
 			}
 		}
