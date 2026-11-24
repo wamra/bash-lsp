@@ -26,8 +26,11 @@ import (
 // Default limits, used when a Limits field is zero.
 const (
 	defaultMaxFileBytes = DefaultMaxFileBytes
-	defaultMaxFiles     = 20000
+	defaultMaxFiles     = DefaultMaxFiles
 )
+
+// DefaultMaxFiles is the file count limit when Limits.MaxFiles is zero.
+const DefaultMaxFiles = 20000
 
 // DefaultMaxFileBytes is the file size limit when Limits.MaxFileBytes is zero.
 // It applies to open documents too.
@@ -1224,13 +1227,21 @@ func (w *Workspace) readRC(dir string) rcInfo {
 		if !ok {
 			continue
 		}
-		for _, p := range strings.Split(strings.TrimSpace(v), string(os.PathListSeparator)) {
-			if p = strings.TrimSpace(p); p != "" {
-				info.raw = append(info.raw, p)
-			}
+		// One path per line: ShellCheck takes the whole value, so a space or
+		// a path-list separator belongs to the path. Quotes are optional.
+		if p := unquoteRC(strings.TrimSpace(v)); p != "" {
+			info.raw = append(info.raw, p)
 		}
 	}
 	return info
+}
+
+// unquoteRC removes one pair of matching quotes around an rc value.
+func unquoteRC(v string) string {
+	if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
+		return v[1 : len(v)-1]
+	}
+	return v
 }
 
 func resolveSearch(scriptDir, v string) string {

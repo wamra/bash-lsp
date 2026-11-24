@@ -699,3 +699,28 @@ func TestSameDir(t *testing.T) {
 		t.Errorf("SameDir(case variant) = %v, volume folds = %v", got, folds)
 	}
 }
+
+func TestRCSourcePathOnePath(t *testing.T) {
+	for name, line := range map[string]string{
+		"quoted":   `source-path="My Documents/lib"`,
+		"single":   `source-path='My Documents/lib'`,
+		"unquoted": `source-path=My Documents/lib`,
+	} {
+		root := t.TempDir()
+		write(t, filepath.Join(root, ".shellcheckrc"), line+"\n")
+		write(t, filepath.Join(root, "a.sh"), "echo\n")
+		w := open(t, root)
+		got := w.searchPaths(filepath.Join(w.Root(), "a.sh"))
+		if want := []string{filepath.Join(w.Root(), "My Documents", "lib")}; !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: %v, want %v", name, got, want)
+		}
+	}
+	// The path-list separator is part of the one path.
+	root := t.TempDir()
+	write(t, filepath.Join(root, ".shellcheckrc"), "source-path=a:b\n")
+	write(t, filepath.Join(root, "a.sh"), "echo\n")
+	w := open(t, root)
+	if got := w.searchPaths(filepath.Join(w.Root(), "a.sh")); len(got) != 1 {
+		t.Fatalf("%v", got)
+	}
+}
