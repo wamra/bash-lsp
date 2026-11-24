@@ -70,3 +70,39 @@ func TestCommentLinesUseNoStack(t *testing.T) {
 		t.Fatalf("stack memory grew from %d to %d bytes while parsing comments", before, after)
 	}
 }
+
+// A here-document delimiter with any quoting in it, in any part, makes the
+// body literal (bash). Upstream kept only the last part's flag.
+func TestHeredocDelimiterQuotedInAnyPart(t *testing.T) {
+	for delim, quoted := range map[string]bool{
+		`"E"F`: true, `E"F"`: true, `'E'F`: true, `E'F'`: true, `\E`: true, `E\F`: true,
+		`EF`: false, `E`: false,
+	} {
+		src := "cat <<" + delim + "\n$(echo a)\n" + strings.NewReplacer(`"`, "", `'`, "", `\`, "").Replace(delim) + "\n"
+		f, err := NewParser(Variant(LangBash)).Parse(strings.NewReader(src), "x.sh")
+		if err != nil {
+			t.Errorf("%s: %v", delim, err)
+			continue
+		}
+		var body *Word
+		Walk(f, func(n Node) bool {
+			if r, ok := n.(*Redirect); ok && r.Hdoc != nil {
+				body = r.Hdoc
+			}
+			return true
+		})
+		if body == nil {
+			t.Errorf("%s: no body", delim)
+			continue
+		}
+		expands := false
+		for _, p := range body.Parts {
+			if _, ok := p.(*CmdSubst); ok {
+				expands = true
+			}
+		}
+		if expands == quoted {
+			t.Errorf("delimiter %s: body expandable = %v, want %v", delim, expands, !quoted)
+		}
+	}
+}

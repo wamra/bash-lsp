@@ -128,18 +128,84 @@ func prepare(path string, src []byte) (prepared, error) {
 // strictParse parses text with recovery off. An sh file is read with the
 // POSIX grammar and, only when that has an error, with the bash grammar: the
 // one analysis settled on (shGrammar). lang is the grammar used.
-func strictParse(path string, text []byte, d Dialect) (f *syntax.File, lang syntax.LangVariant, err error) {
-	langs := []syntax.LangVariant{variant(d)}
-	if d == POSIX {
-		langs = append(langs, syntax.LangBash)
-	}
-	for _, l := range langs {
-		if f, err = parseStrictLang(path, text, l); err == nil {
-			return f, l, nil
+//
+// The POSIX grammar takes `[[` for a command, so `[[ $a<$b ]]` is a test and a
+// redirection to it and `=~ a|b` a pipe: valid bash, read as other code. For an
+// sh file both grammars therefore read the text, and it is formatted only when
+// the one that is used does not differ from the other: both print the same
+// text, or only the POSIX grammar reads it. Text that only bash reads, or that
+// the two read differently, is refused as grammar-dependent. A here-document
+// whose delimiter is quoted in one part and not in another is refused too.
+func strictParse(path string, text []byte, d Dialect, o FormatOptions) (f *syntax.File, lang syntax.LangVariant, err error) {
+	if d != POSIX {
+		f, err = parseStrictLang(path, text, variant(d))
+		if err == nil {
+			err = checkHeredocDelimiters(f)
 		}
-		lang = l
+		return f, variant(d), err
 	}
-	return nil, lang, err
+	fp, ep := parseStrictLang(path, text, syntax.LangPOSIX)
+	fb, eb := parseStrictLang(path, text, syntax.LangBash)
+	switch {
+	case ep != nil && eb != nil:
+		return nil, syntax.LangBash, eb
+	case ep != nil:
+		return nil, syntax.LangBash, unsupported("grammar-dependent: only the bash grammar reads this sh file (%v)", ep)
+	case eb == nil:
+		pp, err1 := printForCompare(fp, o)
+		pb, err2 := printForCompare(fb, o)
+		if err1 != nil || err2 != nil || !bytes.Equal(pp, pb) {
+			return nil, syntax.LangPOSIX, unsupported("grammar-dependent: the POSIX and the bash grammar read this sh file differently (a [[ ]] test or another bash form)")
+		}
+		if o.Simplify { // printForCompare simplified fp
+			fp, _ = parseStrictLang(path, text, syntax.LangPOSIX)
+		}
+	}
+	if err := checkHeredocDelimiters(fp); err != nil {
+		return nil, syntax.LangPOSIX, err
+	}
+	return fp, syntax.LangPOSIX, nil
+}
+
+// printForCompare prints f as Format would the first time, simplified if o says
+// so. It changes f.
+func printForCompare(f *syntax.File, o FormatOptions) ([]byte, error) {
+	if o.Simplify {
+		syntax.Simplify(f)
+	}
+	return printTree(f, o)
+}
+
+// checkHeredocDelimiters refuses a here-document whose delimiter has quoted and
+// unquoted parts (`<<"E"F`): bash takes the body as literal if any part is
+// quoted, and a parser that read it otherwise would print the body differently.
+func checkHeredocDelimiters(f *syntax.File) error {
+	var bad error
+	visitAll(f, func(n syntax.Node) {
+		r, ok := n.(*syntax.Redirect)
+		if !ok || bad != nil || (r.Op != syntax.Hdoc && r.Op != syntax.DashHdoc) || r.Word == nil || len(r.Word.Parts) < 2 {
+			return
+		}
+		quoted, plain := false, false
+		for _, p := range r.Word.Parts {
+			switch p := p.(type) {
+			case *syntax.SglQuoted, *syntax.DblQuoted:
+				quoted = true
+			case *syntax.Lit:
+				if strings.Contains(p.Value, "\\") {
+					quoted = true
+				} else {
+					plain = true
+				}
+			default:
+				plain = true
+			}
+		}
+		if quoted && plain {
+			bad = unsupported("%d:%d: here-document delimiter is quoted in one part and not in another", r.OpPos.Line(), r.OpPos.Col())
+		}
+	})
+	return bad
 }
 
 func parseStrictLang(path string, text []byte, lang syntax.LangVariant) (f *syntax.File, err error) {
@@ -195,7 +261,7 @@ func Format(path string, src []byte, o FormatOptions) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	f, lang, err := strictParse(path, p.text, p.d)
+	f, lang, err := strictParse(path, p.text, p.d, o)
 	if err != nil {
 		return nil, err
 	}
@@ -453,7 +519,7 @@ func FormatRange(path string, src []byte, start, end int, o FormatOptions) (edit
 		fromText = func(off int) int { return off + bytes.Count(p.text[:off], []byte("\n")) }
 	}
 	ts, te := toText(start), toText(end)
-	f, lang, err := strictParse(path, p.text, p.d)
+	f, lang, err := strictParse(path, p.text, p.d, o)
 	if err != nil {
 		return 0, 0, nil, err
 	}

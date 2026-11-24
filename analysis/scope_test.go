@@ -212,3 +212,12 @@ func TestHeredocBodySubstitutionIsNotADeclaration(t *testing.T) {
 	q := buildMem(t, map[string]string{"m.sh": "cat <<EOF\n$(y=1)\nEOF\necho \"$y\"\n"})
 	wantEq(t, q.def("m.sh", "$y", 0, 1))
 }
+
+// A delimiter quoted in only one part (<<"E"F) makes the body literal, so a
+// substitution in it declares nothing and is no use of a variable.
+func TestHeredocPartlyQuotedDelimiterBodyIsLiteral(t *testing.T) {
+	q := buildMem(t, map[string]string{"m.sh": "cat <<\"E\"F\n$(y=1)\nEF\necho \"$y\"\n"})
+	wantEq(t, q.def("m.sh", "$y", 0, 1))
+	q = buildMem(t, map[string]string{"m.sh": "y=1\ncat <<\"E\"F\n$y\nEF\n"})
+	wantEq(t, q.def("m.sh", "$y", 0, 1))
+}

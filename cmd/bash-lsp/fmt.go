@@ -7,12 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/wamra/bash-lsp/format"
 	"github.com/wamra/bash-lsp/internal/config"
 )
 
-const fmtUsage = "usage: bash-lsp fmt [-w] [--root DIR] FILE..."
+const fmtUsage = "usage: bash-lsp fmt [-w] [--root DIR] [--] FILE..."
 
 // maxFmtBytes is the largest file fmt reads; format refuses anything over it
 // with the same reason, but the file is not read whole first.
@@ -34,7 +35,14 @@ func cmdFmt(args []string, stdout, stderr io.Writer) int {
 	write, root := false, "."
 	var files []string
 	for i := 0; i < len(args); i++ {
+		if args[i] == "--" {
+			files = append(files, args[i+1:]...)
+			break
+		}
 		switch a := args[i]; {
+		case a == "-h" || a == "--help":
+			fmt.Fprint(stdout, fmtHelp)
+			return 0
 		case a == "-w":
 			write = true
 		case a == "--root":
@@ -56,6 +64,9 @@ func cmdFmt(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
+	if r, err := filepath.EvalSymlinks(absRoot); err == nil {
+		absRoot = r
+	}
 	st := config.Load(absRoot, nil)
 	for _, w := range st.Warnings {
 		fmt.Fprintf(stderr, "bash-lsp: settings: %s\n", w)
@@ -72,7 +83,10 @@ func cmdFmt(args []string, stdout, stderr io.Writer) int {
 		switch {
 		case write:
 			if differs {
-				if err := writeFileAtomic(name, out); err != nil {
+				if err := writable(name); err != nil {
+					fmt.Fprintf(stderr, "bash-lsp: %s: not writable, left as it is: %v\n", name, err)
+					code = 1
+				} else if err := writeFileAtomic(name, out); err != nil {
 					fmt.Fprintf(stderr, "bash-lsp: %s: %v\n", name, err)
 					code = 1
 				}
@@ -90,6 +104,19 @@ func cmdFmt(args []string, stdout, stderr io.Writer) int {
 	return code
 }
 
+const fmtHelp = fmtUsage + `
+
+Formats with the in-process printer. One file without -w prints the text;
+several list the files that would change (exit 1 if any); -w rewrites them.
+A file that cannot be formatted is reported and left alone (exit 1).
+
+-w writes a temporary file and renames it over the original: the mode bits are
+kept; the owner, extended attributes, hard links and setuid or sticky bits are
+not, and an edit made between the read and the rename is lost.
+A CRLF file is read as line-terminated; the output keeps CRLF.
+$[ ] and for ((;;)) { } are refused. Backquotes are printed as $( ).
+`
+
 func fmtUsageError(stderr io.Writer, msg string) int {
 	fmt.Fprintf(stderr, "bash-lsp: %s\n%s\n", msg, fmtUsage)
 	return 2
@@ -98,7 +125,23 @@ func fmtUsageError(stderr io.Writer, msg string) int {
 // fmtOne reads and formats one file. ok is false when the file was reported
 // instead.
 func fmtOne(name, root string, st config.Settings, stderr io.Writer, noted map[string]bool) (out, orig []byte, ok bool) {
-	info, err := os.Stat(name)
+	real, err := filepath.Abs(name)
+	if err == nil {
+		real, err = filepath.EvalSymlinks(real)
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "bash-lsp: %s: %v\n", name, err)
+		return nil, nil, false
+	}
+	if rel, err := filepath.Rel(root, real); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		fmt.Fprintf(stderr, "bash-lsp: %s: outside the root %s (use --root); not formatted\n", name, root)
+		return nil, nil, false
+	}
+	limit := int64(maxFmtBytes)
+	if st.MaxFileBytes > 0 && st.MaxFileBytes < limit {
+		limit = st.MaxFileBytes
+	}
+	info, err := os.Stat(real)
 	switch {
 	case err != nil:
 		fmt.Fprintf(stderr, "bash-lsp: %s: %v\n", name, err)
@@ -106,19 +149,16 @@ func fmtOne(name, root string, st config.Settings, stderr io.Writer, noted map[s
 	case !info.Mode().IsRegular():
 		fmt.Fprintf(stderr, "bash-lsp: %s: not a regular file\n", name)
 		return nil, nil, false
-	case info.Size() > maxFmtBytes:
-		fmt.Fprintf(stderr, "bash-lsp: %s: file is %d bytes, over the %d byte limit\n", name, info.Size(), maxFmtBytes)
+	case info.Size() > limit:
+		fmt.Fprintf(stderr, "bash-lsp: %s: file is %d bytes, over the %d byte limit\n", name, info.Size(), limit)
 		return nil, nil, false
 	}
-	orig, err = os.ReadFile(name)
+	orig, err = os.ReadFile(real)
 	if err != nil {
 		fmt.Fprintf(stderr, "bash-lsp: %s: %v\n", name, err)
 		return nil, nil, false
 	}
-	abs, err := filepath.Abs(name)
-	if err != nil {
-		abs = name
-	}
+	abs := real
 	for _, n := range format.EditorconfigNotes(abs, root) {
 		if !noted[n] {
 			noted[n] = true
@@ -131,6 +171,19 @@ func fmtOne(name, root string, st config.Settings, stderr io.Writer, noted map[s
 		return nil, nil, false
 	}
 	return out, orig, true
+}
+
+// writable reports whether the file at path (the target of a link) can be
+// opened for writing by this user. Nothing is written.
+func writable(path string) error {
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return err
+	}
+	return f.Close()
 }
 
 // writeFileAtomic replaces the file at path (the target, if path is a link)
