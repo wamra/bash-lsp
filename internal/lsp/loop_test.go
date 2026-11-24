@@ -497,7 +497,7 @@ func FuzzCancelFrameID(f *testing.F) {
 	})
 }
 
-// ---- fix round 1: held requests and notifications ----
+// ---- held requests and notifications ----
 
 // A cancel read while the loop is busy, for a request the loop then holds,
 // still answers at once (the wake-up was consumed before the request was held).
@@ -682,7 +682,7 @@ func TestExitBehindHeldShutdown(t *testing.T) {
 	}
 }
 
-// ---- fix round 1: bounds ----
+// ---- bounds ----
 
 func TestQueueSizesPinned(t *testing.T) {
 	if inboundCap != 256 {

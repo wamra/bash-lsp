@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// Fix round 3, item 1: WB1101's ShellCheck code follows ShellCheck 0.11.0
+// WB1101's ShellCheck code follows ShellCheck 0.11.0
 // (checked with the binary): SC1091 when one leading expansion is followed
 // by a literal tail that starts with `/` ("$X/lib.sh", "$(pwd)/a.sh",
 // "$X/"), SC1090 for every other computed word ("$X", "$X.sh", "a/$X/b.sh",

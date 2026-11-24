@@ -395,7 +395,7 @@ func TestMultiRootIsolation(t *testing.T) {
 	}
 }
 
-// Nested roots (ruling R58): the inner folder is served by the outer
+// Nested roots: the inner folder is served by the outer
 // folder's backend, so both see each other and each file is listed once.
 func TestNestedRoots(t *testing.T) {
 	outer := t.TempDir()

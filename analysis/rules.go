@@ -668,7 +668,7 @@ func (c *diagCtx) unresolvedCallIn(d *Decl) bool {
 			}
 		}
 		for _, u := range c.ff.Uses {
-			// R73: a name no file of the workspace defines is an external
+			// A name no file of the workspace defines is an external
 			// command, which cannot read the local.
 			if u.Kind == UseCall && u.Via == ViaNone && !u.ViaAlias && !bound[u] && !IsBuiltin(u.Name) && len(c.s.funcSyms[u.Name]) > 0 {
 				if f := funcBody(u.Scope); f != nil {

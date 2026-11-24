@@ -18,7 +18,7 @@ const (
 	ReasonExpansion        = "expansion"
 	ReasonDynamicScope     = "dynamic-scope" // variable reads only; never an edge
 	// ReasonUnsetInView: an edge to a function whose name some file in the
-	// site's visibility closure removes with `unset -f` (ruling R41). Order
+	// site's visibility closure removes with `unset -f`. Order
 	// is not tracked, so such an edge is never resolved.
 	ReasonUnsetInView = "unset-in-view"
 	// ReasonCandidateCap: a Dynamic edge at a call site with more than
@@ -604,7 +604,7 @@ func (s *Snapshot) unsetInView(file int, name string) bool {
 
 // applyUnset relabels the edges of recs (all with sites in file) whose
 // target function is named by an `unset -f` in view:
-// candidate/unset-in-view, whatever they were (ruling R41).
+// candidate/unset-in-view, whatever they were.
 func (s *Snapshot) applyUnset(recs []edgeRec, file int) {
 	if len(s.unsetBy) == 0 {
 		return

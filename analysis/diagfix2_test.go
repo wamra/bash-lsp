@@ -12,7 +12,7 @@ func diagsOpt(files map[string]string, file string, opt DiagOptions) []Diagnosti
 	return diagWorld(files, Options{}).Diagnostics(filepath.Join(diagRoot, file), opt)
 }
 
-// Fix round 2, item 1: a directive after a keyword or opener on its line
+// A directive after a keyword or opener on its line
 // (`do`, `then`, `else`, `{`, `(`, a case pattern, a function header)
 // covers the next command, as ShellCheck 0.11.0 does (each form checked
 // with the binary); one on its own line before `else`, `elif` or a case
@@ -115,7 +115,7 @@ func TestCombinedFlagsAreMentions(t *testing.T) {
 	expectRule(t, sh("#!/bin/bash\nset -eu\ncfg=1\necho hi\n"), "x.sh", "WB1202", "3:cfg")
 }
 
-// Item 5 (R73): a library local is silent only when an unresolved callee
+// A library local is silent only when an unresolved callee
 // is a function defined somewhere in the workspace.
 func TestLibraryLocalsAndWorkspaceFunctions(t *testing.T) {
 	for _, src := range []string{
@@ -187,8 +187,8 @@ func TestSourceMinors(t *testing.T) {
 		t.Errorf("outside both: %v", got)
 	}
 	// SC1090 silences only a wholly computed path, SC1091 a missing file or a
-	// path with a literal tail (ShellCheck 0.11.0; fix round 3 corrects the
-	// split, see TestSourceCodeBoundary)
+	// path with a literal tail (ShellCheck 0.11.0; see
+	// TestSourceCodeBoundary for the split)
 	expectRule(t, sh("echo a\n# shellcheck disable=SC1090\nsource ./nope.sh\n"), "x.sh", "WB1101", "3:./nope.sh")
 	expectRule(t, sh("echo a\n# shellcheck disable=SC1091\nsource \"$X\"\n"), "x.sh", "WB1101", "3:\"$X\"")
 	expectRule(t, sh("echo a\n# shellcheck disable=SC1091\nsource ./nope.sh\n"), "x.sh", "WB1101")

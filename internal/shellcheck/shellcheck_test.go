@@ -564,7 +564,7 @@ func BenchmarkCheck(b *testing.B) {
 	}
 }
 
-// --- fix round: the workspace does not steer what runs or what is read ---
+// --- the workspace does not steer what runs or what is read ---
 
 // writeFile writes name under dir (creating directories) and returns its path.
 func writeFile(t *testing.T, dir, name, text string, mode os.FileMode) string {

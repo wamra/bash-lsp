@@ -316,7 +316,7 @@ func TestWB1401Fix(t *testing.T) {
 		t.Fatalf("%+v", ds)
 	}
 	fx := ds[0].Fixes[0]
-	if fx.Safe || fx.Title == "" { // offered, never safe: quoting changes intended splitting (R69)
+	if fx.Safe || fx.Title == "" { // offered, never safe: quoting changes intended splitting
 		t.Fatalf("%+v", fx)
 	}
 	if got := applyEdits(src, fx.Edits); got != "rm \"$f\"\n" {

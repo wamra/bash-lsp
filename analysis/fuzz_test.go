@@ -77,7 +77,7 @@ func FuzzBind(f *testing.F) {
 	for _, s := range deepCases(1 << 16) {
 		f.Add([]byte(s))
 	}
-	for _, s := range dynamicShapes(60000) { // fix round 1: O(reads x calls) took 1 to 8 s at this size
+	for _, s := range dynamicShapes(60000) { // O(reads x calls) took 1 to 8 s at this size
 		f.Add([]byte(s))
 	}
 	// The shapes whose edges or bindings multiply (bench/gen_product_shapes.py),

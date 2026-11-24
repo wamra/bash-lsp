@@ -321,7 +321,7 @@ func TestConcurrentRefreshAndQueries(t *testing.T) {
 	}
 }
 
-// ---- fix round 1 ----
+// ---- full walks ----
 
 // rewalked reports whether a full walk ran: b.sh was changed on disk before
 // the call and only a walk (no event names it) picks the change up.
@@ -437,7 +437,7 @@ func TestCaseOnlyRename(t *testing.T) {
 	}
 }
 
-// ---- fix round 2 ----
+// ---- .gitignore files ----
 
 // A .gitignore that ignores itself still applies: git reads every
 // .gitignore and so does the walk. Only the directory it sits in decides

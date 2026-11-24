@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// ---- nested workspace folders (ruling R58) ----
+// ---- nested workspace folders ----
 //
 // A folder nested inside another workspace folder is served by the outer
 // folder's backend: it is not excluded from the outer walk and has no
@@ -29,8 +29,8 @@ func nestedTree(t *testing.T) (a, nested string) {
 	return a, nested
 }
 
-// nestedAnswers opens the three files and renders every answer the
-// ruling covers: definition, references, call hierarchy, hover,
+// nestedAnswers opens the three files and renders every answer
+// that matters here: definition, references, call hierarchy, hover,
 // workspace/symbol and the diagnostics pushed for each open file.
 func (c *testClient) nestedAnswers() string {
 	c.t.Helper()

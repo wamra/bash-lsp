@@ -17,7 +17,7 @@ import (
 // One workspace per outermost folder. A folder nested inside another
 // workspace folder is served by the outer folder's backend when the outer walk
 // reaches it: it is not excluded from the outer walk and gets no backend of
-// its own (ruling R58), so answers are the same whether or not the nested
+// its own, so answers are the same whether or not the nested
 // folder is also named. A nested folder the outer walk does not reach (it is
 // git-ignored, or inside a skipped directory such as node_modules) is indexed
 // by nobody else, so it gets its own backend, exactly as if it were the only

@@ -171,7 +171,7 @@ func TestNestedFunctionDefinitionsBindIndependentOfDepth(t *testing.T) {
 	}
 }
 
-// dynamicShapes are the dynamic-scope shapes of fix round 1, about size
+// dynamicShapes are the dynamic-scope shapes that once cost O(reads x calls), about size
 // bytes each: unresolved reads of y in f and calls of f from one function
 // (with and without `local y`) or from many; and many distinct names read
 // in f with many callers declaring some other local. dynamicScope looped,
@@ -190,7 +190,7 @@ func dynamicShapes(size int) map[string]string {
 		fmt.Fprintf(&localCallers, "h%d() { local w; f; }\n", i)
 	}
 	reads := "f() { " + strings.Repeat("echo $y;", q/8) + " }\n"
-	// fix round 2: the read name is a local of many callers (one symbol
+	// the read name is a local of many callers (one symbol
 	// each); also with three callees, each called by every caller
 	var localY, localY3 strings.Builder
 	localY.WriteString("f() { echo $y; }\n")
@@ -256,7 +256,7 @@ func TestResolvedReferencesOnVariableProductInBoundedTime(t *testing.T) {
 		return
 	}
 	// Every site is candidate/variable-constant: only the definitions and
-	// the `cmd=fi` literals (ruling: literal values are left out) remain.
+	// the `cmd=fi` literals (literal values are left out) remain.
 	// A site lists its first maxSiteTargets functions (candidate-cap), so the
 	// n definitions are 16.
 	if want := min(n, maxSiteTargets); len(got) != want {

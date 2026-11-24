@@ -40,7 +40,7 @@ func TestHoverFunction(t *testing.T) { // AC-08, C14, C14b
 	wantLines(t, md, "log [args...]", "Log a message to stderr.")
 	md, _ = q.hover("main.sh", `  br "$name"`, 0, 2) // hover on an alias call shows the function and says how
 	wantLines(t, md, "build_release <name>", "calls `build_release` through alias `br` (resolved/alias)")
-	noLine(t, md, "Reached through") // the label line says strictly more (ruling R50)
+	noLine(t, md, "Reached through") // the label line says strictly more
 }
 
 // noLine fails when a line of md contains bad.

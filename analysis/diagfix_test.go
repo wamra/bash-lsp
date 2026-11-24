@@ -25,7 +25,7 @@ func expectRule(t *testing.T, files map[string]string, file, rule string, texts 
 
 func sh(src string) map[string]string { return map[string]string{"x.sh": src} }
 
-// Fix round 1, item 1: a directive inside a compound body covers the next
+// A directive inside a compound body covers the next
 // command in that body; one with no command after it in its body covers
 // nothing; one before a compound command covers all of it.
 func TestSuppressionInCompoundBodies(t *testing.T) {
@@ -160,7 +160,7 @@ func TestSourcesThatAreNotFiles(t *testing.T) {
 	}
 }
 
-// Item 7 (R68): severities, the ShellCheck codes and directives.
+// Severities, the ShellCheck codes and directives.
 func TestUnresolvedSourceSeverity(t *testing.T) {
 	sev := func(src string) []Severity {
 		var out []Severity
@@ -200,7 +200,7 @@ func TestUnresolvedSourceSeverity(t *testing.T) {
 	}
 }
 
-// Item 8 (R69): the quote fix is offered, never safe.
+// The quote fix is offered, never safe.
 func TestQuoteFixNeverSafe(t *testing.T) {
 	for _, src := range []string{"rm $f\n", "set -f; IFS=,; list=$1; rm $list\n", "flags=$1; rm $flags x\n"} {
 		ds := ofRule(diagsIn(sh(src), "x.sh"), "WB1401")
@@ -213,7 +213,7 @@ func TestQuoteFixNeverSafe(t *testing.T) {
 // Item 9 (R67c): in a library, a local whose function calls something that
 // resolves to nothing in view may be read by that callee.
 func TestNoUnusedLocalsInLibraries(t *testing.T) {
-	// R73 (fix round 2): run_step is defined nowhere in the workspace, so it is an external command
+	// run_step is defined nowhere in the workspace, so it is an external command
 	expectRule(t, map[string]string{"lib.sh": "f(){ local opt_quiet=1; run_step; }\n"}, "lib.sh", "WB1202", "1:opt_quiet")
 	// the reviewer's v05: run_step is defined in a file lib.sh does not see (a name match, not a resolved call)
 	expectRule(t, map[string]string{"lib.sh": "f(){ local opt_quiet=1; run_step; }\n", "steps.sh": "run_step(){ [ -z \"$opt_quiet\" ] && echo s; }\n"}, "lib.sh", "WB1202")
@@ -234,7 +234,7 @@ func TestNoUnusedFunctionDualUseAndLoaders(t *testing.T) {
 		expectRule(t, sh(src), "x.sh", "WB1201")
 	}
 	// the reviewer's f23: a glob loader whose pattern matches nothing resolvable
-	// a.sh is not under the loader's pattern: it still reports (fix round 2, item 2)
+	// a.sh is not under the loader's pattern: it still reports
 	expectRule(t, map[string]string{"main.sh": "#!/bin/bash\nfor p in plugins/*.sh; do . \"$p\"; done\n", "a.sh": "#!/bin/bash\nplugin_init(){ :; }\necho x\n"}, "a.sh", "WB1201", "2:plugin_init")
 	expectRule(t, map[string]string{"main.sh": "#!/bin/bash\nfor p in plugins/*.sh; do . \"$p\"; done\n", "plugins/a.sh": "#!/bin/bash\nplugin_init(){ :; }\necho x\n"}, "plugins/a.sh", "WB1201")
 }
@@ -273,7 +273,7 @@ func TestInternalErrorMessage(t *testing.T) {
 	}
 }
 
-// Minor (R70): at most maxFindings per file, highest severity first, and
+// At most maxFindings per file, highest severity first, and
 // one WB1007 saying how many were cut; bounded in time at 2 MiB.
 func TestFindingsCap(t *testing.T) {
 	src := "f(){ :; }\nf(){ :; }\n" + strings.Repeat("rm $f\n", 3000)

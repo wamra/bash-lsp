@@ -386,7 +386,7 @@ func TestEdgesMutualRecursionBuiltinWrappersUnset(t *testing.T) {
 	// `builtin cd` and `command cd` bypass the function: no self-edge.
 	wantSame(t, q.edgeStrs(q.s.EdgesTo(q.sym("c.sh", "cd()", 0, 0))),
 		"c.sh:5 calls resolved/direct c.sh -> cd@c.sh:1:1")
-	// Ruling R41: `unset -f k` in view makes calls to k candidate/unset-in-view
+	// `unset -f k` in view makes calls to k candidate/unset-in-view
 	// (order-free); see TestEdgesUnsetInView.
 	wantSame(t, q.edgeStrs(q.s.EdgesTo(q.sym("u.sh", "k()", 0, 0))),
 		"u.sh:3 calls candidate/unset-in-view u.sh -> k@u.sh:1:1")

@@ -152,11 +152,31 @@ func TestAnalysisImportsNoInternal(t *testing.T) {
 	}
 }
 
-// TestNoPlanReferencesInComments fails on a comment in a non-test Go file
-// that points at a plan task ("(Task 2)"): the code outlives the plan, and
-// exported doc comments are what `go doc` shows.
+// planRef matches the words of a process the code outlives, in a comment: a
+// plan task ("Task 2"), a numbered ruling or requirement ("R41", "ruling
+// R41"), and a review round ("fix round 1"). All are word-bounded, so a
+// name that merely contains them ("DIR2", "Rule 41") does not match.
+var planRef = regexp.MustCompile(`(?i)\btask [0-9]+\b|\bR[0-9]+\b|\bfix rounds?\b|\brulings?\b`)
+
+// TestPlanRefDetector runs planRef on comment texts it must and must not flag.
+func TestPlanRefDetector(t *testing.T) {
+	for _, s := range []string{"// (Task 2)", "// ruling R41: x", "// R73 (fix round 2): y", "// Item 7 (R68): z", "// fix round 1: bounds", "// ---- fix round 2 ----", "// task 12"} {
+		if planRef.FindString(s) == "" {
+			t.Errorf("not flagged: %q", s)
+		}
+	}
+	for _, s := range []string{"// the DIR2 variable", "// a rule 41 lines long", "// R is a register", "// BR9 and R9x", "// tasks 2 and 3 run", "// the round trip", "// a ruler"} {
+		if m := planRef.FindString(s); m != "" {
+			t.Errorf("flagged %q in %q", m, s)
+		}
+	}
+}
+
+// TestNoPlanReferencesInComments fails on a comment in a Go file, tests
+// included, that points at a plan task ("(Task 2)"), a numbered ruling or
+// a fix round: the code outlives the plan, and exported doc comments are what
+// `go doc` shows.
 func TestNoPlanReferencesInComments(t *testing.T) {
-	planRef := regexp.MustCompile(`(?i)\btask [0-9]+\b`)
 	skip := map[string]bool{".git": true, ".scratch": true, "testdata": true}
 	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -168,7 +188,7 @@ func TestNoPlanReferencesInComments(t *testing.T) {
 			}
 			return nil
 		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+		if !strings.HasSuffix(path, ".go") || path == "boundary_test.go" { // this file spells the words
 			return nil
 		}
 		fset := token.NewFileSet()
@@ -180,7 +200,7 @@ func TestNoPlanReferencesInComments(t *testing.T) {
 		for _, cg := range f.Comments {
 			for _, c := range cg.List {
 				if m := planRef.FindString(c.Text); m != "" {
-					t.Errorf("%s: comment refers to a plan task (%q): %s", fset.Position(c.Pos()), m, c.Text)
+					t.Errorf("%s: comment refers to the plan or its review (%q): %s", fset.Position(c.Pos()), m, c.Text)
 				}
 			}
 		}
