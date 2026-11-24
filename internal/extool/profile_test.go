@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -313,5 +314,47 @@ func TestProfileDirsCountsSkippedToo(t *testing.T) {
 	var nilp *Profile
 	if nilp.Dirs() != 0 {
 		t.Error("Dirs() of a nil profile")
+	}
+}
+
+// Hung directories do not add up: past the total budget the remaining
+// directories are skipped without being opened.
+func TestProfileTotalBudgetAcrossDirectories(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	base := t.TempDir()
+	var dirs []string
+	for i := 0; i < 6; i++ {
+		dirs = append(dirs, filepath.Join(base, "hung"+itoa(i)))
+	}
+	if runtime.GOOS == "windows" {
+		for i := range dirs {
+			dirs[i] = `C:\hung` + itoa(i)
+		}
+	}
+	var opened atomic.Int32
+	useReader(t, func(string) (dirReader, error) {
+		opened.Add(1)
+		return fakeDir{next: func(int) ([]os.DirEntry, error) { <-release; return nil, io.EOF }}, nil
+	})
+	defer func(d, b time.Duration) { profileDirTimeout, profileTotalBudget = d, b }(profileDirTimeout, profileTotalBudget)
+	profileDirTimeout, profileTotalBudget = 100*time.Millisecond, 250*time.Millisecond
+	start := time.Now()
+	p := NewProfile(dirs)
+	if el := time.Since(start); el > 2*time.Second {
+		t.Fatalf("NewProfile took %v for %d hung directories", el, len(dirs))
+	}
+	sk := p.Skipped()
+	if len(sk) != len(dirs) {
+		t.Fatalf("Skipped() = %q; want every directory", sk)
+	}
+	budget := 0
+	for _, s := range sk {
+		if strings.Contains(s, "time budget") {
+			budget++
+		}
+	}
+	if budget == 0 || int(opened.Load()) >= len(dirs) || p.Dirs() != len(dirs) {
+		t.Errorf("%d directories opened, %d skipped for the budget, Dirs() = %d; skipped: %q", opened.Load(), budget, p.Dirs(), sk)
 	}
 }

@@ -26,6 +26,10 @@ const (
 var (
 	maxProfileNames   = 50000
 	profileDirTimeout = 2 * time.Second // wall-clock bound for reading one directory
+
+	// profileTotalBudget bounds the time of all directories together: hung
+	// directories would otherwise add up, one time-out after the other.
+	profileTotalBudget = 5 * time.Second
 )
 
 // dirReader is an open directory: *os.File, or a test's stand-in.
@@ -56,7 +60,7 @@ type Profile struct {
 }
 
 // NewProfile reads each directory of dirs once, in chunks of 1,024 entries
-// and for at most 2 s (a hung mount), without looking at the files. A relative
+// and for at most 2 s each and 5 s in all (hung mounts), without looking at the files. A relative
 // directory is skipped, and so is one that cannot be listed or does not answer
 // in time; beyond 64 directories or 50,000 names the rest is skipped (a
 // directory is not read past twice that many entries). Each skip is reported by
@@ -70,6 +74,7 @@ func NewProfile(dirs []string) *Profile {
 		p.exts = windowsExts()
 	}
 	count := 0
+	begun := time.Now()
 	for i, dir := range dirs {
 		switch {
 		case i >= maxProfileDirs:
@@ -82,7 +87,12 @@ func NewProfile(dirs []string) *Profile {
 			p.skip(dir, fmt.Sprintf("more than %d names", maxProfileNames))
 			continue
 		}
-		res, err := p.readDirBounded(dir, maxProfileNames-count)
+		left := profileTotalBudget - time.Since(begun)
+		if left <= 0 {
+			p.skip(dir, fmt.Sprintf("time budget of %v for the PATH directories used up", profileTotalBudget))
+			continue
+		}
+		res, err := p.readDirBounded(dir, maxProfileNames-count, min(left, profileDirTimeout))
 		if err != nil {
 			p.skip(dir, err.Error())
 			continue
@@ -109,16 +119,16 @@ type dirResult struct {
 // names (over is set when there were more), within profileDirTimeout. The
 // read runs in its own goroutine that touches only its own values: on a
 // time-out it is left to finish (or hang) on its own.
-func (p *Profile) readDirBounded(dir string, budget int) (dirResult, error) {
+func (p *Profile) readDirBounded(dir string, budget int, limit time.Duration) (dirResult, error) {
 	done := make(chan dirResult, 1)
 	go func() { done <- p.readNames(dir, budget) }()
-	timer := time.NewTimer(profileDirTimeout)
+	timer := time.NewTimer(limit)
 	defer timer.Stop()
 	select {
 	case r := <-done:
 		return r, r.err
 	case <-timer.C:
-		return dirResult{}, fmt.Errorf("timed out after %v", profileDirTimeout)
+		return dirResult{}, fmt.Errorf("timed out after %v", limit)
 	}
 }
 
