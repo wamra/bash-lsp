@@ -16,6 +16,7 @@ import (
 	"sync"
 
 	"github.com/wamra/bash-lsp/analysis"
+	"github.com/wamra/bash-lsp/internal/config"
 	"github.com/wamra/bash-lsp/internal/workspace"
 	"github.com/wamra/bash-lsp/parse"
 	"github.com/wamra/bash-lsp/tree"
@@ -105,6 +106,8 @@ type server struct {
 	resolvedOnly bool     // initialization option references.resolvedOnly
 	watchDynamic bool     // the client registers didChangeWatchedFiles dynamically
 	roots        []string // the workspace folders as the client spelled them
+	initOpts     json.RawMessage
+	looseDiag    analysis.DiagOptions // settings of documents outside every folder
 
 	started bool
 	ready   chan struct{} // closed when folders is set
@@ -299,6 +302,7 @@ func (s *server) initialize(raw json.RawMessage) (any, *rpcError) {
 	s.initialized = true
 	s.hierarchical = p.Capabilities.TextDocument.DocumentSymbol.Hierarchical
 	s.resolvedOnly = resolvedOnlyOption(p.InitializationOptions, s.log)
+	s.initOpts = p.InitializationOptions
 	s.watchDynamic = p.Capabilities.Workspace.DidChangeWatchedFiles.DynamicRegistration
 	s.roots = rootsOf(p, s.log)
 	return initializeResult{Capabilities: capabilities(), ServerInfo: serverInfo{Name: "bash-lsp", Version: s.version}}, nil
@@ -359,6 +363,7 @@ func (s *server) startWorkspace() {
 	}
 	s.started = true
 	s.loose = newDocsOnly()
+	s.looseDiag = s.settings("")
 	if len(s.roots) == 0 {
 		close(s.ready)
 		return
@@ -504,19 +509,55 @@ func (s *server) didClose(raw json.RawMessage) *rpcError {
 	return nil
 }
 
+// publish sends the native findings of an open document, computed on the
+// snapshot that holds its latest text, under the settings of its folder.
 func (s *server) publish(be backend, d *document, path string) {
 	diags := []Diagnostic{}
-	if ff := be.Snapshot().Facts(path); ff != nil && ff.File != nil {
-		f := ff.File
-		if f.Skipped != "" {
-			diags = append(diags, Diagnostic{Severity: 3, Code: "WB1002", Source: "bash-lsp", Message: f.Skipped})
-		}
-		cs := converters{}
-		for _, e := range f.Errors {
-			diags = append(diags, Diagnostic{Range: cs.rangeOf(f, e.Range), Severity: 1, Code: "WB1001", Source: "bash-lsp", Message: e.Msg})
+	snap := be.Snapshot()
+	if ff := snap.Facts(path); ff != nil && ff.File != nil {
+		conv := ff.File.NewConverter()
+		for _, x := range snap.Diagnostics(path, s.diagOptions(be)) {
+			out := Diagnostic{Severity: int(x.Severity), Code: x.Rule, Source: x.Origin, Message: x.Message}
+			out.Range.Start.Line, out.Range.Start.Character = conv.ToUTF16(x.Range.Start)
+			out.Range.End.Line, out.Range.End.Character = conv.ToUTF16(x.Range.End)
+			if x.Unnecessary {
+				out.Tags = []int{diagnosticTagUnnecessary}
+			}
+			diags = append(diags, out)
 		}
 	}
 	s.c.notify("textDocument/publishDiagnostics", publishDiagnosticsParams{URI: d.uri, Diagnostics: diags})
+}
+
+// diagnosticTagUnnecessary is LSP DiagnosticTag 1, Unnecessary.
+const diagnosticTagUnnecessary = 1
+
+// diagOptions returns the diagnostic settings of the folder be serves.
+func (s *server) diagOptions(be backend) analysis.DiagOptions {
+	for _, f := range s.folders {
+		if backend(f.ws) == be {
+			return f.diag
+		}
+	}
+	return s.looseDiag
+}
+
+// settings loads the settings of a folder root ("" for documents outside
+// every folder: the user file and initialization options only) and logs
+// what was ignored, including rule ids no native rule has.
+func (s *server) settings(root string) analysis.DiagOptions {
+	st := config.Load(root, s.initOpts)
+	for _, w := range st.Warnings {
+		s.log.Printf("settings: %s", w)
+	}
+	known := map[string]bool{}
+	for _, r := range analysis.Rules() {
+		known[r.ID] = true
+	}
+	for _, w := range st.CheckRules(func(id string) bool { return known[id] }) {
+		s.log.Printf("settings: %s", w)
+	}
+	return analysis.DiagOptions{Target: st.Target, Disabled: st.Disabled, Severity: st.Severity}
 }
 
 // ---- positions ----

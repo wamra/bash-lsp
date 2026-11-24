@@ -34,6 +34,7 @@ import (
 type folder struct {
 	client string // the root as the client spelled it, cleaned
 	ws     *workspace.Workspace
+	diag   analysis.DiagOptions // from the folder's settings, loaded when it opened
 }
 
 // declaredFolder is a folder the client named, served or not.
@@ -118,7 +119,7 @@ func (s *server) reconcile(declared []declaredFolder, existing []*folder) []*fol
 				s.log.Printf("cannot open workspace folder %s: %v", d.client, err)
 				continue
 			}
-			f = &folder{client: d.client, ws: ws}
+			f = &folder{client: d.client, ws: ws, diag: s.settings(d.client)}
 		}
 		out = append(out, f)
 		at[f] = i

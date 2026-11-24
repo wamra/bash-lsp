@@ -37,10 +37,21 @@ func (s *Snapshot) src(d *Decl) []byte { return s.facts[s.declFile[d]].File.Src 
 
 // Hover describes the symbol under the cursor in Markdown. rng is the range
 // of the hovered token (the whole definition when the cursor is on a function's name).
+// On the path word of a `source` that could not be resolved it says why, in
+// one line; a resolved `source` has no hover.
 func (s *Snapshot) Hover(path string, offset int) (markdown string, rng tree.Range, ok bool) {
 	h, file, found := s.at(path, offset)
-	if !found || h.edge != nil {
+	if !found {
 		return "", tree.Range{}, false
+	}
+	if e := h.edge; e != nil {
+		if e.Status != SourceUnresolved || e.Ref.Word == nil {
+			return "", tree.Range{}, false
+		}
+		if e.Skipped != "" {
+			return fmt.Sprintf("`source` not resolved (unresolved/%s): %s", ReasonSkippedForSize, s.rel(e.Skipped)), e.Ref.Word.Range, true
+		}
+		return fmt.Sprintf("`source` not resolved (unresolved/%s)", ReasonNotFound), e.Ref.Word.Range, true
 	}
 	var sym *Symbol
 	switch {

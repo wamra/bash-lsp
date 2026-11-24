@@ -246,3 +246,32 @@ func TestHoverDynamicScopeRead(t *testing.T) {
 	}
 	wantLines(t, md, "8 candidate caller locals", "and 3 more")
 }
+
+// Decision 33: hover on the path word of an unresolved `source` names the
+// reason; a resolved one and the `source` keyword have no hover.
+func TestHoverUnresolvedSource(t *testing.T) {
+	root := "/w"
+	big, main, lib := root+"/big.sh", root+"/m.sh", root+"/lib.sh"
+	src := "source ./big.sh\nsource ./none.sh\nsource ./lib.sh\n"
+	s := Analyze(map[string][]byte{main: []byte(src), lib: []byte("l() { :; }\n")},
+		Options{Root: root, Oversize: func(p string) bool { return p == big }})
+	at := func(needle string, off int) (string, string, bool) {
+		i := strings.Index(src, needle)
+		md, rng, ok := s.Hover(main, i+off)
+		return md, src[rng.Start.Offset:rng.End.Offset], ok
+	}
+	md, word, ok := at("./big.sh", 2)
+	if !ok || md != "`source` not resolved (unresolved/skipped-for-size): big.sh" || word != "./big.sh" {
+		t.Fatalf("big: %v %q %q", ok, md, word)
+	}
+	md, word, ok = at("./none.sh", 0)
+	if !ok || md != "`source` not resolved (unresolved/not-found)" || word != "./none.sh" {
+		t.Fatalf("none: %v %q %q", ok, md, word)
+	}
+	if md, _, ok := at("./lib.sh", 1); ok {
+		t.Fatalf("resolved source has a hover: %q", md)
+	}
+	if md, _, ok := at("source ./none", 2); ok {
+		t.Fatalf("keyword has a hover: %q", md)
+	}
+}

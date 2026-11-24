@@ -973,3 +973,70 @@ func TestDidCloseRereadsDisk(t *testing.T) {
 		t.Fatalf("after close: %+v", out)
 	}
 }
+
+// Decision 33: an unresolved `source` is published as WB1101 on the path word.
+func TestUnresolvedSourcePublished(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "m.sh"), []byte("source ./nope.sh\necho hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := client(t, root)
+	c.open("m.sh")
+	d := c.waitDiag("m.sh")
+	if len(d) != 1 || d[0].Code != "WB1101" || d[0].Source != "bash-lsp" || d[0].Severity != 2 ||
+		d[0].Range != (Range{Position{0, 7}, Position{0, 16}}) {
+		t.Fatalf("%+v", d)
+	}
+}
+
+// Decision 33: hover on the path word of an unresolved `source` says why.
+func TestHoverOnUnresolvedSourceWire(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "m.sh"), []byte("source ./nope.sh\necho hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := client(t, root)
+	c.open("m.sh")
+	c.waitDiag("m.sh")
+	if got := c.hoverText("m.sh", "source ./nope.sh", 9); got != "`source` not resolved (unresolved/not-found)" {
+		t.Fatalf("hover %q", got)
+	}
+}
+
+// Native findings follow the settings: a rule disabled in the
+// initialization options is not published; an unused function carries the
+// Unnecessary tag.
+func TestDiagnosticSettingsWire(t *testing.T) {
+	root := t.TempDir()
+	src := "#!/bin/bash\nf() { :; }\nrm $x\n"
+	if err := os.WriteFile(filepath.Join(root, "m.sh"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "n.sh"), []byte("source ./nope.sh\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := clientWith(t, clientCfg{root: root, initOpts: map[string]any{"diagnostics": map[string]any{"disable": []string{"WB1101", "WB9999"}},
+		"severity": map[string]any{"WB1401": "error"}}})
+	c.open("m.sh")
+	d := c.waitDiag("m.sh")
+	codes := map[string]Diagnostic{}
+	for _, x := range d {
+		codes[x.Code] = x
+	}
+	if len(d) != 2 {
+		t.Fatalf("%+v", d)
+	}
+	if x := codes["WB1201"]; x.Severity != 4 || len(x.Tags) != 1 || x.Tags[0] != 1 {
+		t.Fatalf("WB1201: %+v", x)
+	}
+	if x := codes["WB1401"]; x.Severity != 1 {
+		t.Fatalf("WB1401: %+v", x)
+	}
+	c.open("n.sh")
+	if d := c.waitDiag("n.sh"); len(d) != 0 {
+		t.Fatalf("disabled rule published: %+v", d)
+	}
+	if !strings.Contains(c.logs.String(), `diagnostics.disable: unknown rule id "WB9999"`) {
+		t.Fatalf("unknown rule not logged:\n%s", c.logs.String())
+	}
+}

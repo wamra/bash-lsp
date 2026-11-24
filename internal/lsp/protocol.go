@@ -112,13 +112,15 @@ type hover struct {
 	Range    Range         `json:"range"`
 }
 
-// Diagnostic is a pushed problem report.
+// Diagnostic is a pushed problem report. Tags holds DiagnosticTag values
+// (1 = Unnecessary).
 type Diagnostic struct {
 	Range    Range  `json:"range"`
 	Severity int    `json:"severity"`
 	Code     string `json:"code"`
 	Source   string `json:"source"`
 	Message  string `json:"message"`
+	Tags     []int  `json:"tags,omitempty"`
 }
 
 type publishDiagnosticsParams struct {

@@ -168,6 +168,8 @@ type Snapshot struct {
 	varVals   map[varValuesKey]*varValues // during Build: per variable symbol and file, what "$cmd" calls may run
 	unsetBy   map[string][]int            // function name -> files with `unset -f` of it
 
+	diagState // per-file rule scans, made on demand (diag.go)
+
 	recs     []edgeRec // every edge, compact, grouped by file and sorted (see edges.go)
 	recAt    []int     // file i's edges are recs[recAt[i]:recAt[i+1]]
 	graphIx  graphIndex
