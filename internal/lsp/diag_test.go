@@ -327,18 +327,18 @@ func TestQuickFix(t *testing.T) {
 			t.Fatalf("%s: isPreferred = %v, want false (the fix is not Safe)", what, a.IsPreferred)
 		}
 	}
-	check("with the diagnostic", c.actions("a.sh", d.Range.toMap(), []Diagnostic{d}))
-	check("range only", c.actions("a.sh", d.Range.toMap(), nil))
+	check("with the diagnostic", c.actions("a.sh", d.Range.toMap(), []Diagnostic{d}, "quickfix"))
+	check("range only", c.actions("a.sh", d.Range.toMap(), nil, "quickfix"))
 	check("cursor in the range", c.actions("a.sh", Range{d.Range.Start, d.Range.Start}.toMap(), nil, "quickfix"))
-	if got := c.actions("a.sh", d.Range.toMap(), []Diagnostic{d}, "refactor"); len(got) != 0 {
-		t.Fatalf("only refactor: %+v", got)
+	if got := c.actions("a.sh", d.Range.toMap(), []Diagnostic{d}, "source.organizeImports"); len(got) != 0 {
+		t.Fatalf("a kind that is not offered: %+v", got)
 	}
 	if got := c.actions("a.sh", rng(0, 0, 0, 5), nil); len(got) != 0 {
 		t.Fatalf("elsewhere: %+v", got)
 	}
 	other := d
 	other.Code = "WB1102"
-	if got := c.actions("a.sh", d.Range.toMap(), []Diagnostic{other}); len(got) != 0 {
+	if got := c.actions("a.sh", d.Range.toMap(), []Diagnostic{other}, "quickfix"); len(got) != 0 {
 		t.Fatalf("another code at that range: %+v", got)
 	}
 	// After an edit the old findings no longer match.
@@ -703,7 +703,7 @@ func TestRealShellCheckMergedAndFixed(t *testing.T) {
 			d = x
 		}
 	}
-	acts := c.actions("a.sh", d.Range.toMap(), []Diagnostic{d})
+	acts := c.actions("a.sh", d.Range.toMap(), []Diagnostic{d}, "quickfix")
 	if len(acts) != 1 || acts[0].Title != "ShellCheck: apply fix" || len(acts[0].Edit.Changes[c.uri("a.sh")]) == 0 {
 		t.Fatalf("ShellCheck fix: %+v", acts)
 	}

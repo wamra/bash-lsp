@@ -36,6 +36,7 @@ type lspFix struct {
 	title string
 	safe  bool
 	edits []TextEdit
+	src   analysis.Fix // the fix as the analysis made it, in byte offsets (fix all merges these)
 }
 
 // pubDiag is a finding as published, with the fixes that resolve it.
@@ -129,7 +130,7 @@ func pubDiags(f *tree.File, ds []analysis.Diagnostic) []pubDiag {
 			p.diag.Tags = []int{diagnosticTagUnnecessary}
 		}
 		for _, fx := range x.Fixes {
-			lf := lspFix{title: fx.Title, safe: fx.Safe, edits: make([]TextEdit, 0, len(fx.Edits))}
+			lf := lspFix{title: fx.Title, safe: fx.Safe, src: fx, edits: make([]TextEdit, 0, len(fx.Edits))}
 			for _, e := range fx.Edits {
 				lf.edits = append(lf.edits, TextEdit{Range: rangeOf(e.Range), NewText: e.NewText})
 			}
@@ -248,7 +249,77 @@ func (s *server) codeAction(raw json.RawMessage) (any, *rpcError) {
 	if d == nil || !d.lint.sent || d.lint.sentVer != d.version {
 		return []CodeAction{}, nil
 	}
-	return fixActions(d.uri, d.lint.pub, p.Context.Diagnostics, p.Range, p.Context.Only), nil
+	out := fixActions(d.uri, d.lint.pub, p.Context.Diagnostics, p.Range, p.Context.Only)
+	return append(out, s.editorActions(d, p.Range, p.Context.Only)...), nil
+}
+
+// codeActionKinds are the kinds of code action the server offers.
+var codeActionKinds = []string{"quickfix", "refactor.rewrite", "source.fixAll"}
+
+// editorActions are the code actions that belong to no finding, after the
+// quick fixes of the findings: add a shebang (quickfix), quote the expansion
+// under the cursor (refactor.rewrite) and fix all (source.fixAll).
+func (s *server) editorActions(d *document, r Range, only []string) []CodeAction {
+	snap := d.be.Snapshot()
+	f := fileOf(snap, d.path)
+	if f == nil {
+		return nil
+	}
+	conv := f.NewConverter()
+	edits := func(fx analysis.Fix) []TextEdit { return lspEdits(conv, fx.Edits) }
+	var out []CodeAction
+	if kindWanted(only, "quickfix") {
+		if fx, ok := snap.AddShebang(d.path); ok {
+			out = append(out, CodeAction{Title: fx.Title, Kind: "quickfix",
+				Edit: workspaceEdit{Changes: map[string][]TextEdit{d.uri: edits(fx)}}})
+		}
+	}
+	if kindWanted(only, "refactor.rewrite") {
+		off := f.FromUTF16(r.Start.Line, r.Start.Character).Offset
+		if fx, ok := snap.QuoteExpansion(d.path, off); ok {
+			out = append(out, CodeAction{Title: fx.Title, Kind: "refactor.rewrite",
+				Edit: workspaceEdit{Changes: map[string][]TextEdit{d.uri: edits(fx)}}})
+		}
+	}
+	if a, ok := fixAllAction(d.uri, f, d.lint.pub, only); ok {
+		out = append(out, a)
+	}
+	return out
+}
+
+// lspEdits converts edits in byte offsets to LSP positions.
+func lspEdits(conv *tree.Converter, edits []analysis.TextEdit) []TextEdit {
+	out := make([]TextEdit, 0, len(edits))
+	for _, e := range edits {
+		var t TextEdit
+		t.Range.Start.Line, t.Range.Start.Character = conv.ToUTF16(e.Range.Start)
+		t.Range.End.Line, t.Range.End.Character = conv.ToUTF16(e.Range.End)
+		t.NewText = e.NewText
+		out = append(out, t)
+	}
+	return out
+}
+
+// fixAllAction is the source.fixAll action: the Safe fixes of the published
+// findings pub merged by analysis.FixAll, where the first of two overlapping
+// fixes wins. ok is false when it was not asked for or nothing is left to apply.
+func fixAllAction(uri string, f *tree.File, pub []pubDiag, only []string) (CodeAction, bool) {
+	if !kindWanted(only, "source.fixAll") {
+		return CodeAction{}, false
+	}
+	var fixes []analysis.Fix
+	for _, p := range pub {
+		for _, x := range p.fixes {
+			fixes = append(fixes, x.src)
+		}
+	}
+	merged := analysis.FixAll(fixes)
+	if len(merged) == 0 {
+		return CodeAction{}, false
+	}
+	edits := lspEdits(f.NewConverter(), merged)
+	return CodeAction{Title: "Fix all safe problems", Kind: "source.fixAll",
+		Edit: workspaceEdit{Changes: map[string][]TextEdit{uri: edits}}}, true
 }
 
 // fixActions is the fix lookup: the quick fixes of the published findings pub
@@ -275,9 +346,11 @@ func fixActions(uri string, pub []pubDiag, ctx []Diagnostic, r Range, only []str
 }
 
 // kindWanted reports whether a request limited to only accepts kind: no limit,
-// or the kind itself.
+// the kind itself or a parent of it (`refactor` asks for `refactor.rewrite`).
 func kindWanted(only []string, kind string) bool {
-	return len(only) == 0 || slices.Contains(only, kind) || slices.Contains(only, "")
+	return len(only) == 0 || slices.ContainsFunc(only, func(o string) bool {
+		return o == "" || o == kind || strings.HasPrefix(kind, o+".")
+	})
 }
 
 func asked(d Diagnostic, ctx []Diagnostic, r Range) bool {
@@ -726,17 +799,23 @@ func samePath(a, b string) bool {
 // reloadSettings reads the settings of every folder and of the loose documents
 // again and applies the ones that changed.
 func (s *server) reloadSettings() {
+	hintsChanged := false
 	if st, ok := s.reloaded("", s.looseSt); ok {
 		old := s.looseSt
+		hintsChanged = hintsChanged || old.InlayHints != st.InlayHints
 		s.looseSt, s.looseDiag, s.looseTool = st, diagOptionsOf(st), nil
 		s.applySettings(s.loose, old, st)
 	}
 	for _, f := range s.folders {
 		if st, ok := s.reloaded(f.client, f.st); ok {
 			old := f.st
+			hintsChanged = hintsChanged || old.InlayHints != st.InlayHints
 			f.st, f.diag, f.tool = st, diagOptionsOf(st), nil
 			s.applySettings(f.ws, old, st)
 		}
+	}
+	if hintsChanged && s.caps().InlayHintRefresh {
+		s.call("workspace/inlayHint/refresh", nil)
 	}
 }
 
