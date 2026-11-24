@@ -5,9 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wamra/bash-lsp/analysis"
+	"github.com/wamra/bash-lsp/internal/workspace"
 )
 
 // The call-hierarchy structures as a client decodes them (LSP 3.17,
@@ -141,14 +145,107 @@ func TestCallHierarchyPrepare(t *testing.T) { // C09
 		}
 	}
 
-	// Elsewhere: a variable, a builtin, the path of a `source` command.
+	// Outside every function and not on a function name: the file's
+	// top-level item (plan, "Pinned semantics", Call hierarchy:
+	// "prepareCallHierarchy on a function name (definition or call site) or
+	// anywhere outside a function returns one item (function, or the file's
+	// top-level item)"): the path of a `source` command, an alias
+	// definition, the argument of a top-level call.
 	for _, at := range []struct {
 		text string
 		col  int
-	}{{`local name="$1"`, 6}, {`echo "$name"`, 1}, {`source ./lib/util.sh`, 9}} {
+	}{{`source ./lib/util.sh`, 9}, {`alias br=build_release`, 1}, {`deploy app`, 8}} {
+		got := c.prepare("main.sh", at.text, at.col)
+		if len(got) != 1 || c.itemText(got[0]) != "main.sh 1 main.sh [main.sh]" {
+			t.Errorf("prepare at %q: %+v, want the file's top-level item", at.text, got)
+		}
+	}
+	// Inside a function body and not on a function name (not pinned by the
+	// plan): null, as before.
+	for _, at := range []struct {
+		text string
+		col  int
+	}{{`local name="$1"`, 6}, {`echo "$name"`, 1}} {
 		if raw := c.prepareRaw("main.sh", c.pos("main.sh", at.text, at.col)); string(raw) != "null" {
 			t.Errorf("prepare at %q: %s, want null", at.text, raw)
 		}
+	}
+}
+
+// The file's top-level item answers incoming and outgoing calls with the
+// steps `bash-lsp callers` and `callees` give for the file (both come from
+// analysis Callers and Callees at depth 1), restricted to calls and invokes:
+// a `source` is not a call (FDS-012).
+func TestCallHierarchyFileItemMatchesCLI(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "lib.sh", "# lib\nlib_fn() { :; }\n")
+	writeFile(t, root, "tool.sh", "# tool\ntool_fn() { :; }\ntool_fn\n")
+	writeFile(t, root, "main.sh", "source ./lib.sh\nrun() { lib_fn; ./tool.sh; }\nlib_fn\nrun\n./tool.sh\n")
+	writeFile(t, root, "caller.sh", "./main.sh\nbash main.sh\n")
+	c := client(t, root)
+	ws, err := workspace.Open(root, workspace.Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := ws.Snapshot()
+	rel := func(p string) string { r, _ := filepath.Rel(ws.Root(), p); return filepath.ToSlash(r) }
+	cli := func(steps []analysis.Step, incoming bool) []string {
+		var out []string
+		for _, st := range steps {
+			if st.Edge.Rel == analysis.RelSources {
+				continue
+			}
+			other := st.To
+			if incoming {
+				other = st.From
+			}
+			name := rel(other.Path)
+			if other.Func != nil {
+				name = other.Func.Name
+			}
+			s := st.Edge.Site.Range.Start
+			out = append(out, fmt.Sprintf("%s %s:%d:%d", name, rel(st.Edge.Site.Path), s.Line, s.Col))
+		}
+		sort.Strings(out)
+		return out
+	}
+	lsp := func(it chItem, incoming bool) []string {
+		var out []string
+		add := func(other chItem, file string, rs []Range) {
+			for _, r := range rs {
+				out = append(out, fmt.Sprintf("%s %s:%d:%d", other.Name, file, r.Start.Line+1, r.Start.Character+1))
+			}
+		}
+		if incoming {
+			for _, x := range c.incoming(it) {
+				add(x.From, c.relOf(x.From.URI), x.FromRanges)
+			}
+		} else {
+			for _, x := range c.outgoing(it) {
+				add(x.To, c.relOf(it.URI), x.FromRanges)
+			}
+		}
+		sort.Strings(out)
+		return out
+	}
+	for _, file := range []string{"main.sh", "tool.sh", "lib.sh"} {
+		items := c.prepareRaw(file, Position{0, 0})
+		var it []chItem
+		if err := json.Unmarshal(items, &it); err != nil || len(it) != 1 || it[0].Kind != kindFile {
+			t.Fatalf("prepare at the start of %s: %s", file, items)
+		}
+		n := analysis.Node{Path: filepath.Join(ws.Root(), file)}
+		if got, want := lsp(it[0], true), cli(snap.Callers(n, 1), true); strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("%s incoming %v, callers %v", file, got, want)
+		}
+		if got, want := lsp(it[0], false), cli(snap.Callees(n, 1), false); strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("%s outgoing %v, callees %v", file, got, want)
+		}
+	}
+	// Not vacuous: main.sh has incoming invokes and outgoing calls.
+	it := c.prepare("main.sh", "source ./lib.sh", 2)
+	if len(it) != 1 || len(c.incoming(it[0])) == 0 || len(c.outgoing(it[0])) < 3 {
+		t.Fatalf("main.sh item %+v", it)
 	}
 }
 

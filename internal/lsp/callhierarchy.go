@@ -102,7 +102,12 @@ func (s *server) prepareCallHierarchy(raw json.RawMessage) (any, *rpcError) {
 		return nil, rerr
 	}
 	if sym, ok := snap.SymbolAt(path, off); !ok || sym.Kind != analysis.DeclFunction {
-		return nil, nil
+		// Not on a function name: outside every function the file's
+		// top-level item; inside a function body nothing.
+		if snap.CallerAt(path, off).Func != nil {
+			return nil, nil
+		}
+		return []callHierarchyItem{s.item(converters{}, snap, analysis.Node{Path: path}, nil)}, nil
 	}
 	// The function(s) the name at the cursor stands for: one per definition
 	// file, several when the call's targets are ambiguous.
