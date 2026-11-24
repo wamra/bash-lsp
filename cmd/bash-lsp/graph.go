@@ -1,22 +1,21 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
-	"slices"
-	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/wamra/bash-lsp/analysis"
+	"github.com/wamra/bash-lsp/internal/config"
+	"github.com/wamra/bash-lsp/internal/query"
 	"github.com/wamra/bash-lsp/internal/workspace"
-	"github.com/wamra/bash-lsp/tree"
 )
 
 // Graph commands: status, callers, callees, refs, impact, trace, unresolved
 // and cycles (spec 5.2). Each loads the root with workspace.Open, asks one
-// snapshot and prints. Nothing here executes or sources analysed code.
+// snapshot through internal/query and prints. Nothing here executes or sources analysed code.
 
 const graphUsage = "usage: bash-lsp status [--root DIR] [--json] | callers|callees SYMBOL [--depth N] [--root DIR] [--json] | refs SYMBOL | " +
 	"impact SYMBOL|FILE [--depth N] | trace A B | unresolved [PATH...] | cycles   (all take --root DIR and --json)"
@@ -99,12 +98,12 @@ func parseGraphArgs(cmd string, sp graphSpec, args []string) (pos []string, o gr
 	return pos, o, nil
 }
 
-// graphCtx is one loaded root and its snapshot.
+// graphCtx is one loaded root and its snapshot. The answers are built by
+// internal/query, which the MCP adapter shares.
 type graphCtx struct {
 	ws   *workspace.Workspace
 	snap *analysis.Snapshot
 	root string
-	conv map[string]*tree.Converter // per path, made on first use (pos)
 }
 
 func cmdGraph(cmd string, args []string, stdout, stderr io.Writer) int {
@@ -136,462 +135,93 @@ func cmdGraph(cmd string, args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-// --- output shapes ---
+// --- output ---
 
-type jsonNode struct {
-	Path     string  `json:"path"`
-	Function *string `json:"function"`
-}
-
-type jsonSite struct {
-	Path string `json:"path"`
-	Line int    `json:"line"`
-	Col  int    `json:"col"`
-}
-
-type jsonEdge struct {
-	Caller     *jsonNode `json:"caller"`
-	Callee     *jsonNode `json:"callee"`
-	Relation   string    `json:"relation"`
-	Resolution string    `json:"resolution"`
-	Reason     string    `json:"reason"`
-	Site       jsonSite  `json:"site"`
-	Definition *jsonSite `json:"definition,omitempty"` // the callee's definition this edge goes to
-	Text       string    `json:"text,omitempty"`
-	manyDefs   bool      // the callee has several definitions: the text line names Definition
-}
-
-func (c *graphCtx) rel(p string) string { return relSlash(c.root, p) }
-
-// pos is a 1-based line and UTF-16 column of p in path.
-func (c *graphCtx) pos(path string, p tree.Pos) (line, col int) {
-	if ff := c.snap.Facts(path); ff != nil && ff.File != nil {
-		// one converter per file: File.ToUTF16 scans the line from its start
-		// per call, O(sites x line length) on a long line
-		cv := c.conv[path]
-		if cv == nil {
-			if c.conv == nil {
-				c.conv = map[string]*tree.Converter{}
-			}
-			cv = ff.File.NewConverter()
-			c.conv[path] = cv
-		}
-		l, ch := cv.ToUTF16(p)
-		return l + 1, ch + 1
-	}
-	return p.Line, p.Col
-}
-
-func (c *graphCtx) site(l analysis.Location) jsonSite {
-	line, col := c.pos(l.Path, l.Range.Start)
-	return jsonSite{c.rel(l.Path), line, col}
-}
-
-func (c *graphCtx) node(n analysis.Node) *jsonNode {
-	out := &jsonNode{Path: c.rel(n.Path)}
-	if n.Func != nil {
-		name := n.Func.Name
-		out.Function = &name
-	}
-	return out
-}
-
-func nodeText(n *jsonNode) string {
-	if n == nil {
-		return "-"
-	}
-	if n.Function == nil {
-		return n.Path
-	}
-	return n.Path + ":" + *n.Function
-}
-
-func (c *graphCtx) callerNode(f analysis.Caller) *jsonNode {
-	return c.node(analysis.Node{Path: f.Path, Func: f.Func})
-}
-
-// stepEdge renders a step. A call's definition is the one of the callee
-// the edge goes to (Edge.ToDecl, in the file of s.To); the text line names
-// it only when the callee has several definitions, to tell them apart.
-func (c *graphCtx) stepEdge(s analysis.Step) jsonEdge {
-	e := c.edge(s.Edge)
-	e.Caller, e.Callee = c.node(s.From), c.node(s.To)
-	if d := s.Edge.ToDecl; d != nil {
-		site := c.site(analysis.Location{Path: s.To.Path, Range: d.NameRange})
-		e.Definition = &site
-		e.manyDefs = s.To.Func != nil && len(s.To.Func.Decls) > 1
-	}
-	return e
-}
-
-func (c *graphCtx) edge(e analysis.Edge) jsonEdge {
-	return jsonEdge{
-		Caller:     c.callerNode(e.From),
-		Relation:   e.Rel.String(),
-		Resolution: e.Res.String(),
-		Reason:     e.Reason,
-		Site:       c.site(e.Site),
-		Text:       e.Text,
-	}
-}
-
-func (e jsonEdge) line() string {
-	callee := "(unknown)"
-	switch {
-	case e.Callee != nil:
-		callee = nodeText(e.Callee)
-	case e.Text != "":
-		callee = e.Text
-	}
-	l := fmt.Sprintf("%s:%d:%d  %s -> %s  %s/%s", e.Site.Path, e.Site.Line, e.Site.Col, nodeText(e.Caller), callee, e.Resolution, e.Reason)
-	if e.manyDefs && e.Definition != nil {
-		l += fmt.Sprintf("  definition %s:%d:%d", e.Definition.Path, e.Definition.Line, e.Definition.Col)
-	}
-	return l
-}
-
-// emit prints the results: one JSON object with generation and results, or
-// one text line each.
-func (c *graphCtx) emit(o graphOpts, stdout, stderr io.Writer, results any, lines []string) int {
+// emit prints an answer: its JSON document, or one text line per record. A
+// text answer that was cut says so on stderr.
+func (c *graphCtx) emit(o graphOpts, stdout, stderr io.Writer, d *query.Doc) int {
 	if o.json {
-		if err := writeJSON(stdout, struct {
-			Generation uint64 `json:"generation"`
-			Results    any    `json:"results"`
-		}{c.snap.Generation(), results}); err != nil {
+		if err := query.Write(stdout, d); err != nil {
 			return fail(stderr, err)
 		}
 		return 0
 	}
-	for _, l := range lines {
+	for _, l := range d.Lines {
 		fmt.Fprintln(stdout, l)
+	}
+	if d.Truncated {
+		fmt.Fprintf(stderr, "bash-lsp: the answer was cut (at most %d results, depth %d)\n", query.MaxResults, query.MaxDepth)
 	}
 	return 0
 }
 
-// --- resolving specs ---
-
-// checkInside refuses a spec whose file part lies outside the root, before
-// the snapshot is asked: the root is the only tree these commands read.
-func (c *graphCtx) checkInside(spec string) error {
-	p := spec
-	if i := strings.LastIndexByte(p, ':'); i >= 0 { // trim :line:col
-		if _, err := strconv.Atoi(p[i+1:]); err == nil {
-			p = p[:i]
-			if j := strings.LastIndexByte(p, ':'); j >= 0 {
-				if _, err := strconv.Atoi(p[j+1:]); err == nil {
-					p = p[:j]
-				}
-			}
-		}
+// failQuery reports an error of internal/query: a spec that names several
+// functions lists them (exit 2), anything else is a failure (exit 1).
+func failQuery(stderr io.Writer, err error) int {
+	var amb *query.AmbiguousError
+	if errors.As(err, &amb) {
+		fmt.Fprintf(stderr, "bash-lsp: %v\n", amb)
+		return 2
 	}
-	if !filepath.IsAbs(p) && !strings.Contains(p, "..") {
-		return nil
-	}
-	abs := p
-	if filepath.IsAbs(p) {
-		abs = c.ws.Canon(p)
-	} else {
-		abs = filepath.Join(c.root, filepath.FromSlash(p))
-	}
-	if r, err := filepath.Rel(c.root, abs); err != nil || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("%s: outside the root %s", spec, c.root)
-	}
-	return nil
-}
-
-// declLoc is where n is defined: the first declaration of its function in its
-// file, the top of the file for a file node.
-func (c *graphCtx) declLoc(n analysis.Node) jsonSite {
-	top := jsonSite{c.rel(n.Path), 1, 1}
-	ff := c.snap.Facts(n.Path)
-	if n.Func == nil || ff == nil {
-		return top
-	}
-	var best *analysis.Decl
-	for _, d := range ff.Decls {
-		if slices.Contains(n.Func.Decls, d) && (best == nil || d.NameRange.Start.Offset < best.NameRange.Start.Offset) {
-			best = d
-		}
-	}
-	if best == nil {
-		return top
-	}
-	return c.site(analysis.Location{Path: n.Path, Range: best.NameRange})
-}
-
-// one resolves spec to exactly one node. Several candidates are listed on
-// stderr (exit 2), no match is a failure (exit 1). code is 0 when ok.
-func (c *graphCtx) one(spec string, stderr io.Writer) (n analysis.Node, code int) {
-	if err := c.checkInside(spec); err != nil {
-		return n, fail(stderr, err)
-	}
-	ns, err := c.snap.Lookup(spec)
-	if err != nil {
-		return n, fail(stderr, err)
-	}
-	if len(ns) > 1 {
-		fmt.Fprintf(stderr, "bash-lsp: %q is ambiguous; use one of:\n", spec)
-		for _, x := range ns {
-			s := c.declLoc(x)
-			name := s.Path
-			if x.Func != nil {
-				name = x.Func.Name
-			}
-			fmt.Fprintf(stderr, "%s:%d:%d  %s\n", s.Path, s.Line, s.Col, name)
-		}
-		return n, 2
-	}
-	return ns[0], 0
+	return fail(stderr, err)
 }
 
 // --- commands ---
 
 func (c *graphCtx) steps(cmd, spec string, o graphOpts, stdout, stderr io.Writer) int {
-	n, code := c.one(spec, stderr)
-	if code != 0 {
-		return code
+	d, err := query.StepsDoc(c.snap, c.root, cmd, spec, o.depth, 0)
+	if err != nil {
+		return failQuery(stderr, err)
 	}
-	var st []analysis.Step
-	if cmd == "callers" {
-		st = c.snap.Callers(n, o.depth)
-	} else {
-		st = c.snap.Callees(n, o.depth)
-	}
-	return c.emitSteps(st, o, stdout, stderr)
-}
-
-func (c *graphCtx) emitSteps(st []analysis.Step, o graphOpts, stdout, stderr io.Writer) int {
-	edges := []jsonEdge{}
-	var lines []string
-	seen := map[string]bool{}
-	for _, s := range st {
-		e := c.stepEdge(s)
-		line := e.line()
-		k := line
-		if e.Definition != nil {
-			k += fmt.Sprintf(" %v", *e.Definition)
-		}
-		if seen[k] { // one record per (site, target definition)
-			continue
-		}
-		seen[k] = true
-		edges = append(edges, e)
-		lines = append(lines, line)
-	}
-	return c.emit(o, stdout, stderr, edges, lines)
-}
-
-type jsonRef struct {
-	Path       string `json:"path"`
-	Line       int    `json:"line"`
-	Col        int    `json:"col"`
-	Resolution string `json:"resolution,omitempty"`
-	Reason     string `json:"reason,omitempty"`
-	Relation   string `json:"relation,omitempty"`
+	return c.emit(o, stdout, stderr, d)
 }
 
 func (c *graphCtx) refs(spec string, o graphOpts, stdout, stderr io.Writer) int {
-	n, code := c.one(spec, stderr)
-	if code != 0 {
-		return code
+	d, err := query.RefsDoc(c.snap, c.root, spec, 0)
+	if err != nil {
+		return failQuery(stderr, err)
 	}
-	if n.Func == nil {
-		return fail(stderr, fmt.Errorf("%s: refs wants a function, not a file", spec))
-	}
-	ff := c.snap.Facts(n.Path)
-	var at *analysis.Decl
-	if ff != nil {
-		for _, d := range ff.Decls {
-			if slices.Contains(n.Func.Decls, d) && (at == nil || d.NameRange.Start.Offset < at.NameRange.Start.Offset) {
-				at = d
-			}
-		}
-	}
-	if at == nil {
-		return fail(stderr, fmt.Errorf("%s: no definition found in %s", spec, c.rel(n.Path)))
-	}
-	// The edge to the queried function at a reference site gives it its
-	// resolution and reason (another target's edge at the same site, such as
-	// the other constant of a "$cmd", says nothing about this one).
-	type siteKey struct {
-		path string
-		off  int
-	}
-	edgeAt := map[siteKey]analysis.Edge{}
-	for _, e := range c.snap.EdgesTo(n.Func) {
-		k := siteKey{e.Site.Path, e.Site.Range.Start.Offset}
-		if _, ok := edgeAt[k]; !ok {
-			edgeAt[k] = e
-		}
-	}
-	refs := []jsonRef{}
-	var lines []string
-	for _, l := range c.snap.References(n.Path, at.NameRange.Start.Offset, false) {
-		s := c.site(l)
-		r := jsonRef{Path: s.Path, Line: s.Line, Col: s.Col}
-		text := fmt.Sprintf("%s:%d:%d  %s", s.Path, s.Line, s.Col, n.Func.Name)
-		if e, ok := edgeAt[siteKey{l.Path, l.Range.Start.Offset}]; ok {
-			r.Resolution, r.Reason, r.Relation = e.Res.String(), e.Reason, e.Rel.String()
-			text += fmt.Sprintf("  %s  %s/%s", r.Relation, r.Resolution, r.Reason)
-		}
-		refs = append(refs, r)
-		lines = append(lines, text)
-	}
-	return c.emit(o, stdout, stderr, refs, lines)
+	return c.emit(o, stdout, stderr, d)
 }
 
 func (c *graphCtx) impact(spec string, o graphOpts, stdout, stderr io.Writer) int {
-	n, code := c.one(spec, stderr)
-	if code != 0 {
-		return code
+	d, err := query.ImpactDoc(c.snap, c.root, spec, o.depth, 0)
+	if err != nil {
+		return failQuery(stderr, err)
 	}
-	nodes := []*jsonNode{}
-	var lines []string
-	for _, x := range c.snap.Impact(n, o.depth) {
-		jn := c.node(x)
-		nodes = append(nodes, jn)
-		lines = append(lines, nodeText(jn))
-	}
-	return c.emit(o, stdout, stderr, nodes, lines)
+	return c.emit(o, stdout, stderr, d)
 }
 
 func (c *graphCtx) trace(a, b string, o graphOpts, stdout, stderr io.Writer) int {
-	na, code := c.one(a, stderr)
-	if code != 0 {
-		return code
+	d, err := query.TraceDoc(c.snap, c.root, a, b, 0)
+	if err != nil {
+		return failQuery(stderr, err)
 	}
-	nb, code := c.one(b, stderr)
-	if code != 0 {
-		return code
-	}
-	st := c.snap.Trace(na, nb)
-	if !o.json {
-		if len(st) == 0 {
-			fmt.Fprintln(stdout, "no path")
-			return 0
-		}
-		return c.emitSteps(st, o, stdout, stderr)
-	}
-	edges := []jsonEdge{}
-	for _, s := range st {
-		edges = append(edges, c.stepEdge(s))
-	}
-	if err := writeJSON(stdout, struct {
-		Generation uint64     `json:"generation"`
-		Found      bool       `json:"found"`
-		Results    []jsonEdge `json:"results"`
-	}{c.snap.Generation(), len(st) > 0, edges}); err != nil {
-		return fail(stderr, err)
-	}
-	return 0
+	return c.emit(o, stdout, stderr, d)
 }
 
 func (c *graphCtx) unresolved(paths []string, o graphOpts, stdout, stderr io.Writer) int {
-	for _, p := range paths {
-		if err := c.checkInside(p); err != nil {
-			return fail(stderr, err)
-		}
+	d, err := query.UnresolvedDoc(c.snap, c.root, paths, 0)
+	if err != nil {
+		return failQuery(stderr, err)
 	}
-	edges := []jsonEdge{}
-	var lines []string
-	for _, e := range c.snap.Unresolved(paths) {
-		je := c.edge(e)
-		edges = append(edges, je)
-		lines = append(lines, je.line())
-	}
-	return c.emit(o, stdout, stderr, edges, lines)
+	return c.emit(o, stdout, stderr, d)
 }
 
 func (c *graphCtx) cycles(o graphOpts, stdout, stderr io.Writer) int {
-	type cycle struct {
-		Files []string `json:"files"`
-	}
-	out := []cycle{}
-	var lines []string
-	for _, g := range c.snap.SourceCycles() {
-		files := make([]string, len(g))
-		for i, p := range g {
-			files[i] = c.rel(p)
-		}
-		out = append(out, cycle{files})
-		lines = append(lines, strings.Join(files, ", "))
-	}
-	return c.emit(o, stdout, stderr, out, lines)
-}
-
-// nestingMsg is the parser's error text for input nested past its limit
-// (internal/front nestingError).
-const nestingMsg = "nesting is deeper than"
-
-type skippedFile struct {
-	Path   string `json:"path"`
-	Reason string `json:"reason"`
+	return c.emit(o, stdout, stderr, query.CyclesDoc(c.snap, c.root, 0))
 }
 
 func (c *graphCtx) status(o graphOpts, stdout, stderr io.Writer) int {
-	rep := c.ws.Report()
-	skipped := []skippedFile{}
-	for _, k := range c.ws.Skipped() {
-		skipped = append(skipped, skippedFile{c.rel(k.Path), k.Reason})
-	}
-	nesting := 0
-	paths := c.snap.Paths()
-	sort.Strings(paths)
-	for _, p := range paths {
-		ff := c.snap.Facts(p)
-		if ff == nil || ff.File == nil {
-			continue
-		}
-		for _, e := range ff.File.Errors {
-			if strings.Contains(e.Msg, nestingMsg) {
-				nesting++
-				break
-			}
-		}
-	}
-	limits := rep.LimitsHit
-	if limits == nil {
-		limits = []string{}
-	}
-	dialects := rep.Dialects
-	if dialects == nil {
-		dialects = map[string]int{}
-	}
+	d := query.Status(c.snap, c.ws.Report(), config.Settings{}, query.WithRoot(c.root), query.WithSkipped(c.ws.Skipped())).(*query.StatusDoc)
 	if o.json {
-		if err := writeJSON(stdout, struct {
-			Generation    uint64         `json:"generation"`
-			Root          string         `json:"root"`
-			Files         int            `json:"files"`
-			Dialects      map[string]int `json:"dialects"`
-			Skipped       int            `json:"skipped"`
-			SkippedFiles  []skippedFile  `json:"skipped_files"`
-			Limits        []string       `json:"limits"`
-			NestingErrors int            `json:"nesting_errors"`
-			Cache         string         `json:"cache"`
-		}{c.snap.Generation(), c.root, rep.Files, dialects, rep.Skipped, skipped, limits, nesting, "none"}); err != nil {
+		if err := query.Write(stdout, d); err != nil {
 			return fail(stderr, err)
 		}
 		return 0
 	}
-	fmt.Fprintf(stdout, "generation: %d\n", c.snap.Generation())
-	fmt.Fprintf(stdout, "root: %s\n", c.root)
-	fmt.Fprintf(stdout, "files: %d\n", rep.Files)
-	var ds []string
-	for d := range dialects {
-		ds = append(ds, d)
+	for _, l := range d.Lines() {
+		fmt.Fprintln(stdout, l)
 	}
-	sort.Strings(ds)
-	for _, d := range ds {
-		fmt.Fprintf(stdout, "%s: %d\n", d, dialects[d])
-	}
-	fmt.Fprintf(stdout, "skipped: %d\n", rep.Skipped)
-	for _, s := range skipped {
-		fmt.Fprintf(stdout, "  %s: %s\n", s.Path, s.Reason)
-	}
-	for _, l := range limits {
-		fmt.Fprintf(stdout, "limit hit: %s\n", l)
-	}
-	fmt.Fprintf(stdout, "nesting errors: %d\n", nesting)
-	fmt.Fprintln(stdout, "cache: none")
 	return 0
 }
