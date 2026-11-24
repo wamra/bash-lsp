@@ -904,6 +904,11 @@ func (l *lowerer) declArg(w *syntax.Word) *tree.Node {
 							Range: tree.Range{Start: parts[0].Range.Start, End: l.pos(w.End())}}
 						for _, p := range parts {
 							p.Parent = vw
+							// A recovered part leaves the parser's word end invalid:
+							// the word still covers every part.
+							if p.Range.End.Offset > vw.Range.End.Offset {
+								vw.Range.End = p.Range.End
+							}
 						}
 						kids = append(kids, vw)
 					}

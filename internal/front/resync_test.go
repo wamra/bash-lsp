@@ -285,3 +285,13 @@ func parseWithinBudget(t *testing.T, n int, fn func()) {
 	}
 	t.Fatalf("Parse took %v on %d bytes, over its budget of %v", best, n, parseBudget(n))
 }
+
+// A declaration value that ends in a recovered quote (found by FuzzParse on
+// the sh path) keeps a valid word range, as bash and sh files both need.
+func TestDeclValueWithRecoveredPartKeepsRange(t *testing.T) {
+	for _, src := range []string{"local A=\"\n\"\"", "declare -A m=\"\n\"\"", "export X=a\"b\n\"\""} {
+		for _, d := range []Dialect{Bash, POSIX} {
+			checkInvariants(t, Parse("f.sh", []byte(src), d))
+		}
+	}
+}
