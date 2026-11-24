@@ -264,7 +264,7 @@ func nameOffset(f *tree.File, name string) int {
 
 func rel(root, p string) string {
 	if r, err := filepath.Rel(root, p); err == nil {
-		return r
+		return filepath.ToSlash(r)
 	}
 	return p
 }
@@ -275,12 +275,20 @@ Output of `./consumer testdata/corpus` (go1.26.0):
 ```
 definition: lib/util.sh:4:1
 dialect: bash
-references: 4
+references: 7
   dyn.sh:4:1
   main.sh:3:10
   main.sh:6:3
   main.sh:7:3
+  main.sh:8:13
+  main.sh:9:3
+  main.sh:10:9
 ```
+
+The same code runs as `Example_consumer` in `example_test.go`, and
+`TestLibraryDocExample` fails when this page's code or output differs from it.
+`main.sh:8:13` is the `cmd=build_release` literal, `9:3` the `"$cmd"` word and
+`10:9` the name inside the `eval` string: `References` includes candidate uses.
 
 ## Go version
 
