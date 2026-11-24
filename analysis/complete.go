@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"bytes"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -129,6 +130,7 @@ type lineState struct {
 	quote    byte     // the quote the cursor is inside, 0 for none
 	comment  bool     // the cursor is in a comment
 	redirect bool     // the word at the cursor is the target of a redirection
+	arith    bool     // the cursor is inside (( )) or $(( )), where words are names and numbers
 }
 
 type frame struct {
@@ -211,6 +213,16 @@ func scanLine(t []byte, quote byte) lineState {
 			begin(i)
 			pdepth++
 			i++
+		case c == '$' && next(i) == '(' && i+2 < len(t) && t[i+2] == '(':
+			begin(i)
+			push('a')
+			push('a')
+			i += 2
+		case c == '(' && next(i) == '(':
+			endWord(i)
+			push('a')
+			push('a')
+			i++
 		case c == '$' && next(i) == '(', (c == '<' || c == '>') && next(i) == '(':
 			begin(i)
 			push('(')
@@ -220,7 +232,7 @@ func scanLine(t []byte, quote byte) lineState {
 			push('(')
 		case c == ')':
 			endWord(i)
-			if n := len(stack); n > 0 && stack[n-1].kind == '(' {
+			if n := len(stack); n > 0 && stack[n-1].kind != '`' {
 				f := stack[n-1]
 				stack = stack[:n-1]
 				words, st.cur, curRedir = f.words, f.cur, f.redirect
@@ -261,6 +273,9 @@ func scanLine(t []byte, quote byte) lineState {
 	}
 	st.words = words
 	st.redirect = st.cur >= 0 && curRedir || st.cur < 0 && redir
+	for _, f := range stack {
+		st.arith = st.arith || f.kind == 'a'
+	}
 	return st
 }
 
@@ -289,6 +304,12 @@ func (s *Snapshot) locateSite(path string, offset int) (site, bool) {
 	offset = max(0, min(offset, len(f.Src)))
 	cursor := f.PosAt(offset)
 	lineStart := offset - (cursor.Col - 1)
+	if lineStart == 0 && bytes.HasPrefix(f.Src, []byte("\xef\xbb\xbf")) {
+		if offset < 3 {
+			return site{}, false
+		}
+		lineStart = 3 // the byte order mark is not text of the line
+	}
 	quote := byte(0)
 	if offset > 0 {
 		for n := f.NewLocator().At(offset - 1); n != nil; n = n.Parent {
@@ -337,6 +358,11 @@ func (s *Snapshot) locateSite(path string, offset int) (site, bool) {
 	if st.quote != 0 {
 		return site{}, false
 	}
+	if st.arith {
+		name := word[len(word)-identTail(word):]
+		out.ctx, out.prefix, out.rng = CtxVariable, name, span(len(name))
+		return out, true
+	}
 	out.prefix, out.rng = word, span(len(word))
 	switch {
 	case st.redirect:
@@ -360,6 +386,23 @@ func (s *Snapshot) locateSite(path string, offset int) (site, bool) {
 		out.ctx = CtxArgument
 	}
 	return out, true
+}
+
+// identTail is the length of the variable name that ends w, 0 when w ends in
+// anything else.
+func identTail(w string) int {
+	n := 0
+	for n < len(w) {
+		c := w[len(w)-1-n]
+		if c != '_' && (c < '0' || c > '9') && (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') {
+			break
+		}
+		n++
+	}
+	for n > 0 && w[len(w)-n] >= '0' && w[len(w)-n] <= '9' {
+		n-- // a name does not start with a digit
+	}
+	return n
 }
 
 // lastDollar is the index of the last `$` of w that no backslash escapes, -1
@@ -451,6 +494,7 @@ func (s *Snapshot) Completions(path string, offset int) (ctx CompletionContext, 
 // names of the environment the file reads.
 func (s *Snapshot) variableItems(st site, minLen int) []ranked {
 	cursor := st.rng.End.Offset
+	src := s.facts[st.file].File.Src
 	have := map[string]int{}
 	var out []ranked
 	add := func(r ranked) {
@@ -475,12 +519,12 @@ func (s *Snapshot) variableItems(st site, minLen int) []ranked {
 			rank, detail := 2, "variable"
 			switch {
 			case sym.Private != 0:
-				if ps := privateScope(d.Scope); f != st.file || ps == nil || !around(ps.Node, cursor) {
+				if ps := privateScope(d.Scope); f != st.file || ps == nil || !around(ps.Node, src, cursor) {
 					continue
 				}
 				rank, detail = 0, "variable of a "+privateName(sym.Private)
 			case sym.File != "":
-				if fn := funcBody(d.Scope); f != st.file || fn == nil || !around(fn, cursor) {
+				if fn := funcBody(d.Scope); f != st.file || fn == nil || !around(fn, src, cursor) {
 					continue
 				}
 				rank, detail = 1, "local variable"
@@ -503,9 +547,18 @@ func (s *Snapshot) variableItems(st site, minLen int) []ranked {
 }
 
 // around reports whether the cursor is inside n: after its first byte and
-// before its end (at its end only when the parser closed it itself).
-func around(n *tree.Node, offset int) bool {
-	return n != nil && n.Range.Start.Offset < offset && (offset < n.Range.End.Offset || n.Recovered && offset == n.Range.End.Offset)
+// before its end. At its end it is inside only for a node the parser closed
+// itself, or one that runs to the end of the file with no closing brace or
+// parenthesis (a function or subshell still being typed).
+func around(n *tree.Node, src []byte, offset int) bool {
+	if n == nil || n.Range.Start.Offset >= offset {
+		return false
+	}
+	end := n.Range.End.Offset
+	if offset < end {
+		return true
+	}
+	return offset == end && (n.Recovered || end == len(src) && end > 0 && src[end-1] != '}' && src[end-1] != ')')
 }
 
 // commandItems are the functions and aliases in view, the builtins and the
@@ -587,7 +640,7 @@ func (s *Snapshot) sourceItems(st site, path string) []ranked {
 			continue
 		}
 		rel, err := filepath.Rel(dir, p)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		if err != nil || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			continue
 		}
 		name, rest, deeper := strings.Cut(filepath.ToSlash(rel), "/")

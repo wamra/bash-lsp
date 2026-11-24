@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -46,9 +45,6 @@ const (
 	maxOutput  = 256 << 10
 	maxName    = 255
 )
-
-// commandName is the only shape of name a lookup starts a program for.
-var commandName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
 
 var onWindows = runtime.GOOS == "windows"
 
@@ -203,7 +199,7 @@ func (l *Lookup) gate(kind, name string) bool {
 		}
 		return true
 	}
-	if len(name) > maxName || !commandName.MatchString(name) {
+	if !extool.PlainName(name) {
 		l.logOnce("a lookup was refused: the name is not a plain command word")
 		return false
 	}

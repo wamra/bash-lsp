@@ -655,6 +655,7 @@ func (s *server) pathProfile() *extool.Profile {
 		} else {
 			s.profile = extool.ProfileFromEnv()
 		}
+		s.profile.SetLogger(s.log.Printf)
 		for _, sk := range s.profile.Skipped() {
 			s.log.Printf("path profile: skipped %s", sk)
 		}

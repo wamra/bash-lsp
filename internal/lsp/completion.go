@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"github.com/wamra/bash-lsp/analysis"
 	"github.com/wamra/bash-lsp/internal/helpdoc"
@@ -49,6 +50,10 @@ type completionList struct {
 	IsIncomplete bool             `json:"isIncomplete"`
 	Items        []completionItem `json:"items"`
 }
+
+// resolveLookups counts the goroutines resolve started for a lookup (tests
+// read it: a refused word must not start one).
+var resolveLookups atomic.Int32
 
 // completionData is what an item carries to resolve: the document it was
 // asked in, its label and what it stands for ("function", "alias",
@@ -136,7 +141,7 @@ func (s *server) completion(raw json.RawMessage) (any, *rpcError) {
 			}
 		}
 		seen[it.Label] = true
-		add(completionItem{Label: it.Label, Kind: kind, Detail: detail,
+		add(completionItem{Label: it.Label, Kind: kind, Detail: redact.String(detail),
 			TextEdit: TextEdit{Range: s.rangeIn(cs, snap, path, it.Replace), NewText: it.Insert},
 			Data:     completionData{URI: uri, Label: it.Label, Kind: name}}, gated)
 	}
@@ -154,7 +159,7 @@ func (s *server) completion(raw json.RawMessage) (any, *rpcError) {
 					if seen[n] {
 						continue
 					}
-					add(completionItem{Label: n, Kind: itemFunction, Detail: "command",
+					add(completionItem{Label: redact.String(n), Kind: itemFunction, Detail: "command",
 						TextEdit: TextEdit{Range: s.rangeIn(cs, snap, path, rng), NewText: n},
 						Data:     completionData{URI: uri, Label: n, Kind: "command"}}, false)
 				}
@@ -186,8 +191,9 @@ func (s *server) optionItems(be backend, snap *analysis.Snapshot, path string, o
 		if !strings.HasPrefix(o.Flag, prefix) {
 			continue
 		}
-		it := completionItem{Label: o.Flag, Kind: itemProperty, Detail: o.Arg,
-			TextEdit: TextEdit{Range: s.rangeIn(cs, snap, path, rng), NewText: o.Flag},
+		flag := redact.String(o.Flag)
+		it := completionItem{Label: flag, Kind: itemProperty, Detail: redact.String(o.Arg),
+			TextEdit: TextEdit{Range: s.rangeIn(cs, snap, path, rng), NewText: flag},
 			Data:     completionData{URI: uri, Label: o.Flag, Kind: "option"}}
 		if o.Text != "" {
 			it.Documentation = &markupContent{Kind: "plaintext", Value: redact.String(o.Text)}
@@ -258,6 +264,7 @@ func (s *server) resolveHelp(be backend, d completionData, item map[string]any) 
 	if lr != nil {
 		cancelled = lr.done
 	}
+	resolveLookups.Add(1)
 	go s.runResolve(l, kind, d.Label, item, id, cancelled)
 	return deferred{}, nil
 }

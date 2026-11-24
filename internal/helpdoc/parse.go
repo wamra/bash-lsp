@@ -221,7 +221,9 @@ func sentenceStart(s string) bool {
 }
 
 // dropFlags removes the other spellings of an option (`--after-context=num`,
-// `-B num`) that follow its first one and a comma.
+// `--suffix suffix`) that follow its first one and a comma. A lower-case word
+// after a spelling is that spelling's argument and goes with it when nothing
+// but blanks follows it or a comma ends it.
 func dropFlags(rest string) string {
 	for {
 		t := strings.TrimLeft(rest, " ")
@@ -233,6 +235,14 @@ func dropFlags(rest string) string {
 			return ""
 		}
 		rest = t[i:]
+		fields := strings.Fields(rest)
+		if len(fields) == 0 || !placeholder.MatchString(fields[0]) {
+			continue
+		}
+		after := rest[strings.Index(rest, fields[0])+len(fields[0]):]
+		if strings.HasSuffix(fields[0], ",") || after == "" || strings.HasPrefix(after, "  ") {
+			rest = after
+		}
 	}
 }
 

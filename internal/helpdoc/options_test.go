@@ -114,3 +114,40 @@ func TestParseHelpCompoundCommandTopics(t *testing.T) {
 		t.Fatalf("for: %+v %v", d, ok)
 	}
 }
+
+const manPatch = `PATCH(1)
+
+SYNOPSIS
+     patch [-S suffix] [file]
+
+OPTIONS
+     -S suffix, --suffix suffix
+	     Use the suffix for backups.
+     -D define, --ifdef define
+	     Mark changes with an ifdef.
+     -B num, --before-context=num
+	     Print lines.
+`
+
+func TestParseManAliasWithItsOwnArgument(t *testing.T) {
+	d, ok := ParseMan("patch", []byte(manPatch))
+	if !ok {
+		t.Fatal("no doc")
+	}
+	want := map[string][2]string{
+		"-S": {"suffix", "Use the suffix for backups."},
+		"-D": {"define", "Mark changes with an ifdef."},
+		"-B": {"num", "Print lines."},
+	}
+	for _, o := range d.Options {
+		if w, ok := want[o.Flag]; ok {
+			if o.Arg != w[0] || o.Text != w[1] {
+				t.Errorf("%s: %+v, want arg %q text %q", o.Flag, o, w[0], w[1])
+			}
+			delete(want, o.Flag)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing %v in %+v", want, d.Options)
+	}
+}
