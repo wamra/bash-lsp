@@ -33,6 +33,14 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		args = []string{"serve"}
 	}
+	if isHelp(args) {
+		if args[0] == "check" || len(args) > 1 && args[0] == "help" && args[1] == "check" {
+			fmt.Fprintln(stdout, checkUsage)
+		} else {
+			fmt.Fprintln(stdout, usage)
+		}
+		return 0
+	}
 	switch args[0] {
 	case "serve":
 		if len(args) > 1 {
@@ -74,6 +82,24 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "bash-lsp: unknown command %q\n%s\n", args[0], usage)
 		return 2
 	}
+}
+
+// isHelp reports whether args ask for the usage: "help" or a help flag first,
+// or "help"/"-h"/"--help" anywhere before a "--".
+func isHelp(args []string) bool {
+	switch args[0] {
+	case "help", "--help", "-h":
+		return true
+	}
+	for _, a := range args[1:] {
+		if a == "--" {
+			return false
+		}
+		if a == "-h" || a == "--help" {
+			return true
+		}
+	}
+	return false
 }
 
 // parseArgs splits args into positionals and the --json flag. Any other

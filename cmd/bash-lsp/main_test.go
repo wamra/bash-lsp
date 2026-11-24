@@ -480,3 +480,34 @@ func treeDepth(root *tree.Node) int {
 	_, d := nodeDepths(root)
 	return d
 }
+
+// help, --help and -h print the usage on stdout and exit 0, for the program
+// and for every command; an unknown flag stays a usage error.
+func TestHelp(t *testing.T) {
+	cmds := []string{"serve", "version", "ast", "symbols", "doctor", "check", "fmt", "extract", "search", "mcp",
+		"status", "callers", "callees", "refs", "impact", "trace", "unresolved", "cycles"}
+	var cases [][]string
+	cases = append(cases, []string{"help"}, []string{"--help"}, []string{"-h"})
+	for _, c := range cmds {
+		cases = append(cases, []string{c, "--help"}, []string{c, "-h"}, []string{"help", c})
+	}
+	for _, args := range cases {
+		code, out, errs := runCode(t, args...)
+		if code != 0 || !strings.HasPrefix(out, "usage: bash-lsp") || errs != "" {
+			t.Errorf("%v: exit %d stdout %q stderr %q", args, code, out, errs)
+		}
+	}
+	if _, out, _ := runCode(t, "check", "-h"); !strings.HasPrefix(out, "usage: bash-lsp check ") {
+		t.Errorf("check -h: %q", out)
+	}
+	for _, args := range [][]string{{"check", "--bogus"}, {"symbols", "--nope"}, {"fmt", "-x", "a.sh"}} {
+		if code, out, _ := runCode(t, args...); code != 2 || out != "" {
+			t.Errorf("%v: exit %d stdout %q", args, code, out)
+		}
+	}
+	// After "--" the text is not a flag.
+	root := writeRoot(t, map[string]string{"a.sh": ":\n"})
+	if code, out, _ := runCode(t, "search", "--root", root, "--", "-h"); strings.HasPrefix(out, "usage:") || code == 2 {
+		t.Errorf("search -- -h: exit %d %q", code, out)
+	}
+}
