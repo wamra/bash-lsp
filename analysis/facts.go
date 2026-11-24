@@ -118,6 +118,7 @@ type Use struct {
 	ViaAlias bool
 	Via      Via
 	inexact  bool // the range text is not exactly Name (see NamesTarget)
+	noAlias  bool // a call whose command word has a backslash escape: bash does not expand an alias there
 }
 
 // SourceRef is a `source`/`.` (or bats `load`) command. Directive is the path
@@ -454,6 +455,45 @@ func literalText(w *tree.Node) (string, bool) {
 	return sb.String(), true
 }
 
+// commandName is literalText of a command word after bash's quote removal
+// of backslashes: outside quotes `\c` is c, inside double quotes a
+// backslash goes only before $, `, " or \ (a backslash-newline is gone
+// already). escaped reports a backslash removed outside quotes: bash then
+// does not expand an alias for the word.
+func commandName(w *tree.Node) (name string, ok, escaped bool) {
+	var sb strings.Builder
+	unescape := func(v string, dq bool) {
+		for i := 0; i < len(v); i++ {
+			if v[i] == '\\' && i+1 < len(v) && (!dq || strings.IndexByte("$`\"\\", v[i+1]) >= 0) {
+				i++
+				escaped = escaped || !dq
+			}
+			sb.WriteByte(v[i])
+		}
+	}
+	for _, p := range w.Children {
+		switch p.Kind {
+		case tree.KLit:
+			if p.Recovered {
+				return "", false, false
+			}
+			unescape(p.Value, false)
+		case tree.KSglQuoted:
+			sb.WriteString(p.Value)
+		case tree.KDblQuoted:
+			for _, q := range p.Children {
+				if q.Kind != tree.KLit {
+					return "", false, false
+				}
+				unescape(q.Value, true)
+			}
+		default:
+			return "", false, false
+		}
+	}
+	return sb.String(), true, escaped
+}
+
 // declFlags reads the option words of a declaration command.
 func declFlags(n *tree.Node) (attrs VarAttrs, dashN, skip bool) {
 	// dashN: -n is nameref for declare/typeset/local, "remove the export attribute" for export/readonly
@@ -525,12 +565,13 @@ func (b *binder) call(n *tree.Node, sc *Scope) {
 		}
 	}
 	if len(words) > 0 {
-		if name, ok := literalText(words[0]); ok && name != "" {
+		if name, ok, escaped := commandName(words[0]); ok && name != "" {
 			if b.builtin(n, name, words, sc) {
 				b.callChildren(n, sc, len(words) > 0)
 				return
 			}
 			u := b.use(UseCall, name, words[0].Range, sc, n)
+			u.noAlias = escaped
 			if s, e := words[0].Range.Start.Offset, words[0].Range.End.Offset; s < 0 || e > len(b.src) || s > e || string(b.src[s:e]) != name {
 				u.inexact = true
 			}

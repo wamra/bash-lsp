@@ -505,3 +505,33 @@ func TestVariableCallSeesPrivateVariable(t *testing.T) {
 		"m.sh:8 calls candidate/variable-constant «\"$cmd\"» -> f@m.sh:1",
 	)
 }
+
+// A backslash-quoted command name calls the function as the quoted forms do
+// (`\f` is f after quote removal); in bash it also suppresses alias
+// expansion, so `\g` with `alias g=f` calls the function g, not f.
+func TestBackslashQuotedCommandName(t *testing.T) {
+	q := buildMem(t, map[string]string{
+		"m.sh": "f() { :; }\n" + // 1
+			"\\f\n" + // 2
+			"eval \"\\f\"\n" + // 3
+			"'f'\n" + // 4
+			"\"f\"\n" + // 5
+			"alias g=f\n" + // 6
+			"g() { :; }\n" + // 7
+			"\\g\n" + // 8
+			"g\n" + // 9
+			"f\\\n\n" + // 10-11: a trailing escaped newline is not part of the name
+			"\"\\f\"\n", // 12: inside double quotes the backslash stays: no such function
+	})
+	wantSame(t, q.fileEdges("m.sh"),
+		"m.sh:2 calls resolved/direct «\\f» -> f@m.sh:1",
+		"m.sh:3 calls candidate/string-eval «\\f» -> f@m.sh:1",
+		"m.sh:4 calls resolved/direct «'f'» -> f@m.sh:1",
+		"m.sh:5 calls resolved/direct «\"f\"» -> f@m.sh:1",
+		"m.sh:6 aliases resolved/direct «f» -> f@m.sh:1",
+		"m.sh:8 calls resolved/direct «\\g» -> g@m.sh:7",
+		"m.sh:9 calls resolved/alias «g» -> f@m.sh:1",
+		"m.sh:10 calls resolved/direct «f\\\n» -> f@m.sh:1",
+	)
+	wantEq(t, q.def("m.sh", "\\f", 0, 1), "m.sh:1")
+}

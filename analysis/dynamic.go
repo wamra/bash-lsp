@@ -289,7 +289,7 @@ func (b *binder) fragment(via Via, args []*tree.Node, n *tree.Node, sc *Scope, m
 		if len(words) == 0 {
 			return true
 		}
-		name, ok := literalText(words[0])
+		name, ok, escaped := commandName(words[0])
 		switch {
 		case ok && name != "":
 			if name == "source" || name == "." || name == "alias" {
@@ -297,7 +297,7 @@ func (b *binder) fragment(via Via, args []*tree.Node, n *tree.Node, sc *Scope, m
 			}
 			a, e := words[0].Range.Start.Offset, words[0].Range.End.Offset
 			u := b.use(UseCall, name, b.fileRange(fm, a, e), sc, n)
-			u.Via = via
+			u.Via, u.noAlias = via, escaped
 			r := u.Range
 			u.inexact = !fm.verbatim(a, e, len(name)) || string(b.src[r.Start.Offset:r.End.Offset]) != name
 			b.dynamicCall(n, name, words[1:], sc, fm, depth+1)

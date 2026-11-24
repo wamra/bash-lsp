@@ -768,7 +768,11 @@ func (s *Snapshot) bindCall(out []Binding, file int, u *Use, priv *Symbol) []Bin
 	if u.ViaAlias {
 		depth = 1
 	}
-	if syms, followed := s.resolveCall(file, u.Name, depth); len(syms) > 0 {
+	syms, followed := s.resolveCall(file, u.Name, depth)
+	if u.noAlias {
+		syms, followed = s.pickAll(s.funcSyms[u.Name], file), false
+	}
+	if len(syms) > 0 {
 		if followed {
 			b.Reason = ReasonAlias
 		}
