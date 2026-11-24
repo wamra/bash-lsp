@@ -26,7 +26,7 @@ var (
 	scCodeRe      = regexp.MustCompile(`^SC(\d{4})$`)
 	bareCodeRe    = regexp.MustCompile(`^\d{4}$`)
 	listSepRe     = regexp.MustCompile(`[,\s]+`)
-	ruleIDShapeRe = regexp.MustCompile(`^[A-Za-z]{2}\d{4}$`)
+	reasonRe      = regexp.MustCompile(`\s(?:#|--)`)
 )
 
 type directive struct {
@@ -93,18 +93,19 @@ func codeSpan(c string) (lo, hi int, ok bool) {
 // parseDirective reads one comment; ok is false when it is not a directive.
 func parseDirective(text string) (d directive, ok bool) {
 	if m := wbDirectiveRe.FindStringSubmatch(text); m != nil {
-		// The ids run until the first word that is not shaped like a rule id
-		// (two letters and four digits): the rest is the author's comment
-		// (`# bash-lsp disable=WB1401 -- the list splits on purpose`).
+		// The ids run to the end of the line, or to whitespace followed by
+		// `#` or `--`: the author's reason (`# bash-lsp disable=WB1401 --
+		// the list splits on purpose`). Every other token is an id, and one
+		// that names no rule is reported (WB1008).
+		ids := m[1]
+		if loc := reasonRe.FindStringIndex(ids); loc != nil {
+			ids = ids[:loc[0]]
+		}
 		d.wb = map[string]bool{}
-		for _, id := range listSepRe.Split(strings.TrimSpace(m[1]), -1) {
-			if id == "" {
-				continue
+		for _, id := range listSepRe.Split(strings.TrimSpace(ids), -1) {
+			if id != "" {
+				d.wb[id] = true
 			}
-			if !ruleIDShapeRe.MatchString(id) {
-				break
-			}
-			d.wb[id] = true
 		}
 		return d, true
 	}
@@ -222,19 +223,22 @@ func suppress(f *tree.File, ds []Diagnostic) []Diagnostic {
 	return out
 }
 
-// openers are the words after which a directive on the same line still
+// openers are the keywords after which a directive on the same line still
 // stands before the command that follows (`do # shellcheck disable=…`).
 var openers = map[string]bool{"then": true, "do": true, "else": true, "{": true, "(": true}
 
 var (
 	funcHeaderRe  = regexp.MustCompile(`^(?:function\s+)?[^\s()=;&|<>]+\s*\(\s*\)$|^function\s+[^\s()=;&|<>]+$`)
-	casePatternRe = regexp.MustCompile(`^\(?[^()]*\)$`)
+	casePatternRe = regexp.MustCompile(`^\(?[^()\s][^()]*\)$`)
 )
 
 // placed reports whether comment c stands where a directive applies: alone
-// on its line, or after an opener on it (`then`, `do`, `else`, `{`, `(`, a
-// function header, a case pattern), as ShellCheck 0.11.0 takes it. After a
-// command it applies to nothing (ShellCheck refuses it there, SC1126).
+// on its line, or after an opener on it, as ShellCheck 0.11.0 takes it. An
+// opener is the keyword token itself (`then`, `do`, `else`, `{`, `(`) at
+// the start of the line or after `;`, `&&` or `||`; a function header, or
+// a function header and `{`; or a case pattern (`a)`, `a|b)`, `(a)`) inside
+// a `case`. After a command it applies to nothing (ShellCheck refuses it
+// there, SC1126): `echo do # …`, or the `)` that closes a multi-line `$(`.
 func placed(src []byte, c *tree.Node) bool {
 	o := c.Range.Start.Offset
 	if o < 0 || o > len(src) {
@@ -249,8 +253,22 @@ func placed(src []byte, c *tree.Node) bool {
 		return true
 	}
 	fields := strings.Fields(before)
-	if last := fields[len(fields)-1]; openers[last] || strings.HasSuffix(last, ";then") || strings.HasSuffix(last, ";do") {
+	last := fields[len(fields)-1]
+	if strings.HasSuffix(last, ";then") || strings.HasSuffix(last, ";do") {
 		return true
+	}
+	if openers[last] {
+		if len(fields) == 1 {
+			return true
+		}
+		prev := fields[len(fields)-2]
+		if strings.HasSuffix(prev, ";") || prev == "&&" || prev == "||" {
+			return true
+		}
+		if last == "{" && funcHeaderRe.MatchString(strings.Join(fields[:len(fields)-1], " ")) {
+			return true
+		}
+		return false
 	}
 	if funcHeaderRe.MatchString(before) {
 		return true

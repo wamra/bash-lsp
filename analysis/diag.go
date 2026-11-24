@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -197,8 +196,10 @@ type diagCtx struct {
 	disabled   map[string]bool // rules turned off: they do not run
 	extraRoots []string        // workspace folders besides the snapshot's root
 
-	oneWords      map[*Symbol]bool    // WB1401: symbols whose every value is one word, on first need
-	unresolvedFns map[*tree.Node]bool // functions of the file that call a name resolving to nothing in view, on first need
+	oneWords      map[*Symbol]bool     // WB1401: symbols whose every value is one word, on first need
+	graph         *callGraph           // calls between the functions in view, on first need
+	reach         map[string]reachable // per name, the functions its locals may reach by calls
+	unresolvedFns map[*tree.Node]bool  // functions of the file that call a name resolving to nothing in view, on first need
 
 	union     *nameUnion      // what the file's visibility reads or names, built on first need
 	wantReads map[string]bool // the names WB1202 asks readByName about (nil: all)
@@ -273,15 +274,16 @@ type fileScan struct {
 	topFuncs   []*tree.Node // function definitions that are top-level statements
 	funcs      []*tree.Node // every function definition
 	wrappers   map[*tree.Node]bool
-	locals     []*tree.Node    // `local` commands outside every function
-	quotes     []*tree.Node    // unquoted parameter expansions in arguments of file-mutating commands
-	indirect   bool            // `${!` appears: a variable may be read through another's value
-	nameref    bool            // some declaration is a nameref
-	lastpipe   bool            // `lastpipe` appears (shopt -s lastpipe): the last pipeline stage may run in the shell
-	localNames map[string]bool // names some function of the file declares local
-	unsetVars  map[string]bool // names an `unset` of the file names (as a variable or function)
-	setsIFS    bool            // the file assigns IFS (not only for one command)
-	version    versionScan     // evidence for the version rules (versionrules.go)
+	locals     []*tree.Node        // `local` commands outside every function
+	quotes     []*tree.Node        // unquoted parameter expansions in arguments of file-mutating commands
+	indirect   bool                // `${!` appears: a variable may be read through another's value
+	nameref    bool                // some declaration is a nameref
+	lastpipe   bool                // `lastpipe` appears (shopt -s lastpipe): the last pipeline stage may run in the shell
+	localNames map[string]bool     // names some function of the file declares local
+	unsetVars  map[string]bool     // names an `unset` of the file names (as a variable or function)
+	setsIFS    bool                // the file assigns IFS for the shell (not only for one command or a function's local)
+	localIFS   map[*tree.Node]bool // functions that declare `local IFS`
+	version    versionScan         // evidence for the version rules (versionrules.go)
 }
 
 // fileMentions is what a file names without a binding: words that may name
@@ -478,20 +480,24 @@ func (s *Snapshot) mentionsOf(file int) *fileMentions {
 }
 
 // mentionWalkNeeded reports text that the forms only a walk recognises
-// contain: an option cluster holding v, p or a (`-v`, `-xp`, `set -ea`), an
-// arithmetic comparison in `[[ ]]` (`-eq` and the others), `$[ ]` and
-// `allexport`. One pass over the dashes, and two searches.
+// contain: an option cluster of declaration, `set` or test letters holding
+// v, p or a (`-v`, `-xp`, `set -ea`), an arithmetic comparison in `[[ ]]`
+// (`-eq` and the others), `$[ ]` and `allexport`. A cluster starts a word
+// (`my-tool`, `--parallel` and `-type` are none). One pass over the dashes.
 func mentionWalkNeeded(src []byte) bool {
 	if bytes.Contains(src, []byte("$[")) || bytes.Contains(src, []byte("allexport")) {
 		return true
 	}
 	for i := bytes.IndexByte(src, '-'); i >= 0 && i+1 < len(src); {
-		j := i + 1
-		for j < len(src) && ('a' <= src[j] && src[j] <= 'z' || 'A' <= src[j] && src[j] <= 'Z') {
-			j++
-		}
-		if run := src[i+1 : j]; len(run) > 0 && (bytes.ContainsAny(run, "vpa") || arithOps[string(src[i:j])]) {
-			return true
+		if i == 0 || src[i-1] == ' ' || src[i-1] == '\t' || src[i-1] == '\n' || src[i-1] == ';' {
+			j := i + 1
+			for j < len(src) && optionLetter[src[j]] {
+				j++
+			}
+			end := j == len(src) || src[j] == ' ' || src[j] == '\t' || src[j] == '\n' || src[j] == ';' || src[j] == ']'
+			if run := src[i+1 : j]; len(run) > 0 && end && (bytes.ContainsAny(run, "vpa") || arithOps[string(src[i:j])]) {
+				return true
+			}
 		}
 		k := bytes.IndexByte(src[i+1:], '-')
 		if k < 0 {
@@ -501,6 +507,15 @@ func mentionWalkNeeded(src []byte) bool {
 	}
 	return false
 }
+
+// optionLetter holds the letters of declaration (`declare -aAfFgilnprtux`),
+// `set` (`-abefhkmnptuvxBCEHPT`) and test (`-eq`, `-gt`, …) options.
+var optionLetter = func() (t [256]bool) {
+	for _, c := range "aAbBCeEfFghHiklmnpPqrtTuvx" {
+		t[c] = true
+	}
+	return t
+}()
 
 // wordsOf returns the words of file (fileMentions describes them), made on
 // first use by their own walk: only WB1201 needs them.
@@ -564,6 +579,7 @@ func scanFile(ff *FileFacts) *fileScan {
 	}
 	var lastLocal *tree.Node
 	var lastVersionDecl [3]*tree.Node
+	var ifsDecls []*Decl
 	for _, d := range ff.Decls {
 		if d.Kind == DeclVariable && (d.Attrs.Assoc || d.Attrs.Global || d.Attrs.Nameref) {
 			sc.version.decl(d, &lastVersionDecl)
@@ -573,7 +589,9 @@ func scanFile(ff *FileFacts) *fileScan {
 			sc.funcs = append(sc.funcs, d.Node)
 		case d.Kind == DeclVariable:
 			sc.nameref = sc.nameref || d.Attrs.Nameref
-			sc.setsIFS = sc.setsIFS || d.Name == "IFS" && !d.Temp
+			if d.Name == "IFS" && !d.Temp {
+				ifsDecls = append(ifsDecls, d)
+			}
 			if d.Attrs.Local {
 				if sc.localNames == nil {
 					sc.localNames = map[string]bool{}
@@ -586,6 +604,24 @@ func scanFile(ff *FileFacts) *fileScan {
 					lastLocal = p
 				}
 			}
+		}
+	}
+	// IFS: a function with `local IFS` changes it for itself and what it
+	// calls; any other assignment (not a one-command prefix, not a bare
+	// `export IFS`) changes it everywhere.
+	for _, d := range ifsDecls {
+		if fn := funcBody(d.Scope); fn != nil && d.Attrs.Local {
+			if sc.localIFS == nil {
+				sc.localIFS = map[*tree.Node]bool{}
+			}
+			sc.localIFS[fn] = true
+		}
+	}
+	for _, d := range ifsDecls {
+		i := d.NameRange.End.Offset
+		assigns := i >= 0 && i < len(src) && (src[i] == '=' || src[i] == '+')
+		if fn := funcBody(d.Scope); assigns && !d.Attrs.Local && (fn == nil || !sc.localIFS[fn]) {
+			sc.setsIFS = true
 		}
 	}
 	var words []*tree.Node
@@ -645,8 +681,14 @@ var inspected = func() map[string]bool {
 // of a builtin (`cd() { builtin cd "$@"; }`).
 func (sc *fileScan) command(u *Use, words []*tree.Node, src []byte) {
 	name := u.Name
-	if name == "unset" { // variables removed: their values are not proven (WB1401)
+	if name == "unset" { // variables removed: their values are not proven (WB1401); `unset -f` removes functions
 		for _, w := range words[1:] {
+			if t, ok := literalText(w); ok && len(t) > 1 && t[0] == '-' {
+				if strings.ContainsRune(t, 'f') {
+					return
+				}
+				continue
+			}
 			if t, ok := literalText(w); ok && identRe.MatchString(t) {
 				if sc.unsetVars == nil {
 					sc.unsetVars = map[string]bool{}
@@ -969,7 +1011,7 @@ func addTokens(m map[string]bool, v string) {
 // evalCommands run a string argument as shell code, now or later: a
 // single-quoted `$name` in their arguments is a read.
 var evalCommands = map[string]bool{"eval": true, "trap": true, "bash": true, "sh": true, "dash": true, "ksh": true,
-	"zsh": true, "su": true, "sudo": true, "ssh": true, "xargs": true, "env": true, "nohup": true, "timeout": true,
+	"zsh": true, "alias": true, "su": true, "sudo": true, "ssh": true, "xargs": true, "env": true, "nohup": true, "timeout": true,
 	"watch": true, "parallel": true, "exec": true, "find": true, "script": true, "complete": true, "bind": true}
 
 // codeDollarNames adds every name after `$`, `${`, `${!` or `${#` in f's text
@@ -989,32 +1031,60 @@ func codeDollarNames(m map[string]bool, f *tree.File, want map[string]bool) {
 		}
 		return inertText(loc.At(i), src)
 	}
-	// A quoted heredoc body can hold any quote; with one in the file, ask
-	// the tree about every `$` outside single quotes too.
-	quotedHeredoc := quotedHeredocRe.Match(src)
+	// name reads the name after the `$` at i; k is past it, 0 for none.
+	name := func(i int) (j, k int) {
+		j = i + 1
+		if j < len(src) && src[j] == '{' {
+			j++
+			if j < len(src) && (src[j] == '!' || src[j] == '#') {
+				j++
+			}
+		}
+		k = j
+		for k < len(src) && isIdentChar(src[k]) {
+			k++
+		}
+		if k == j || !isIdentStart(src[j]) {
+			return j, 0
+		}
+		return j, k
+	}
+	record := func(j, k int, inSingle bool, i int) {
+		if n := src[j:k]; want != nil && !want[string(n)] || m[string(n)] {
+			return
+		}
+		if inSingle && ask(i) {
+			return
+		}
+		m[string(src[j:k])] = true
+	}
 	// One pass of quote states, as a filter: a `$` this lexer sees inside
 	// single quotes is checked against the tree; one it sees outside is
-	// code. A lexer confused by a heredoc can only over-count (or ask more).
+	// code. Heredoc bodies are read apart (a quoted tag's body is text, an
+	// unquoted one's `$name` is code), so an apostrophe in one does not
+	// turn the state over.
 	const (
 		normal = iota
 		single
 		double
 	)
+	var heredocs []heredocTag // started on the current line, bodies after it
 	state, ci := normal, 0
 	for i := 0; i < len(src); i++ {
 		// jump to the next byte that can change the state or start a name
-		stops := "\\'\"$"
-		if state == single {
-			stops = "'$"
+		stop := &lexStopNormal
+		switch state {
+		case single:
+			stop = &lexStopSingle
+		case double:
+			stop = &lexStopDouble
 		}
-		next := bytes.IndexAny(src[i:], stops)
-		if next < 0 {
+		for i < len(src) && !stop[src[i]] && !(state == normal && ci < len(cmts) && cmts[ci].Range.Start.Offset == i) {
+			i++
+		}
+		if i >= len(src) {
 			break
 		}
-		if state == normal && ci < len(cmts) && cmts[ci].Range.Start.Offset >= i && cmts[ci].Range.Start.Offset < i+next {
-			next = cmts[ci].Range.Start.Offset - i
-		}
-		i += next
 		for ci < len(cmts) && cmts[ci].Range.End.Offset <= i {
 			ci++
 		}
@@ -1043,7 +1113,7 @@ func codeDollarNames(m map[string]bool, f *tree.File, want map[string]bool) {
 		default:
 			switch c {
 			case '\\':
-				if i+1 < len(src) && src[i+1] != '$' { // `\$x` stays a mention: eval may expand it later
+				if i+1 < len(src) && src[i+1] != '$' {
 					i++
 				}
 				continue
@@ -1053,43 +1123,124 @@ func codeDollarNames(m map[string]bool, f *tree.File, want map[string]bool) {
 			case '"':
 				state = double
 				continue
+			case '<':
+				if h, end, ok := heredocAt(src, i); ok {
+					heredocs = append(heredocs, h)
+					i = end - 1
+				}
+				continue
+			case '\n':
+				for _, h := range heredocs {
+					i = h.body(src, i+1, func(d int) {
+						if j, k := name(d); k > 0 {
+							record(j, k, false, d)
+						}
+					}) - 1
+				}
+				heredocs = heredocs[:0]
+				continue
 			}
 		}
 		if c != '$' {
 			continue
 		}
-		j := i + 1
-		if j < len(src) && src[j] == '\'' && state == normal { // $'...': ANSI-C quoting, text
+		if j := i + 1; j < len(src) && src[j] == '\'' && state == normal { // $'...': ANSI-C quoting, text
 			state = single
 			i = j
 			continue
 		}
-		if j < len(src) && src[j] == '{' {
-			j++
-			if j < len(src) && (src[j] == '!' || src[j] == '#') {
-				j++
-			}
+		if j, k := name(i); k > 0 {
+			record(j, k, state == single, i)
 		}
-		k := j
-		for k < len(src) && isIdentChar(src[k]) {
-			k++
-		}
-		if k == j || !isIdentStart(src[j]) {
-			continue
-		}
-		if name := src[j:k]; want != nil && !want[string(name)] || m[string(name)] {
-			continue
-		}
-		if (state == single || quotedHeredoc) && ask(i) {
-			continue
-		}
-		m[string(src[j:k])] = true
 	}
 }
 
-// quotedHeredocRe finds a heredoc whose tag is quoted (`<<'EOF'`, `<<-"X"`,
-// `<<\EOF`): its body is text.
-var quotedHeredocRe = regexp.MustCompile(`<<-?\s*['"\\]`)
+var lexStopNormal, lexStopSingle, lexStopDouble [256]bool
+
+func init() {
+	for _, c := range "\\'\"$<\n" {
+		lexStopNormal[c] = true
+	}
+	for _, c := range "'$" {
+		lexStopSingle[c] = true
+	}
+	for _, c := range "\\\"$" {
+		lexStopDouble[c] = true
+	}
+}
+
+// heredocTag is a heredoc operator read from the text: its tag, whether the
+// tag was quoted (the body is then text) and whether it was `<<-` (leading
+// tabs of the closing line are dropped).
+type heredocTag struct {
+	tag          string
+	quoted, dash bool
+}
+
+// heredocAt reads a heredoc operator at src[i] (`<<TAG`, `<<-TAG`, a tag
+// with quotes or a backslash); end is past it.
+func heredocAt(src []byte, i int) (h heredocTag, end int, ok bool) {
+	j := i + 2
+	if j > len(src) || src[i+1] != '<' || j < len(src) && src[j] == '<' {
+		return h, i + 1, false
+	}
+	if j < len(src) && src[j] == '-' {
+		h.dash = true
+		j++
+	}
+	for j < len(src) && (src[j] == ' ' || src[j] == '\t') {
+		j++
+	}
+	var tag []byte
+	for j < len(src) {
+		c := src[j]
+		switch {
+		case c == '\'' || c == '"' || c == '\\':
+			h.quoted = true
+		case c == '_' || c == '-' || c == '.' || isIdentChar(c):
+			tag = append(tag, c)
+		default:
+			goto done
+		}
+		j++
+	}
+done:
+	if len(tag) == 0 {
+		return h, i + 2, false
+	}
+	h.tag = string(tag)
+	return h, j, true
+}
+
+// body reads the heredoc body that starts at from, up to and including its
+// closing line, and returns the offset after it. For an unquoted tag, each
+// `$` of the body is passed to dollar.
+func (h heredocTag) body(src []byte, from int, dollar func(int)) int {
+	for i := from; i < len(src); {
+		e := bytes.IndexByte(src[i:], '\n')
+		if e < 0 {
+			e = len(src)
+		} else {
+			e += i
+		}
+		line := src[i:e]
+		if h.dash {
+			line = bytes.TrimLeft(line, "\t")
+		}
+		if string(bytes.TrimRight(line, "\r")) == h.tag {
+			return min(e+1, len(src))
+		}
+		if !h.quoted {
+			for k := i; k < e; k++ {
+				if src[k] == '$' {
+					dollar(k)
+				}
+			}
+		}
+		i = e + 1
+	}
+	return len(src)
+}
 
 // inertText reports whether node n (the deepest at a `$`) is text the
 // shell never expands: a single-quoted string outside an evaluating command

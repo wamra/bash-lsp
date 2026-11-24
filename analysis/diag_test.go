@@ -574,6 +574,11 @@ func TestDiagnosticsInBoundedTime(t *testing.T) {
 		"many unquoted arguments":            fillTo(size, "rm", " $f", "\n"),
 		"reads inside strings":               fillTo(size, "f() { local u=1; ", "eval 'echo $u';", " }\nf\n"),
 		"many distinct unread locals":        locals.String(),
+		// distinct names: one name defined many times and called many times is
+		// the calls x definitions product of Build, not a rule's cost
+		"caller locals and global reads": numbered(size, "dir=build\n", "f%[1]d(){ local dir=$1; g%[1]d; }\ng%[1]d(){ rm -rf $dir; }\n"),
+		"local IFS and global reads":     numbered(size, "dir=build\n", "f%[1]d(){ local IFS=,; g%[1]d; }\ng%[1]d(){ rm -rf $dir; }\n"),
+		"heredocs with apostrophes":      fillTo(size, "f(){ local x=1; }\n", "cat <<EOF\ndon't $y\nEOF\necho '$x'\n", "f\n"),
 		// The version rules: one finding per feature, a lookup per negative subscript.
 		"many case modifications":         fillTo(size, "echo", " ${v,,}", "\n"),
 		"many associative declarations":   fillTo(size, "#!/bin/bash\n", "declare -A m\n", ""),
@@ -620,4 +625,14 @@ func TestDiagScansCarryOver(t *testing.T) {
 	if s2.scans[fa2] == nil {
 		t.Fatal("the edited file was not scanned")
 	}
+}
+
+// numbered is about size bytes: pre, then unit formatted with 0, 1, 2, ...
+func numbered(size int, pre, unit string) string {
+	var sb strings.Builder
+	sb.WriteString(pre)
+	for i := 0; sb.Len() < size-len(unit)-16; i++ {
+		fmt.Fprintf(&sb, unit, i)
+	}
+	return sb.String()
 }

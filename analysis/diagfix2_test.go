@@ -186,18 +186,19 @@ func TestSourceMinors(t *testing.T) {
 	if got := sev(sh("source /elsewhere/x.sh\n"), "x.sh", DiagOptions{Roots: []string{other}}); len(got) != 1 || got[0] != SevInfo {
 		t.Errorf("outside both: %v", got)
 	}
-	// SC1090 silences only a computed path, SC1091 only a missing file (ShellCheck 0.11.0)
+	// SC1090 silences only a wholly computed path, SC1091 a missing file or a
+	// path with a literal tail (ShellCheck 0.11.0; fix round 3 corrects the
+	// split, see TestSourceCodeBoundary)
 	expectRule(t, sh("echo a\n# shellcheck disable=SC1090\nsource ./nope.sh\n"), "x.sh", "WB1101", "3:./nope.sh")
-	expectRule(t, sh("echo a\n# shellcheck disable=SC1091\nsource \"$(pwd)/a.sh\"\n"), "x.sh", "WB1101", "3:\"$(pwd)/a.sh\"")
+	expectRule(t, sh("echo a\n# shellcheck disable=SC1091\nsource \"$X\"\n"), "x.sh", "WB1101", "3:\"$X\"")
 	expectRule(t, sh("echo a\n# shellcheck disable=SC1091\nsource ./nope.sh\n"), "x.sh", "WB1101")
-	expectRule(t, sh("echo a\n# shellcheck disable=SC1090\nsource \"$(pwd)/a.sh\"\n"), "x.sh", "WB1101")
+	expectRule(t, sh("echo a\n# shellcheck disable=SC1090\nsource \"$X\"\n"), "x.sh", "WB1101")
 }
 
 func TestDirectiveTrailingText(t *testing.T) {
 	for _, src := range []string{
 		"echo a\n# bash-lsp disable=WB1401 # glob intended\nrm $f\n",
 		"echo a\n# bash-lsp disable=WB1401 -- reason\nrm $f\n",
-		"echo a\n# bash-lsp disable=WB1401,WB1202 because the list splits\nrm $f\n",
 	} {
 		expectRule(t, sh(src), "x.sh", "WB1401")
 		expectRule(t, sh(src), "x.sh", "WB1008")

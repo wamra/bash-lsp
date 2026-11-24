@@ -170,22 +170,22 @@ func TestUnresolvedSourceSeverity(t *testing.T) {
 		return out
 	}
 	cases := map[string][]Severity{
-		"source ./nope.sh\n":                              {SevWarning},
-		"source " + diagRoot + "/lib/none.sh\n":           {SevWarning},
-		". /etc/os-release\n":                             {SevInfo},
-		"source /opt/app/lib.sh\n":                        {SevInfo},
-		"source ~/.bashrc\n":                              {SevInfo},
-		"source \"$HOME/.bashrc\"\n":                      {SevInfo},
-		"source \"${HOME}/.x\"\n":                         {SevInfo},
-		"source bash-completion.sh\n":                     {SevInfo},
-		"[ -f ./local.conf ] && . ./local.conf\n":         {SevInfo},
-		"if [[ -r y.sh ]]; then . y.sh; fi\n":             {SevInfo},
-		"test -e ./a/b.sh && source ./a/b.sh\n":           {SevInfo},
-		"[ -f ./other.conf ] && . ./local.conf\n":         {SevWarning},
-		"source \"$X/a.sh\"\n":                            {SevInfo},
-		"# shellcheck disable=SC1091\nsource ./nope.sh\n": nil,
-		"echo a\n# shellcheck disable=SC1090\nsource \"$X/a.sh\"\nsource ./nope.sh\n": {SevWarning},
-		"# shellcheck source=/dev/null\nsource \"$X/a.sh\"\n":                         nil,
+		"source ./nope.sh\n":                                                     {SevWarning},
+		"source " + diagRoot + "/lib/none.sh\n":                                  {SevWarning},
+		". /etc/os-release\n":                                                    {SevInfo},
+		"source /opt/app/lib.sh\n":                                               {SevInfo},
+		"source ~/.bashrc\n":                                                     {SevInfo},
+		"source \"$HOME/.bashrc\"\n":                                             {SevInfo},
+		"source \"${HOME}/.x\"\n":                                                {SevInfo},
+		"source bash-completion.sh\n":                                            {SevInfo},
+		"[ -f ./local.conf ] && . ./local.conf\n":                                {SevInfo},
+		"if [[ -r y.sh ]]; then . y.sh; fi\n":                                    {SevInfo},
+		"test -e ./a/b.sh && source ./a/b.sh\n":                                  {SevInfo},
+		"[ -f ./other.conf ] && . ./local.conf\n":                                {SevWarning},
+		"source \"$X/a.sh\"\n":                                                   {SevInfo},
+		"# shellcheck disable=SC1091\nsource ./nope.sh\n":                        nil,
+		"echo a\n# shellcheck disable=SC1090\nsource \"$X\"\nsource ./nope.sh\n": {SevWarning}, // "$X/a.sh" is SC1091 to ShellCheck (round 3)
+		"# shellcheck source=/dev/null\nsource \"$X/a.sh\"\n":                    nil,
 	}
 	for src, want := range cases {
 		if got := sev(src); fmt.Sprint(got) != fmt.Sprint(want) {

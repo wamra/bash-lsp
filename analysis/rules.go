@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -178,15 +179,43 @@ func (c *diagCtx) sources() {
 		case literal:
 			d := c.add("WB1101", r, fmt.Sprintf("source file not found in the workspace: %s%s (unresolved/%s)", text, named, ReasonNotFound))
 			d.codes = []string{"SC1091"} // ShellCheck's code for a file it cannot follow
+			if named == "" && strings.HasPrefix(lit, "~") {
+				d.codes = []string{"SC1090"} // an unquoted ~ is an expansion to ShellCheck
+			}
 			if c.outsideWorkspace(lit, e.Ref) || named == "" && guardedSource(e.Ref, lit, src) {
 				d.Severity = SevInfo
 			}
 		default:
 			d := c.add("WB1101", r, fmt.Sprintf("source path is computed and could not be resolved: %s (unresolved/%s)", text, ReasonNotFound))
-			d.codes = []string{"SC1090"} // ShellCheck's code for a path it cannot compute
+			d.codes = []string{sourceCode(e.Ref.Word)}
 			d.Severity = SevInfo
 		}
 	}
+}
+
+// sourceCode is the ShellCheck code for a computed `source` word, as
+// ShellCheck 0.11.0 decides it: one leading expansion followed by literal
+// text that starts with `/` ("$DIR/lib.sh", "$(pwd)/a.sh", "$X/") is
+// followed as that literal tail, and missing, SC1091; any other computed
+// word ("$X", "$X.sh", "a/$X/b.sh", "$(pwd)") cannot be followed, SC1090.
+func sourceCode(w *tree.Node) string {
+	parts := wordParts(w)
+	if len(parts) < 2 || parts[0].Kind != tree.KParamExp && parts[0].Kind != tree.KCmdSubst {
+		return "SC1090"
+	}
+	var tail strings.Builder
+	for _, p := range parts[1:] {
+		switch p.Kind {
+		case tree.KLit, tree.KSglQuoted:
+			tail.WriteString(p.Value)
+		default:
+			return "SC1090"
+		}
+	}
+	if strings.HasPrefix(tail.String(), "/") {
+		return "SC1091"
+	}
+	return "SC1090"
 }
 
 // notAFile reports a `source` operand that names no file to resolve: a
@@ -233,19 +262,20 @@ func guardedSource(ref SourceRef, lit string, src []byte) bool {
 		case tree.KFuncDecl, tree.KFile:
 			return false
 		case tree.KAndOr:
-			// `T && . P`: the operator just before the source's operand is
-			// `&&` and the test before it is not negated.
-			for k, op := range n.Children {
-				if op != child || k == 0 {
-					continue
-				}
-				prev := n.Children[k-1]
-				a, b := prev.Range.End.Offset, child.Range.Start.Offset
+			// `T && … && . P`: a file test earlier in the chain, every
+			// operator from it to the source's operand `&&`.
+			k := slices.Index(n.Children, child)
+			for ; k > 0; k-- {
+				prev, next := n.Children[k-1], n.Children[k]
+				a, b := prev.Range.End.Offset, next.Range.Start.Offset
 				if a < 0 || b > len(src) || a > b || !strings.Contains(string(src[a:b]), "&&") {
 					return false
 				}
-				return testsPath(prev, lit, src)
+				if testsPath(prev, lit, src) {
+					return true
+				}
 			}
+			return false
 		case tree.KIf:
 			// the `then` part of `if T` (not an else or elif branch)
 			if len(n.Children) > 1 && n.Children[1] == child && testsPath(n.Children[0], lit, src) {
@@ -700,12 +730,164 @@ func (c *diagCtx) oneWordAt(bs []Binding, p *tree.Node) bool {
 		if b.Sym == nil || b.Res == Unresolved || !c.oneWord(b.Sym) || !c.setBefore(b.Sym, p) {
 			return false
 		}
-		if b.Sym.File == "" && funcBody(b.Use.Scope) != nil && c.localInView(p.Name) {
+		if b.Sym.File == "" && funcBody(b.Use.Scope) != nil && c.callerLocal(p.Name, b.Use.Scope) {
 			return false // a caller's local of that name may be what the read sees (dynamic scope)
+		}
+		if funcBody(b.Use.Scope) != nil && c.underLocalIFS(b.Use.Scope) {
+			return false // a caller's (or this function's) `local IFS` applies here
 		}
 		found = true
 	}
 	return found && !c.visibleFlag(func(sc *fileScan) bool { return sc.setsIFS || sc.unsetVars[p.Name] })
+}
+
+// callGraph is the calls between the function symbols in view, built on
+// first need: callees by caller (nil: the top level), each once, and the
+// callers whose calls are not all known (a dynamic call, or a call with no
+// resolved target to a name some workspace file defines). Symbols, not
+// definitions: c calls of a name defined d times are one edge, not c x d.
+type callGraph struct {
+	callees    map[*Symbol][]*Symbol
+	incomplete map[*Symbol]bool
+}
+
+func (c *diagCtx) calls() *callGraph {
+	if c.graph != nil {
+		return c.graph
+	}
+	s := c.s
+	g := &callGraph{callees: map[*Symbol][]*Symbol{}, incomplete: map[*Symbol]bool{}}
+	type edge struct{ from, to *Symbol }
+	seen := map[edge]bool{}
+	symOf := func(file int, sc *Scope) *Symbol {
+		if d := s.callerOfScope(file, sc); d != nil {
+			return s.declSym[d]
+		}
+		return nil
+	}
+	s.visible[c.file].each(func(j int) {
+		resolved := map[*Use]bool{}
+		for k := range s.bindings[j] {
+			b := &s.bindings[j][k]
+			u := b.Use
+			if u.Kind != UseCall || b.Sym == nil || b.Sym.Kind != DeclFunction {
+				continue
+			}
+			if b.Res == Resolved {
+				resolved[u] = true
+			}
+			e := edge{symOf(j, u.Scope), b.Sym}
+			if !seen[e] {
+				seen[e] = true
+				g.callees[e.from] = append(g.callees[e.from], e.to)
+			}
+		}
+		for _, site := range s.dyn[j] {
+			g.incomplete[symOf(j, site.sc)] = true
+		}
+		if ff := s.facts[j]; ff != nil {
+			for _, u := range ff.Uses {
+				if u.Kind == UseCall && u.Via == ViaNone && !u.ViaAlias && !resolved[u] && !IsBuiltin(u.Name) && len(s.funcSyms[u.Name]) > 0 {
+					g.incomplete[symOf(j, u.Scope)] = true
+				}
+			}
+		}
+	})
+	c.graph = g
+	return g
+}
+
+// reachable is every function symbol a call chain from one of starts may
+// reach (the starts included), found breadth first along the call graph;
+// all is set when a function on the way has calls that are not all known.
+type reachable struct {
+	fns map[*Symbol]bool
+	all bool
+}
+
+func (c *diagCtx) reachableFrom(starts []*Symbol) reachable {
+	g := c.calls()
+	r := reachable{fns: map[*Symbol]bool{}}
+	queue := append([]*Symbol(nil), starts...)
+	for len(queue) > 0 {
+		d := queue[0]
+		queue = queue[1:]
+		if r.fns[d] {
+			continue
+		}
+		r.fns[d] = true
+		if g.incomplete[d] {
+			r.all = true
+			return r
+		}
+		queue = append(queue, g.callees[d]...)
+	}
+	return r
+}
+
+// functionsWith returns the functions in view holding a declaration that
+// matches keep (in its own body, not at file level).
+func (c *diagCtx) functionsWith(keep func(*Decl) bool) []*Symbol {
+	s := c.s
+	var out []*Symbol
+	seen := map[*Symbol]bool{}
+	s.visible[c.file].each(func(j int) {
+		ff := s.facts[j]
+		if ff == nil {
+			return
+		}
+		for _, d := range ff.Decls {
+			if d.Kind == DeclVariable && keep(d) {
+				if fn := funcBody(d.Scope); fn != nil {
+					if fd := s.funcDeclOf(j, fn); fd != nil && !seen[s.declSym[fd]] {
+						seen[s.declSym[fd]] = true
+						out = append(out, s.declSym[fd])
+					}
+				}
+			}
+		}
+	})
+	return out
+}
+
+// callerLocal reports whether a function that declares name local may call
+// (through any chain) the function around sc: the read there may see that
+// local.
+func (c *diagCtx) callerLocal(name string, sc *Scope) bool {
+	if !c.visibleFlag(func(f *fileScan) bool { return f.localNames[name] }) {
+		return false
+	}
+	return c.reachesCached(name, sc, func(d *Decl) bool { return d.Attrs.Local && d.Name == name })
+}
+
+// reachesCached reports whether the function around sc is reachable from
+// the functions holding a declaration that matches keep; the reachable set
+// is found once per key.
+func (c *diagCtx) reachesCached(key string, sc *Scope, keep func(*Decl) bool) bool {
+	if c.reach == nil {
+		c.reach = map[string]reachable{}
+	}
+	r, ok := c.reach[key]
+	if !ok {
+		r = c.reachableFrom(c.functionsWith(keep))
+		c.reach[key] = r
+	}
+	if r.all {
+		return true
+	}
+	if d := c.s.callerOfScope(c.file, sc); d != nil {
+		return r.fns[c.s.declSym[d]]
+	}
+	return false
+}
+
+// underLocalIFS reports whether the function around sc declares `local
+// IFS` or may be called from one that does.
+func (c *diagCtx) underLocalIFS(sc *Scope) bool {
+	if !c.visibleFlag(func(f *fileScan) bool { return len(f.localIFS) > 0 }) {
+		return false
+	}
+	return c.reachesCached("\x00IFS", sc, func(d *Decl) bool { return d.Attrs.Local && d.Name == "IFS" })
 }
 
 // visibleFlag reports whether f holds for the scan of some visible file.
@@ -717,11 +899,6 @@ func (c *diagCtx) visibleFlag(f func(*fileScan) bool) bool {
 		}
 	})
 	return found
-}
-
-// localInView reports whether some function in view declares name local.
-func (c *diagCtx) localInView(name string) bool {
-	return c.visibleFlag(func(sc *fileScan) bool { return sc.localNames[name] })
 }
 
 // setBefore reports whether sym is surely set where p reads it: some
@@ -848,14 +1025,90 @@ func oneWordValue(n *tree.Node, src []byte) bool {
 	if len(w.Children) == 1 && w.Children[0].Kind == tree.KArithExp {
 		return true
 	}
+	t, ok := decodedValue(w, src)
+	return ok && safeWord(t)
+}
+
+// decodedValue is the value of a literal word as bash makes it: quote
+// removal of unquoted backslashes, and the escapes of `$'…'` decoded; ok is
+// false for an expansion or an escape it does not decode.
+func decodedValue(w *tree.Node, src []byte) (string, bool) {
+	var sb strings.Builder
 	for _, p := range w.Children {
-		// `$'a\tb'` is stored undecoded: its value may hold any byte
-		if a := p.Range.Start.Offset; p.Kind == tree.KSglQuoted && a >= 0 && a+1 < len(src) && src[a] == '$' {
-			return false
+		switch p.Kind {
+		case tree.KLit:
+			if p.Recovered {
+				return "", false
+			}
+			v := p.Value
+			for i := 0; i < len(v); i++ {
+				if v[i] == '\\' && i+1 < len(v) {
+					i++
+				}
+				sb.WriteByte(v[i])
+			}
+		case tree.KSglQuoted:
+			if a := p.Range.Start.Offset; a >= 0 && a < len(src) && src[a] == '$' {
+				d, ok := ansiC(p.Value)
+				if !ok {
+					return "", false
+				}
+				sb.WriteString(d)
+				continue
+			}
+			sb.WriteString(p.Value)
+		case tree.KDblQuoted:
+			for _, q := range p.Children {
+				if q.Kind != tree.KLit {
+					return "", false
+				}
+				sb.WriteString(q.Value)
+			}
+		default:
+			return "", false
 		}
 	}
-	t, ok := literalText(w)
-	return ok && safeWord(t) && !strings.Contains(t, "\\")
+	return sb.String(), true
+}
+
+// ansiC decodes the backslash escapes of a `$'…'` body that change a byte
+// into whitespace or a quote (\t \n \r \v \f \a \b \e \E \\ \' \");
+// any other escape (numeric, \c, \u) is not decoded and ok is false.
+func ansiC(v string) (string, bool) {
+	var sb strings.Builder
+	for i := 0; i < len(v); i++ {
+		if v[i] != '\\' {
+			sb.WriteByte(v[i])
+			continue
+		}
+		if i+1 >= len(v) {
+			return "", false
+		}
+		i++
+		switch v[i] {
+		case 't':
+			sb.WriteByte('\t')
+		case 'n':
+			sb.WriteByte('\n')
+		case 'r':
+			sb.WriteByte('\r')
+		case 'v':
+			sb.WriteByte('\v')
+		case 'f':
+			sb.WriteByte('\f')
+		case 'a':
+			sb.WriteByte(7)
+		case 'b':
+			sb.WriteByte(8)
+		case 'e', 'E':
+			sb.WriteByte(27)
+		case '\\', '\'', '"', '?':
+			sb.WriteByte(v[i])
+		default:
+			return "", false
+		}
+	}
+	return sb.String(), true
 }
 
 // forOverWords reports a `for` loop over literal words, each safeWord.
@@ -877,7 +1130,7 @@ func forOverWords(n *tree.Node) bool {
 	return words > 0
 }
 
-func safeWord(t string) bool { return t != "" && !strings.ContainsAny(t, " \t\n*?[") }
+func safeWord(t string) bool { return t != "" && !strings.ContainsAny(t, " \t\n\r\v\f*?[") }
 
 // integerAt reports whether the read of p binds to a variable with the
 // integer attribute.

@@ -114,6 +114,14 @@ parts, size = ["f() {"], 5
 while size < M - 20:
     parts.append(f" local v{len(parts)}=1;")
     size += len(parts[-1])
+def numbered(unit, pre=""):  # unit formatted with 0, 1, 2, ... up to about M bytes (distinct function names)
+    parts, size, i = [pre], len(pre), 0
+    while size < M - 64:
+        parts.append(unit.format(i)); size += len(parts[-1]); i += 1
+    return "".join(parts)
+shapes["diag_caller_locals"] = numbered("f{0}(){{ local dir=$1; g{0}; }}\ng{0}(){{ rm -rf $dir; }}\n", "dir=build\n")
+shapes["diag_local_ifs"] = numbered("f{0}(){{ local IFS=,; g{0}; }}\ng{0}(){{ rm -rf $dir; }}\n", "dir=build\n")
+shapes["diag_heredoc_apostrophes"] = rep("cat <<EOF\ndon't $y\nEOF\necho '$x'\n", "f(){ local x=1; }\n", "f\n")
 shapes["diag_distinct_locals"] = "".join(parts) + " }\nf\n"
 for k, v in shapes.items():
     open(os.path.join(out, k + ".sh"), "w").write(v)
