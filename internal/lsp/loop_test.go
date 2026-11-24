@@ -422,7 +422,15 @@ func TestPostRunsOnLoop(t *testing.T) {
 		c.change("a.sh", fullText(fmt.Sprintf("a%d_fn() { :; }\n", i)))
 	}
 	<-done
-	c.symbols("") // everything before it has been handled
+	// Posted closures have a queue of their own, so a request answered after them
+	// proves nothing; a closure posted last, behind the 200, does.
+	fin := make(chan struct{})
+	srv.post(func() { close(fin) })
+	select {
+	case <-fin:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the closure posted last did not run")
+	}
 	if ran.Load() != 200 {
 		t.Fatalf("%d closures ran, want 200", ran.Load())
 	}
@@ -755,3 +763,81 @@ func TestHeldRequestsBounded(t *testing.T) {
 	}
 	c.waitReply(fmt.Sprint(100000 + total - 1))
 }
+
+// ---- exit while the held queue is full; the order of an answer ----
+
+func rawFrame(body string) []byte {
+	return []byte(fmt.Sprintf("Content-Length: %d\r\n\r\n%s", len(body), body))
+}
+
+// With the held queue full and a folder job blocked, `exit` is still honoured
+// at once; behind a held `shutdown` it waits for the job.
+func TestExitWhileHeldQueueIsFull(t *testing.T) {
+	for _, withShutdown := range []bool{false, true} {
+		t.Run(fmt.Sprint("shutdown=", withShutdown), func(t *testing.T) {
+			g := newGate()
+			setHooks(t, nil, g, nil)
+			root := oneFileRoot(t, "a.sh", "a_fn() { :; }\n")
+			second := oneFileRoot(t, "b.sh", "b_fn() { :; }\n")
+			c := clientWith(t, clientCfg{root: root})
+			c.symbols("")
+			c.folders([]string{second}, nil)
+			g.waitEntered(t)
+			go func() { // the requests (and the shutdown) are held behind the blocked job; the exit is read behind them
+				if withShutdown {
+					c.in.Write(rawFrame(`{"jsonrpc":"2.0","id":5000,"method":"shutdown"}`))
+				}
+				for i := 0; i < 300; i++ {
+					c.in.Write(rawFrame(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"workspace/symbol","params":{"query":""}}`, 10000+i)))
+				}
+				c.in.Write(rawFrame(`{"jsonrpc":"2.0","method":"exit"}`))
+			}()
+			if withShutdown {
+				select {
+				case err := <-c.done:
+					t.Fatalf("exit behind a held shutdown was taken while the job was blocked: %v", err)
+				case <-time.After(500 * time.Millisecond):
+				}
+				g.release()
+				select {
+				case <-c.done:
+				case <-time.After(10 * time.Second):
+					t.Fatal("serve did not return after the job ended")
+				}
+				return
+			}
+			select {
+			case err := <-c.done:
+				if err == nil || !strings.Contains(err.Error(), "exit before shutdown") {
+					t.Fatalf("serve returned %v", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("exit was not honoured with the held queue full and the folder job blocked")
+			}
+		})
+	}
+}
+
+// A reply leaves the live set before it is written: a client may reuse the id
+// the moment it reads the reply.
+func TestAnswerLeavesLiveSetBeforeReply(t *testing.T) {
+	id := json.RawMessage(`41`)
+	var s *server
+	var stillLive atomic.Bool
+	w := writerFunc(func(p []byte) (int, error) {
+		if s.liveOf(idKey(id)) != nil {
+			stillLive.Store(true)
+		}
+		return len(p), nil
+	})
+	s = newServer(strings.NewReader(""), w, nil, "test")
+	s.live[idKey(id)] = &liveReq{done: make(chan struct{})}
+	s.answer(id, "x", nil)
+	if stillLive.Load() {
+		t.Fatal("the reply was written while its request was still in the live set")
+	}
+}
+
+type writerFunc func(p []byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }

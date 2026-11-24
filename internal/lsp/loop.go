@@ -377,11 +377,19 @@ func (s *server) serve() error {
 	defer close(s.done)
 	defer s.baseCancel() // kills the ShellCheck runs still going
 	for !s.exit {
-		in := s.inbound
+		in, quit := s.inbound, (<-chan struct{})(nil)
 		if len(s.held) >= inboundCap {
-			in = nil // enough is held: stop taking input until a folder job ends
+			// Enough is held: stop taking input until a folder job ends, unless
+			// `exit` has been read. Then take what is queued (the reader has
+			// stopped, so it is bounded) to reach the `exit`.
+			select {
+			case <-s.quit:
+			default:
+				in, quit = nil, s.quit
+			}
 		}
 		select {
+		case <-quit: // re-evaluate: input is taken now
 		case it := <-in:
 			if err := s.step(it); err != nil {
 				return err
