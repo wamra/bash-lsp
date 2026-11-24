@@ -84,11 +84,11 @@ func (p Param) Label() string {
 
 // SignatureAt describes the script function whose call has the cursor after
 // its command word: in the argument list, or in the blanks after it on the
-// same line. active is the 0-based index of the argument under the cursor,
-// at most len(sig.Params) (the `[args...]` position) when the function is
-// variadic, else at most the last parameter. The innermost call decides: inside `f $(g ▮)` it is g's. ok is
-// false on the command word itself, outside a call, and for a call that is
-// not bound to a function.
+// same line. active is the 0-based index of the argument under the cursor. It
+// is at most len(sig.Params) (the `[args...]` position) when the function is
+// variadic, else at most the last parameter. The innermost call decides:
+// inside `f $(g ▮)` it is g's. ok is false on the command word itself,
+// outside a call, and for a call that is not bound to a function.
 func (s *Snapshot) SignatureAt(path string, offset int) (sig FuncSignature, active int, ok bool) {
 	file, found := s.idx[path]
 	if !found {
@@ -98,14 +98,14 @@ func (s *Snapshot) SignatureAt(path string, offset int) (sig FuncSignature, acti
 	var best *Use
 	var bestWords []*tree.Node
 	for _, u := range s.facts[file].Uses {
-		if u.Kind != UseCall || u.Via != ViaNone || u.ViaAlias || u.Node == nil || u.Node.Kind != tree.KCall {
+		if u.Kind != UseCall || u.Via != ViaNone || u.ViaAlias || u.Node == nil {
 			continue
 		}
 		if u.Range.End.Offset >= offset || (best != nil && u.Range.Start.Offset <= best.Range.Start.Offset) {
 			continue
 		}
 		words := callWords(u.Node)
-		if len(words) == 0 || words[0].Range.Start.Offset != u.Range.Start.Offset {
+		if len(words) == 0 {
 			continue
 		}
 		end := words[len(words)-1].Range.End.Offset
@@ -127,11 +127,6 @@ func (s *Snapshot) SignatureAt(path string, offset int) (sig FuncSignature, acti
 	sig, ok = s.Signature(sym)
 	if !ok || sym.Decls[0].Name != best.Name {
 		return FuncSignature{}, 0, false // a call through an alias names the alias
-	}
-	for _, r := range s.edgesAt(file, best) {
-		if r.rel == RelAliases {
-			return FuncSignature{}, 0, false
-		}
 	}
 	for _, w := range bestWords[1:] {
 		if w.Range.End.Offset < offset {

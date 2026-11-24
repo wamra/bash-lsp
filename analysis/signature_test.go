@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // sigAt builds src (the cursor is the ▮ mark, removed) as one file and asks
@@ -168,16 +169,32 @@ func TestSignatureThroughAliasIsNone(t *testing.T) {
 }
 
 func TestSignatureHugeParameterIndexBounded(t *testing.T) {
+	// Its own deadline: a loop over the index would otherwise run until the
+	// whole package times out.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		hugeParameterIndexBounded(t)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("a huge parameter index is not bounded: no answer in 10 s")
+	}
+}
+
+func hugeParameterIndexBounded(t *testing.T) {
+	t.Helper()
 	src := "f() { echo \"${99999999}\" \"${2147483647}\" \"$1\"; }\nf ▮"
 	sig, _, ok := sigAt(t, src)
 	if !ok || len(sig.Params) != maxParams || !sig.Variadic || len(sig.Label) > 64*10+64 {
-		t.Fatalf("params %d variadic %v label %d bytes ok %v", len(sig.Params), sig.Variadic, len(sig.Label), ok)
+		t.Errorf("params %d variadic %v label %d bytes ok %v", len(sig.Params), sig.Variadic, len(sig.Label), ok)
 	}
 	q := buildMem(t, map[string]string{"a.sh": "f() { echo \"${99999999}\"; }\nf x\n"})
 	p := filepath.Join(q.root, "a.sh")
 	md, _, ok := q.s.Hover(p, strings.Index("f() { echo \"${99999999}\"; }\nf x\n", "f()")+1)
 	if !ok || len(md) > 2000 {
-		t.Fatalf("hover %d bytes ok %v", len(md), ok)
+		t.Errorf("hover %d bytes ok %v", len(md), ok)
 	}
 }
 
