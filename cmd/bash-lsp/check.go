@@ -598,7 +598,7 @@ func doctorTools(root string, st config.Settings, prof *extool.Profile, stdout i
 		fmt.Fprintf(stdout, "  skipped: %s\n", s)
 	}
 	for _, line := range helpdoc.New(extool.Run, st, prof, roots).Lines() {
-		fmt.Fprintln(stdout, line)
+		fmt.Fprintln(stdout, redact.String(line))
 	}
 	switch ci, ref, ok := extool.Find("code-index", st.CodeIndexPath, prof, roots); {
 	case ref != nil:

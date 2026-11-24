@@ -46,7 +46,7 @@ func TestParseHelpPicksExactTopic(t *testing.T) {
 	if strings.Contains(d.Synopsis, "readonly") {
 		t.Fatalf("the readonly section leaked into the synopsis: %q", d.Synopsis)
 	}
-	want := []string{"-e", "-r", "-s", "-u fd", "-t timeout", "-p prompt", "-a array", "-n nchars", "-d delim"}
+	want := []string{"-e", "-r", "-s", "-u fd", "-t secs", "-p text", "-a arr", "-n count", "-d char"}
 	if got := flagsOf(d); !slices.Equal(got, want) {
 		t.Fatalf("options %q, want %q", got, want)
 	}

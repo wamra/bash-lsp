@@ -185,19 +185,49 @@ func (l *Lookup) Available() (help, man bool, why string) {
 	return help, man, strings.Join(parts, "; ")
 }
 
-// Builtin looks up a bash builtin or reserved word with `help`. A name that
-// is not on the builtin list starts nothing.
-func (l *Lookup) Builtin(ctx context.Context, name string) (Doc, bool) {
+// gate says whether a lookup of kind ("builtin" or "command") for name may
+// start a program, logging each distinct refusal once. It starts nothing.
+func (l *Lookup) gate(kind, name string) bool {
 	if !l.st.Help.Enabled {
 		l.logOnce("lookups are off (help.enabled = false)")
-		return Doc{}, false
+		return false
 	}
 	if onWindows {
 		l.logOnce("lookups are not supported on Windows")
-		return Doc{}, false
+		return false
 	}
-	if !analysis.IsBuiltin(name) || len(name) > maxName {
-		l.logOnce("a lookup was refused: the name is not a builtin")
+	if kind == "builtin" {
+		if !analysis.IsBuiltin(name) || len(name) > maxName {
+			l.logOnce("a lookup was refused: the name is not a builtin")
+			return false
+		}
+		return true
+	}
+	if len(name) > maxName || !commandName.MatchString(name) {
+		l.logOnce("a lookup was refused: the name is not a plain command word")
+		return false
+	}
+	path, found := l.prof.Lookup(name)
+	if !found {
+		l.logOnce("a lookup was refused: the name is not on the PATH profile")
+		return false
+	}
+	if l.insideRoot(path) {
+		l.logOnce("a lookup was refused: the command lies inside a workspace folder")
+		return false
+	}
+	return true
+}
+
+// Allowed reports whether Builtin (kind "builtin") or Command (kind
+// "command") would be willing to start a program for name. It starts nothing,
+// so a caller can refuse a word before it spends a goroutine.
+func (l *Lookup) Allowed(kind, name string) bool { return l.gate(kind, name) }
+
+// Builtin looks up a bash builtin or reserved word with `help`. A name that
+// is not on the builtin list starts nothing.
+func (l *Lookup) Builtin(ctx context.Context, name string) (Doc, bool) {
+	if !l.gate("builtin", name) {
 		return Doc{}, false
 	}
 	k := key("builtin", name)
@@ -216,25 +246,7 @@ func (l *Lookup) Builtin(ctx context.Context, name string) (Doc, bool) {
 // and the profile must find a program of that name outside every workspace
 // folder.
 func (l *Lookup) Command(ctx context.Context, name string) (Doc, bool) {
-	if !l.st.Help.Enabled {
-		l.logOnce("lookups are off (help.enabled = false)")
-		return Doc{}, false
-	}
-	if onWindows {
-		l.logOnce("lookups are not supported on Windows")
-		return Doc{}, false
-	}
-	if len(name) > maxName || !commandName.MatchString(name) {
-		l.logOnce("a lookup was refused: the name is not a plain command word")
-		return Doc{}, false
-	}
-	path, found := l.prof.Lookup(name)
-	if !found {
-		l.logOnce("a lookup was refused: the name is not on the PATH profile")
-		return Doc{}, false
-	}
-	if l.insideRoot(path) {
-		l.logOnce("a lookup was refused: the command lies inside a workspace folder")
+	if !l.gate("command", name) {
 		return Doc{}, false
 	}
 	k := key("command", name)
@@ -290,13 +302,31 @@ func (l *Lookup) lookup(ctx context.Context, k string, t extool.Tool, args []str
 	if ctx.Err() != nil {
 		return Doc{}, false // cancelled: nothing is learned, nothing is cached
 	}
-	// A page longer than the cap still has its first lines.
-	if capped := errors.Is(err, extool.ErrOutputCap); err == nil && res.Exit == 0 || capped {
-		if d, ok := parse(name, res.Stdout); ok {
+	// A failed run (timeout, start failure, signal) says nothing about the
+	// page and is not cached. A page longer than the cap still has its first
+	// lines. A non-zero exit status is a miss, and so is a page that does not
+	// parse; both are cached.
+	capped := errors.Is(err, extool.ErrOutputCap)
+	if err != nil && !capped {
+		return Doc{}, false
+	}
+	if capped || res.Exit == 0 {
+		if d, ok := safeParse(parse, name, res.Stdout); ok {
 			l.store(k, d, true)
 			return d, true
 		}
 	}
 	l.store(k, Doc{}, false)
 	return Doc{}, false
+}
+
+// safeParse runs parse and turns a panic into a miss, so a page the parser
+// cannot read is cached as a miss instead of running the program again.
+func safeParse(parse func(string, []byte) (Doc, bool), name string, out []byte) (d Doc, ok bool) {
+	defer func() {
+		if recover() != nil {
+			d, ok = Doc{}, false
+		}
+	}()
+	return parse(name, out)
 }

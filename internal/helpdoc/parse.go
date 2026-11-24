@@ -145,14 +145,18 @@ func ParseMan(name string, out []byte) (Doc, bool) {
 			continue
 		}
 		rest = rest[len(m):]
-		flag, arg := m, ""
+		flag, arg := strings.TrimSpace(m), ""
 		if k := strings.IndexAny(flag, "=["); k > 0 {
-			flag, arg = m[:k], strings.Trim(m[k:], "=[]<>_")
+			flag, arg = flag[:k], strings.Trim(flag[k:], "=[]<>_ \u00a0")
 		}
 		if arg == "" && strings.HasPrefix(rest, " ") && !strings.HasPrefix(rest, "  ") {
-			tok := strings.Fields(rest)[0]
-			after := rest[1+len(tok):]
-			if !strings.HasPrefix(tok, "-") && (after == "" || strings.HasPrefix(after, "  ")) {
+			fields := strings.Fields(rest)
+			tok, after := "", ""
+			if len(fields) > 0 {
+				tok = fields[0]
+				after = rest[strings.Index(rest, tok)+len(tok):]
+			}
+			if tok != "" && !strings.HasPrefix(tok, "-") && (after == "" || strings.HasPrefix(after, "  ")) {
 				arg = strings.Trim(tok, "<>[]_")
 				rest = after
 			}

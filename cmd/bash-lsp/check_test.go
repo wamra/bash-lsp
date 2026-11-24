@@ -586,3 +586,18 @@ func TestDoctorHelpLines(t *testing.T) {
 	out = runOK(t, "doctor", root)
 	wantLines(t, out, "help: disabled (help.enabled = false)\n", "man: disabled (help.enabled = false)\n")
 }
+
+func TestDoctorHelpLinesAreRedacted(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the helpers are not used on Windows")
+	}
+	emptyPath(t)
+	root := t.TempDir()
+	putFile(t, root, "a.sh", "echo\n")
+	userConfig(t, "[help]\nbash_path = \"/nowhere/token=sekrit123456/bash\"\nman_path = \"/nowhere/token=sekrit123456/man\"\n")
+	out := runOK(t, "doctor", root)
+	if strings.Contains(out, "sekrit123456") {
+		t.Errorf("doctor holds the secret:\n%s", out)
+	}
+	wantLines(t, out, "help: refused ", "man: refused ")
+}

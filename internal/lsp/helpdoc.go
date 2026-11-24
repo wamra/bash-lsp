@@ -57,6 +57,9 @@ func (s *server) helpHover(uri string, snap *analysis.Snapshot, path string, off
 	if analysis.IsBuiltin(name) {
 		kind = "builtin"
 	}
+	if !l.Allowed(kind, name) {
+		return nil, nil // refused here, on the loop: no goroutine for it
+	}
 	rng := s.rangeIn(converters{}, snap, path, wrng)
 	if doc, found, known := l.Cached(kind, name); known {
 		if !found {
