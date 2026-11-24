@@ -299,7 +299,7 @@ func newMapper(f *tree.File) *mapper {
 
 // offset is the byte offset of the 1-based line and column; a line past the
 // end gives the end of the file, a column past the end of the line the end
-// of the line (before its newline).
+// of the line (before its line ending).
 func (m *mapper) offset(line, col int) int {
 	if line < 1 {
 		return 0
@@ -310,6 +310,9 @@ func (m *mapper) offset(line, col int) int {
 	start, end := m.lines[line-1], len(m.src)
 	if line < len(m.lines) {
 		end = m.lines[line] - 1 // the "\n"
+	}
+	if end > start && m.src[end-1] == '\r' {
+		end-- // a CRLF line ends before its CR
 	}
 	if col <= 1 {
 		return start

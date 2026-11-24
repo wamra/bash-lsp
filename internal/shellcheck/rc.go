@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/wamra/bash-lsp/internal/extool"
 )
@@ -23,11 +24,12 @@ import (
 //
 // The grammar is the one ShellCheck 0.11.0 reads for those keys (verified with
 // --rcfile on files of each shape): a # starts a comment; a value may be in
-// single or double quotes; one line may hold several key=value words; the
+// single or double quotes; one line may hold several key=value words, separated by space or tab; the
 // disable value is a comma-separated list of codes (SC2086 or 2086), ranges
 // (SC2000-SC2010) or the lower-case word all. Where ShellCheck rejects a line
 // (spaces around = or after a comma, an empty entry, a bad code, an
-// unbalanced quote) it ignores the whole file; the server then applies
+// unbalanced quote, a lone carriage return, a key with a character other than
+// letters and hyphens) it ignores the whole file; the server then applies
 // nothing from that file and says so. An inverted range disables nothing.
 // Unknown keys are ignored, as ShellCheck does. Unlike ShellCheck, which uses
 // only the nearest file, the files up to the workspace root are all read
@@ -96,26 +98,28 @@ func readRC(path string, roots []string) rcInfo {
 	return info
 }
 
-// openRCFile opens file for reading if it is a regular file, or a link whose
-// target is inside root. ok is false, with a reason that quotes no file
-// content, when it is not read.
+// openRCFile opens file for reading if it is a regular file whose real
+// location (a link in the file or in any directory above it resolved) is
+// inside root. A missing file is not an error and gives no reason; f is nil
+// with a reason, which quotes no file content, for every other file that is
+// not read.
 func openRCFile(file, root string) (f *os.File, why string) {
 	fi, err := os.Lstat(file)
 	if err != nil {
 		return nil, ""
 	}
-	target := file
-	if fi.Mode()&os.ModeSymlink != 0 {
-		resolved, err := filepath.EvalSymlinks(file)
-		if err != nil || !extool.Inside(resolved, root) {
+	resolved, err := filepath.EvalSymlinks(file)
+	if err != nil {
+		return nil, file + ": a link that cannot be resolved (its target is missing, or the links loop); not followed"
+	}
+	if !extool.Inside(resolved, root) {
+		if fi.Mode()&os.ModeSymlink != 0 {
 			return nil, file + ": a link that leads outside the workspace folder; not followed"
 		}
-		target = resolved
-	} else if !fi.Mode().IsRegular() {
-		return nil, ""
+		return nil, file + ": reached through a directory link that leads outside the workspace folder; not read"
 	}
-	if f, err = openRC(target); err != nil {
-		return nil, ""
+	if f, err = openRC(resolved); err != nil {
+		return nil, file + ": not a regular file or not readable; not read"
 	}
 	return f, ""
 }
@@ -149,9 +153,17 @@ func (info *rcInfo) addFile(file, root string, seen map[string]bool) {
 		return
 	}
 	var one rcInfo
-	for n, line := range strings.Split(string(data), "\n") {
+	lines := strings.Split(string(data), "\n")
+	for n, line := range lines {
+		if n < len(lines)-1 {
+			line = strings.TrimSuffix(line, "\r") // a CR is only read before the line feed
+		}
 		if err := one.addLine(line, seen); err != nil {
-			info.notes = append(info.notes, fmt.Sprintf("%s:%d: %v; ShellCheck ignores such a file, so nothing from it is applied", file, n+1, err))
+			why := "ShellCheck ignores such a file, so nothing from it is applied"
+			if errors.Is(err, errOddSpace) {
+				why = "ShellCheck reads this differently from the server, so nothing from the file is applied"
+			}
+			info.notes = append(info.notes, fmt.Sprintf("%s:%d: %v; %s", file, n+1, err, why))
 			return
 		}
 	}
@@ -161,16 +173,33 @@ func (info *rcInfo) addFile(file, root string, seen map[string]bool) {
 	info.notes = append(info.notes, one.notes...)
 }
 
-var errBadRC = errors.New("not valid rc syntax")
+var (
+	errBadRC    = errors.New("not valid rc syntax")
+	errOddSpace = errors.New("a space-like character other than space and tab")
+)
 
-// addLine parses one line; an error means ShellCheck rejects the file.
+// addLine parses one line (without its line feed, and without the CR of a
+// CRLF ending); an error means ShellCheck rejects the file, or reads the line
+// in a way the server does not follow. Words are separated by space and tab
+// only: ShellCheck rejects a lone CR anywhere, a key that is not letters and
+// hyphens, and a space-like character (vertical tab, form feed, NEL,
+// ideographic space and the like) at the start of a word, and takes it
+// elsewhere in ways that differ.
 func (info *rcInfo) addLine(line string, seen map[string]bool) error {
+	if strings.IndexByte(line, '\r') >= 0 {
+		return errBadRC
+	}
 	if i := strings.IndexByte(line, '#'); i >= 0 {
 		line = line[:i]
 	}
-	for _, word := range strings.Fields(line) {
+	for _, r := range line {
+		if r != ' ' && r != '\t' && unicode.IsSpace(r) {
+			return errOddSpace
+		}
+	}
+	for _, word := range strings.FieldsFunc(line, func(r rune) bool { return r == ' ' || r == '\t' }) {
 		key, val, ok := strings.Cut(word, "=")
-		if !ok || key == "" {
+		if !ok || key == "" || strings.IndexFunc(key, func(r rune) bool { return r != '-' && !unicode.IsLetter(r) }) >= 0 {
 			return errBadRC
 		}
 		if len(val) > 0 && (val[0] == '"' || val[0] == '\'') {

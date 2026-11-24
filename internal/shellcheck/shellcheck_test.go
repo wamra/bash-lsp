@@ -426,7 +426,7 @@ func TestParseCodesLevelsAndFiles(t *testing.T) {
 
 // isolateHome points HOME and XDG_CONFIG_HOME at an empty directory: a test
 // that runs the real ShellCheck must not read the developer's own rc.
-func isolateHome(t *testing.T) {
+func isolateHome(t testing.TB) {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -539,6 +539,7 @@ func BenchmarkCheck(b *testing.B) {
 	if !ok {
 		b.Skip("shellcheck is not installed")
 	}
+	isolateHome(b)
 	r := New(tool, Options{})
 	path, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "ac13", "main.sh"))
 	src, err := os.ReadFile(path)
@@ -1011,5 +1012,136 @@ func TestParseGrowth(t *testing.T) {
 		if overall := math.Cbrt(float64(times[3]) / float64(max(times[0], time.Millisecond))); overall > 2.5 {
 			t.Errorf("pad %q: grew x%.2f per doubling over three doublings (%v)", pad, overall, times)
 		}
+	}
+}
+
+// --- rc hardening: nothing is applied that ShellCheck 0.11.0 would not apply ---
+
+// ShellCheck ignores a whole rc file for a lone carriage return (a CR is only
+// accepted before the line feed), for a key with a character other than a
+// letter or a hyphen, and for a space-like character at the start of a word.
+// The server applies nothing from such a file, and nothing from a file with a
+// space-like character other than space and tab between words (ShellCheck
+// would apply only part of it).
+func TestReadRCRejectsWhatShellCheckRejects(t *testing.T) {
+	for _, text := range []string{
+		"disable=SC2086\rdisable=SC2154\n",
+		"disable=SC2086\r",
+		"disable=SC2086\r\r\n",
+		"# c\rdisable=SC2154\n",
+		"disable=SC2086 # c\rd\n",
+		"disable=SC2086\vdisable=SC2154\n",
+		"disable=SC2086\fdisable=SC2154\n",
+		"disable=SC2086\u0085disable=SC2154\n",
+		"disable=SC2086　disable=SC2154\n",
+		"disable=SC2086 disable=SC2154\n",
+		"disable=SC2086\n\vdisable=SC2154\n",
+		"disable=SC2086\n　disable=SC2154\n",
+		"a.b=1\ndisable=SC2154\n",
+		"foo_bar=1\ndisable=SC2154\n",
+		"foo1=1\ndisable=SC2154\n",
+	} {
+		root := t.TempDir()
+		writeFile(t, root, ".shellcheckrc", text, 0o644)
+		rc := readRC(filepath.Join(root, "a.sh"), []string{root})
+		if rc.disabled(2154) || rc.disabled(2086) || len(rc.notes) == 0 {
+			t.Errorf("%q: applied or unnoticed (%v)", text, rc.notes)
+		}
+	}
+	// A hyphenated or capitalised key is fine, as is CRLF.
+	root := t.TempDir()
+	writeFile(t, root, ".shellcheckrc", "source-path=x\nFoo=1\ndisable=SC2154\r\n# c\r\ndisable=SC2086\r\n", 0o644)
+	if rc := readRC(filepath.Join(root, "a.sh"), []string{root}); !rc.disabled(2154) || !rc.disabled(2086) {
+		t.Errorf("a valid CRLF file was not applied: %+v", rc)
+	}
+}
+
+// A link that cannot be resolved is not called a link that leads outside; a
+// file that is not regular (FIFO, directory) is noticed, not skipped silently.
+func TestReadRCNotices(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("links and FIFOs")
+	}
+	root := t.TempDir()
+	if err := os.Symlink(filepath.Join(root, "nowhere"), filepath.Join(root, ".shellcheckrc")); err != nil {
+		t.Fatal(err)
+	}
+	rc := readRC(filepath.Join(root, "a.sh"), []string{root})
+	all := strings.Join(rc.notes, "\n")
+	if len(rc.notes) != 1 || strings.Contains(all, "outside") || !strings.Contains(all, "cannot be resolved") {
+		t.Errorf("dangling link: %q", rc.notes)
+	}
+	loop := t.TempDir()
+	if err := os.Symlink(filepath.Join(loop, ".shellcheckrc"), filepath.Join(loop, ".shellcheckrc")); err != nil {
+		t.Fatal(err)
+	}
+	if rc := readRC(filepath.Join(loop, "a.sh"), []string{loop}); len(rc.notes) != 1 || strings.Contains(rc.notes[0], "outside") {
+		t.Errorf("link loop: %q", rc.notes)
+	}
+	fifoDir := t.TempDir()
+	if err := mkfifo(filepath.Join(fifoDir, ".shellcheckrc")); err != nil {
+		t.Skip(err)
+	}
+	done := make(chan rcInfo, 1)
+	go func() { done <- readRC(filepath.Join(fifoDir, "a.sh"), []string{fifoDir}) }()
+	select {
+	case rc := <-done:
+		if len(rc.notes) != 1 || !strings.Contains(rc.notes[0], "not a regular file") {
+			t.Errorf("FIFO: %q", rc.notes)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("readRC blocked on a FIFO")
+	}
+	dirDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dirDir, ".shellcheckrc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if rc := readRC(filepath.Join(dirDir, "a.sh"), []string{dirDir}); len(rc.notes) != 1 || !strings.Contains(rc.notes[0], "not a regular file") {
+		t.Errorf("directory: %q", rc.notes)
+	}
+}
+
+// A directory inside the root that is a link to a directory outside it does
+// not hand over its .shellcheckrc.
+func TestReadRCSymlinkedDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("links")
+	}
+	base := t.TempDir()
+	root := filepath.Join(base, "ws")
+	writeFile(t, base, "outside/.shellcheckrc", "disable=SC2086\nenable=secret-check\n", 0o644)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(base, "outside"), filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	rc := readRC(filepath.Join(root, "link", "a.sh"), []string{root})
+	if rc.disabled(2086) || len(rc.enable) != 0 {
+		t.Error("an rc in a linked directory outside the root was read")
+	}
+	if all := strings.Join(rc.notes, "\n"); strings.Contains(all, "secret-check") || len(rc.notes) == 0 {
+		t.Errorf("notes = %q", rc.notes)
+	}
+	// A link to a directory inside the root is read.
+	writeFile(t, root, "real/.shellcheckrc", "disable=SC2154\n", 0o644)
+	if err := os.Symlink(filepath.Join(root, "real"), filepath.Join(root, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	if rc := readRC(filepath.Join(root, "alias", "a.sh"), []string{root}); !rc.disabled(2154) {
+		t.Errorf("an rc in a directory linked inside the root was not read: %q", rc.notes)
+	}
+}
+
+// A column past the end of a CRLF line is the end of the text, before the CR.
+func TestParseClampedColumnOnCRLFLine(t *testing.T) {
+	f := bashFile("/x/a.sh", "echo $a\r\necho b\r\n")
+	js := `{"comments":[{"file":"-","line":1,"endLine":1,"column":9999,"endColumn":9999,"level":"info","code":1,"message":"m","fix":null}]}`
+	ds, err := Parse(f, []byte(js))
+	if err != nil || len(ds) != 1 {
+		t.Fatalf("%v %v", ds, err)
+	}
+	if want := len("echo $a"); ds[0].Range.Start.Offset != want || ds[0].Range.End.Offset != want {
+		t.Errorf("range %+v, want both at %d", ds[0].Range, want)
 	}
 }
