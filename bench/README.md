@@ -47,6 +47,15 @@ unbuffered. With a buffered reader a notification and a reply arriving in one
 read left the reply invisible to `select()` and a call stalled for its whole
 timeout. No case expectation was changed.
 
+That unbuffered reader (`_readn` in `bench.py`) also appends each raw read to
+the message so far, so reading one message costs time quadratic in its size.
+It does not matter for the documents the benchmark opens, but it does for a
+very large `publishDiagnostics`: a 2 MiB file with 220,000 findings (32 MB of
+JSON, before the 2,000-findings cap of milestone 3) looked super-linear in
+`scale.py`, while a buffered client measured it linear. `bench.py` stays
+frozen. A measurement of publish size or diagnostics volume must use a client
+that reads with a buffer.
+
 **Which median.** Every workspace-edit median quoted in this file for
 milestone 2b (and in `docs/m2b-acceptance.md`) is the median of all raw
 samples of the file (30 runs x 6 edits = 180 per kind), the statistic
