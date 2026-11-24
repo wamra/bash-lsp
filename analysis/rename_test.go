@@ -435,8 +435,6 @@ func TestRenameEditsStayInClosure(t *testing.T) {
 }
 
 func TestRenameWarnings(t *testing.T) {
-	q := buildCorpus(t)
-	// dyn.sh sources through a variable only when the path is dynamic; app.sh has a glob loader.
 	q2 := buildMem(t, map[string]string{"a.sh": ". \"$X\"\nf() { :; }\nf\nexport V=1\n"})
 	plan, err := q2.plan("a.sh", "f()", 0, 0, "g")
 	if err != nil {
@@ -450,7 +448,6 @@ func TestRenameWarnings(t *testing.T) {
 	wantSeq(t, plan.Warnings,
 		"graph incomplete: a dynamic source may call V",
 		"exported: processes started from these scripts may read V")
-	_ = q
 }
 
 func TestRenameSitesCapped(t *testing.T) {
@@ -532,4 +529,16 @@ func TestRenameGlobalVariable(t *testing.T) {
 	// An environment read of the new name in view would join the variable.
 	q2 := buildMem(t, map[string]string{"a.sh": "G=1\necho \"$PATH_X\"\n"})
 	q2.refuses(RefuseConflict, "a.sh", "G=1", 0, 0, "PATH_X")
+}
+
+// A command word written with an escape or quotes calls f, but its text is not
+// exactly the name: it is never an edit, whatever the binding says.
+func TestRenameInexactCommandWordsExcluded(t *testing.T) {
+	q := buildMem(t, map[string]string{"a.sh": "f() { :; }\n\\f\n\"f\"\nf\n"})
+	plan, err := q.plan("a.sh", "f()", 0, 0, "g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSeq(t, q.editStrs(plan), "a.sh:1", "a.sh:4")
+	wantSeq(t, q.exclStrs(plan), "a.sh:2 resolved/inexact-name", "a.sh:3 resolved/inexact-name")
 }

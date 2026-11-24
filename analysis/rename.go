@@ -302,7 +302,7 @@ func (s *Snapshot) addEdit(r *renameSet, file int, rng tree.Range, old string) e
 	}
 	loc := Location{Path: s.paths[file], Range: rng}
 	if text := s.siteText(file, rng); text != old {
-		r.excl = append(r.excl, RenameExclusion{Loc: loc, Res: Candidate, Reason: reasonInexactName, Text: text})
+		r.excl = append(r.excl, RenameExclusion{Loc: loc, Res: Resolved, Reason: reasonInexactName, Text: text})
 		return nil
 	}
 	r.edits = append(r.edits, loc)
