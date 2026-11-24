@@ -700,3 +700,44 @@ func TestSetAllexportInSubshellBoundary(t *testing.T) {
 	expectRule(t, sh("#!/bin/bash\ndeclare -p z\nset -a | cat\nx=1\necho hi\n"), "x.sh", "WB1202", "4:x")
 	expectRule(t, sh("#!/bin/bash\ndeclare -p z\nset -a\nx=1\necho hi\n"), "x.sh", "WB1202")
 }
+
+// Several top-level guard callees spend one step budget; the order they are
+// searched in must not depend on map order: fresh snapshots of one source give
+// one LimitsHit line and one set of findings.
+func multiGuardShape(chain, users int) string {
+	var sb strings.Builder
+	sb.WriteString("#!/bin/bash\n")
+	sb.WriteString("chk() { [ \"${BASH_VERSINFO[0]}\" -ge 4 ] || exit 1; }\n")
+	for _, p := range []string{"w", "x", "y", "z"} {
+		for i := 0; i < chain; i++ {
+			next := "chk"
+			if i+1 < chain {
+				next = fmt.Sprintf("%s%d", p, i+1)
+			}
+			fmt.Fprintf(&sb, "%s%d() { %s; }\n", p, i, next)
+		}
+	}
+	sb.WriteString("q0() { chk; }\nw0\nx0\nq0\ny0\nz0\n")
+	for i := 0; i < users; i++ {
+		fmt.Fprintf(&sb, "u%d() { declare -A m%d; }\n", i, i)
+	}
+	return sb.String()
+}
+
+func TestVersionGuardSearchIsDeterministic(t *testing.T) {
+	src := multiGuardShape(300, 600)
+	lines, finds := map[string]bool{}, map[string]bool{}
+	for run := 0; run < 40; run++ {
+		s := diagWorld(sh(src), Options{})
+		ds := s.Diagnostics(diagRoot+"/x.sh", DiagOptions{Target: VersionRange{Min: BashVersion{Major: 3, Minor: 2}}})
+		lines[strings.Join(limitLines(s, "version-guard search"), "|")] = true
+		var keys []string
+		for _, d := range ds {
+			keys = append(keys, fmt.Sprintf("%s:%d", d.Rule, d.Range.Start.Line))
+		}
+		finds[strings.Join(keys, ",")] = true
+	}
+	if len(lines) != 1 || len(finds) != 1 {
+		t.Fatalf("%d distinct LimitsHit lines, %d distinct finding sets over 40 fresh snapshots", len(lines), len(finds))
+	}
+}

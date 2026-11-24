@@ -364,7 +364,10 @@ func topLevelCallIn(call *tree.Node) *tree.Node {
 // cut, when not nil, is set when an answer was "yes" because a search passed
 // the step budget (guardAvoids).
 func (vs *versionScan) topGuarded(fn string, need int, cut *bool) bool {
-	for callee, m := range vs.topCalls {
+	// In name order: the callees share the step budget, so the order decides
+	// which searches run out of it.
+	for _, callee := range slices.Sorted(maps.Keys(vs.topCalls)) {
+		m := vs.topCalls[callee]
 		if m>>min(need, 10) == 0 { // bits need..10 and 11 (unknown)
 			continue
 		}
