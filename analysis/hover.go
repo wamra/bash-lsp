@@ -300,20 +300,17 @@ func sortedKeys(m map[string]bool) []string {
 	return out
 }
 
-// signature renders a function as its name followed by its positional parameters.
+// signature renders a function as its name followed by its positional
+// parameters, each in angle brackets.
 func (s *Snapshot) signature(d *Decl) string {
-	names, max, args := positionalParams(d.Node, s.src(d))
+	params, variadic := s.params(d)
 	var sb strings.Builder
 	sb.WriteString(d.Name)
-	for i := 1; i <= max; i++ {
-		if n := names[i]; n != "" {
-			sb.WriteString(" <" + n + ">")
-		} else {
-			sb.WriteString(" <$" + strconv.Itoa(i) + ">")
-		}
+	for _, p := range params {
+		sb.WriteString(" <" + p.label() + ">")
 	}
-	if args {
-		sb.WriteString(" [args...]")
+	if variadic {
+		sb.WriteString(" " + argsLabel)
 	}
 	return sb.String()
 }
