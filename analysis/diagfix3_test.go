@@ -163,4 +163,6 @@ func TestMentionWalkGate(t *testing.T) {
 func TestHeredocApostrophe(t *testing.T) {
 	expectRule(t, sh("f(){ local x=1; cat <<EOF\ndon't\nEOF\necho '$x is literal'; }; f\n"), "x.sh", "WB1202", "1:x")
 	expectRule(t, sh("f(){ local x=1; cat <<EOF\ndon't $x\nEOF\n}; f\n"), "x.sh", "WB1202")
+	// a here-string is no heredoc: its single-quoted word stays text
+	expectRule(t, sh("f() {\n  local x=1\n  . /dev/stdin <<<'echo $x'\n}\nf\n"), "x.sh", "WB1202", "2:x")
 }

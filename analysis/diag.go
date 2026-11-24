@@ -1124,6 +1124,10 @@ func codeDollarNames(m map[string]bool, f *tree.File, want map[string]bool) {
 				state = double
 				continue
 			case '<':
+				if i+2 < len(src) && src[i+1] == '<' && src[i+2] == '<' { // `<<<` here-string: its word is lexed as any word
+					i += 2
+					continue
+				}
 				if h, end, ok := heredocAt(src, i); ok {
 					heredocs = append(heredocs, h)
 					i = end - 1
