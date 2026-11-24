@@ -433,7 +433,7 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 	if len(pos) == 1 {
 		root = pos[0]
 	}
-	ws, err := openWorkspace(root, stderr)
+	ws, st, prof, err := openFull(root, stderr)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -478,6 +478,6 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 	for _, u := range unresolved {
 		fmt.Fprintf(stdout, "  %s\n", u)
 	}
-	doctorTools(ws.Root(), stdout)
+	doctorTools(ws.Root(), st, prof, stdout)
 	return 0
 }

@@ -57,6 +57,7 @@ bash-lsp version
 bash-lsp ast FILE [--json]        print the syntax tree of one file
 bash-lsp symbols [PATH...] [--json]   functions, aliases and variables; default PATH is .
 bash-lsp doctor [PATH]            workspace report: files, dialects, limits, syntax errors, unresolved sources
+bash-lsp check [paths] [--format text|json] [--shellcheck auto|off] [--fail-on error|warning|info|hint] [--root DIR]
 bash-lsp status [--root DIR] [--json]
 bash-lsp callers|callees SYMBOL [--depth N] [--root DIR] [--json]
 bash-lsp refs SYMBOL [--root DIR] [--json]
@@ -78,6 +79,23 @@ Positions are 1-based `line:col`, with columns counted in UTF-16 code units
 (the LSP column plus one), printed and accepted alike. Paths are
 relative to the workspace root, with forward slashes on every OS. Exit codes:
 0 success, 1 runtime failure, 2 usage error.
+
+`check` prints the findings of the named files and directories (default `.`), one
+`path:line:col: severity RULE message` line each, or with `--format json` one
+object `{"generation", "diagnostics": [...]}`. A path in the output is relative
+to the current directory when the file is under it, otherwise absolute, with
+forward slashes. The root is `--root`, else the nearest directory above the
+first path that holds `.git` or `.bash-lsp.toml` (its files give `source` and
+the cross-file rules their context); a file with no such directory above it is
+analysed alone. ShellCheck runs when it is found on the `PATH` or set in the
+user settings and is not inside the workspace. Exit codes: 0 no finding at or
+above `--fail-on` (default `warning`), 1 findings, 2 usage error, 3 runtime
+failure (an unreadable path or a failed ShellCheck run, even when findings were
+printed). What check did not cover goes to stderr and is not part of the exit
+code: `no shell files checked: PATH: why` for a directory with nothing to check
+(ignored, or no shell files), `not analysed: FILE: why` for a file that was not
+parsed (over the size limit, or a shell the server does not support), the
+workspace limits met, and the workspace notices.
 
 ## JSON records
 

@@ -1,8 +1,14 @@
 package main
 
 import (
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/wamra/bash-lsp/internal/config"
+	"github.com/wamra/bash-lsp/internal/extool"
+	"github.com/wamra/bash-lsp/internal/workspace"
 )
 
 // rootMarkers are the entries that make a directory the root of a repository
@@ -65,4 +71,25 @@ func absResolved(p string) string {
 		return filepath.Join(r, filepath.Base(abs))
 	}
 	return abs
+}
+
+// profileFor is the PATH profile of the settings: path.profile of the user
+// settings, else $PATH. A variable so a test can count the builds.
+var profileFor = func(st config.Settings) *extool.Profile {
+	if st.PathProfile != nil {
+		return extool.NewProfile(st.PathProfile)
+	}
+	return extool.ProfileFromEnv()
+}
+
+// openFull is openWorkspace that also returns the settings and the profile it
+// used, for `doctor`, which reports on them.
+func openFull(root string, stderr io.Writer) (*workspace.Workspace, config.Settings, *extool.Profile, error) {
+	st := config.Load(root, nil)
+	for _, w := range st.Warnings {
+		fmt.Fprintf(stderr, "bash-lsp: settings: %s\n", w)
+	}
+	prof := profileFor(st)
+	ws, err := workspace.OpenWith(root, st.Limits(), nil, st.Workspace(prof.Commands()))
+	return ws, st, prof, err
 }

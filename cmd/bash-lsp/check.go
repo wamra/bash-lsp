@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -59,11 +60,16 @@ func severityName(s analysis.Severity) string {
 	return "info"
 }
 
-// parseCheckArgs reads the flags (--flag value or --flag=value) and the paths.
+// parseCheckArgs reads the flags (--flag value or --flag=value) and the paths;
+// after "--" every argument is a path.
 func parseCheckArgs(args []string) (checkOpts, error) {
 	o := checkOpts{format: "text", sc: "auto", failOn: analysis.SevWarning}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
+		if a == "--" { // everything after it is a path, even one that starts with a dash
+			o.paths = append(o.paths, args[i+1:]...)
+			break
+		}
 		if !strings.HasPrefix(a, "--") {
 			if strings.HasPrefix(a, "-") && a != "-" {
 				return o, fmt.Errorf("unknown flag %q for check", a)
@@ -169,24 +175,28 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 	for _, w := range st.CheckRules(analysis.KnownRule) {
 		fmt.Fprintf(stderr, "bash-lsp: settings: %s\n", w)
 	}
-	prof := extool.ProfileFromEnv()
-	if st.PathProfile != nil {
-		prof = extool.NewProfile(st.PathProfile)
-	}
+	prof := profileFor(st)
 
 	failed := false
 	var snap *analysis.Snapshot
 	var targets []checkTarget
 	var ws *workspace.Workspace
+	var msgs []string // what check did not cover, for stderr
+	disp := newDisplay()
 	if walk {
 		ws, err = workspace.OpenWith(root, st.Limits(), nil, st.Workspace(prof.Commands()))
 		if err != nil {
 			return fail3(stderr, err)
 		}
 		root = ws.Root()
-		snap, targets, failed = checkWalked(ws, o.paths, stderr)
+		snap, targets, failed = checkWalked(ws, o.paths, disp, &msgs, stderr)
 	} else {
-		snap, targets, failed = checkAlone(root, o.paths, prof, stderr)
+		snap, targets, failed = checkAlone(root, o.paths, prof, disp, stderr)
+	}
+	for _, t := range targets {
+		if ff := snap.Facts(t.path); ff != nil && ff.File != nil && ff.File.Skipped != "" {
+			msgs = append(msgs, fmt.Sprintf("not analysed: %s: %s", t.display, ff.File.Skipped))
+		}
 	}
 
 	dopt := analysis.DiagOptions{Roots: []string{root}, Target: st.Target, Disabled: st.Disabled, Severity: st.Severity}
@@ -225,13 +235,26 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// The bounds met while analysing: the findings cap only after Diagnostics ran.
+	// Workspace-wide limits and notices are shown; the size limit of one file
+	// only through "not analysed" for the files that were asked for.
 	var limits []string
 	if ws != nil {
-		limits = append(limits, ws.Report().LimitsHit...)
+		rep := ws.Report()
+		for _, l := range rep.LimitsHit {
+			if !fileSizeLine.MatchString(l) {
+				limits = append(limits, l)
+			}
+		}
+		for _, n := range rep.Notices {
+			fmt.Fprintf(stderr, "bash-lsp: notice: %s\n", n)
+		}
 	}
 	limits = append(limits, targetLimits(snap.LimitsHit(), root, targets)...)
 	for _, l := range limits {
 		fmt.Fprintf(stderr, "bash-lsp: limit hit: %s\n", l)
+	}
+	for _, m := range msgs {
+		fmt.Fprintf(stderr, "bash-lsp: %s\n", m)
 	}
 
 	if o.format == "json" {
@@ -286,7 +309,7 @@ func toCheckDiag(path string, conv *tree.Converter, d analysis.Diagnostic) check
 // files the workspace loaded below it; a file the workspace did not load (an
 // ignored or excluded one, or one outside the root) is added to it as an open
 // document, so a file named on the command line is always checked.
-func checkWalked(ws *workspace.Workspace, paths []string, stderr io.Writer) (*analysis.Snapshot, []checkTarget, bool) {
+func checkWalked(ws *workspace.Workspace, paths []string, disp func(string) string, msgs *[]string, stderr io.Writer) (*analysis.Snapshot, []checkTarget, bool) {
 	failed := false
 	type want struct {
 		abs  string
@@ -336,7 +359,7 @@ func checkWalked(ws *workspace.Workspace, paths []string, stderr io.Writer) (*an
 	add := func(p string) {
 		if !seen[p] {
 			seen[p] = true
-			targets = append(targets, checkTarget{p, displayPath(ws, p)})
+			targets = append(targets, checkTarget{p, disp(p)})
 		}
 	}
 	all := snap.Paths()
@@ -346,27 +369,64 @@ func checkWalked(ws *workspace.Workspace, paths []string, stderr io.Writer) (*an
 			add(ws.Canon(w.abs))
 			continue
 		}
+		dir, n := ws.Canon(w.abs), 0
 		for _, p := range all {
-			if rel, err := filepath.Rel(ws.Canon(w.abs), p); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			if under(dir, p) {
 				add(p)
+				n++
 			}
+		}
+		for _, sk := range ws.Skipped() {
+			if under(dir, sk.Path) {
+				*msgs = append(*msgs, fmt.Sprintf("not analysed: %s: %s", disp(sk.Path), sk.Reason))
+			}
+		}
+		if n == 0 {
+			why := "no shell files below it"
+			if !ws.Reaches(dir) {
+				why = "the workspace does not read it (.gitignore, files.exclude or a skipped directory name)"
+			}
+			*msgs = append(*msgs, fmt.Sprintf("no shell files checked: %s: %s", w.disp, why))
 		}
 	}
 	sort.Slice(targets, func(i, j int) bool { return targets[i].path < targets[j].path })
 	return snap, targets, failed
 }
 
-func displayPath(ws *workspace.Workspace, p string) string {
-	if ws.Contains(p) {
-		return relSlash(ws.Root(), p)
+// under reports whether p is dir or below it.
+func under(dir, p string) bool {
+	rel, err := filepath.Rel(dir, p)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// fileSizeLine matches the workspace's limit line for one file over the size
+// limit.
+var fileSizeLine = regexp.MustCompile(`: \d+ bytes exceeds the \d+ byte file limit$`)
+
+// newDisplay returns the spelling of a file path in the output: relative to
+// the current directory when the file is under it, otherwise absolute, with
+// forward slashes in both cases.
+func newDisplay() func(abs string) string {
+	cwd, err := os.Getwd()
+	if err == nil {
+		if r, e := filepath.EvalSymlinks(cwd); e == nil {
+			cwd = r
+		}
 	}
-	return filepath.ToSlash(p)
+	return func(abs string) string {
+		if err == nil && under(cwd, abs) {
+			if rel, e := filepath.Rel(cwd, abs); e == nil {
+				return filepath.ToSlash(rel)
+			}
+		}
+		return filepath.ToSlash(abs)
+	}
 }
 
 // checkAlone analyses exactly the named files, with no walk. A directory
 // among them is an error: nothing here reads a directory the user did not name
 // a repository for.
-func checkAlone(root string, paths []string, prof *extool.Profile, stderr io.Writer) (*analysis.Snapshot, []checkTarget, bool) {
+func checkAlone(root string, paths []string, prof *extool.Profile, disp func(string) string, stderr io.Writer) (*analysis.Snapshot, []checkTarget, bool) {
 	failed := false
 	files := map[string][]byte{}
 	var targets []checkTarget
@@ -393,7 +453,7 @@ func checkAlone(root string, paths []string, prof *extool.Profile, stderr io.Wri
 			continue
 		}
 		files[abs] = src
-		targets = append(targets, checkTarget{abs, filepath.ToSlash(filepath.Clean(p))})
+		targets = append(targets, checkTarget{abs, disp(abs)})
 	}
 	sort.Slice(targets, func(i, j int) bool { return targets[i].path < targets[j].path })
 	return analysis.Analyze(files, analysis.Options{Root: root, Commands: prof.Commands()}), targets, failed
@@ -468,14 +528,9 @@ func runShellCheck(r *shellcheck.Runner, snap *analysis.Snapshot, targets []chec
 // doctorTools prints what `doctor` reports about the settings and the external
 // programs of the workspace at root: the settings files read and the repo
 // settings refused, the target, the PATH profile, ShellCheck and code-index. It
-// reads the settings again (the warnings were printed when the workspace was
-// opened) and starts at most one program, ShellCheck with --version.
-func doctorTools(root string, stdout io.Writer) {
-	st := config.Load(root, nil)
-	prof := extool.ProfileFromEnv()
-	if st.PathProfile != nil {
-		prof = extool.NewProfile(st.PathProfile)
-	}
+// uses the settings and profile the workspace was opened with, and starts at
+// most one program, ShellCheck with --version.
+func doctorTools(root string, st config.Settings, prof *extool.Profile, stdout io.Writer) {
 	roots := []string{root}
 
 	switch tool, ref, ok := extool.Find("shellcheck", st.ShellCheck.Path, prof, roots); {
@@ -531,8 +586,8 @@ func targetLimits(lines []string, root string, targets []checkTarget) []string {
 	var out []string
 	for _, l := range lines {
 		for _, t := range targets {
-			if strings.HasPrefix(l, relSlash(root, t.path)+":") {
-				out = append(out, l)
+			if rel := relSlash(root, t.path) + ":"; strings.HasPrefix(l, rel) {
+				out = append(out, t.display+":"+l[len(rel):])
 				break
 			}
 		}
