@@ -200,7 +200,6 @@ type fileScan struct {
 // NAME`). A second walk, made only for files whose visibility holds a
 // candidate for an unused finding.
 type fileMentions struct {
-	words     map[string]bool // literal argument words and string tokens; names after `export -f`, `declare -F`, ...
 	dollar    map[string]bool // `$name` inside strings, `-v name`, `declare -p name`
 	allexport bool            // `set -a` or `set -o allexport`: assignments are exported
 }
@@ -213,23 +212,28 @@ type diagState struct {
 	diagMu   sync.Mutex
 	scans    map[*FileFacts]*fileScan
 	mentions map[*FileFacts]*fileMentions
+	words    map[*FileFacts]map[string]bool // literal argument words and string tokens; names after `export -f`, `declare -F`, ...
 }
 
 // carryDiag copies from prev the scans and mentions of the facts s still has.
 func (s *Snapshot) carryDiag(prev *Snapshot) {
 	prev.diagMu.Lock()
 	defer prev.diagMu.Unlock()
-	if len(prev.scans) == 0 && len(prev.mentions) == 0 {
+	if len(prev.scans) == 0 && len(prev.mentions) == 0 && len(prev.words) == 0 {
 		return
 	}
 	s.scans = map[*FileFacts]*fileScan{}
 	s.mentions = map[*FileFacts]*fileMentions{}
+	s.words = map[*FileFacts]map[string]bool{}
 	for _, ff := range s.facts {
 		if sc := prev.scans[ff]; sc != nil {
 			s.scans[ff] = sc
 		}
 		if m := prev.mentions[ff]; m != nil {
 			s.mentions[ff] = m
+		}
+		if w := prev.words[ff]; w != nil {
+			s.words[ff] = w
 		}
 	}
 }
@@ -262,13 +266,8 @@ func (s *Snapshot) mentionsOf(file int) *fileMentions {
 	if m != nil {
 		return m
 	}
-	m = &fileMentions{words: map[string]bool{}, dollar: map[string]bool{}}
-	if ff != nil && ff.File != nil && ff.File.Root != nil {
-		w := scanWalker{m: m, src: ff.File.Src}
-		for _, st := range ff.File.Root.Children {
-			w.visit(st, nil, false)
-		}
-	}
+	m = &fileMentions{dollar: map[string]bool{}}
+	walkMentions(ff, &scanWalker{m: m})
 	s.diagMu.Lock()
 	if s.mentions == nil {
 		s.mentions = map[*FileFacts]*fileMentions{}
@@ -276,6 +275,37 @@ func (s *Snapshot) mentionsOf(file int) *fileMentions {
 	s.mentions[ff] = m
 	s.diagMu.Unlock()
 	return m
+}
+
+// wordsOf returns the words of file (fileMentions describes them), made on
+// first use by their own walk: only WB1201 needs them.
+func (s *Snapshot) wordsOf(file int) map[string]bool {
+	ff := s.facts[file]
+	s.diagMu.Lock()
+	ws := s.words[ff]
+	s.diagMu.Unlock()
+	if ws != nil {
+		return ws
+	}
+	ws = map[string]bool{}
+	walkMentions(ff, &scanWalker{words: ws})
+	s.diagMu.Lock()
+	if s.words == nil {
+		s.words = map[*FileFacts]map[string]bool{}
+	}
+	s.words[ff] = ws
+	s.diagMu.Unlock()
+	return ws
+}
+
+func walkMentions(ff *FileFacts, w *scanWalker) {
+	if ff == nil || ff.File == nil || ff.File.Root == nil {
+		return
+	}
+	w.src = ff.File.Src
+	for _, st := range ff.File.Root.Children {
+		w.visit(st, nil, false)
+	}
 }
 
 // scanFile collects the rule candidates of a file from its facts (its
@@ -425,11 +455,13 @@ func wordName(w *tree.Node) (string, bool) {
 	return name, ok
 }
 
-// scanWalker walks a tree for its mentions.
+// scanWalker walks a tree for its mentions: the variables it names (m set)
+// or its words (words set).
 type scanWalker struct {
 	m     *fileMentions
+	words map[string]bool
 	src   []byte
-	words []*tree.Node // scratch: the words of the command being looked at
+	cmd   []*tree.Node // scratch: the words of the command being looked at
 }
 
 // mutating are the commands whose arguments name files they change or
@@ -448,10 +480,12 @@ func (w *scanWalker) visit(n *tree.Node, fn *tree.Node, cmdWord bool) {
 		}
 		return
 	case tree.KLit, tree.KSglQuoted:
-		if !cmdWord {
-			addTokens(w.m.words, n.Value)
+		switch {
+		case w.words != nil && !cmdWord:
+			addTokens(w.words, n.Value)
+		case w.m != nil && strings.IndexByte(n.Value, '$') >= 0:
+			addDollarNames(w.m.dollar, n.Value)
 		}
-		addDollarNames(w.m.dollar, n.Value)
 	case tree.KDecl:
 		w.decl(n)
 	case tree.KCall, tree.KTest:
@@ -480,10 +514,10 @@ func (w *scanWalker) decl(n *tree.Node) {
 	}
 	for _, a := range n.Children {
 		if a.Kind == tree.KAssign && a.Name != "" {
-			if funcs {
-				w.m.words[a.Name] = true
+			if funcs && w.words != nil {
+				w.words[a.Name] = true
 			}
-			if prints {
+			if prints && w.m != nil {
 				w.m.dollar[a.Name] = true
 			}
 		}
@@ -492,17 +526,19 @@ func (w *scanWalker) decl(n *tree.Node) {
 
 // call looks at a command or a `[[ ]]` test, then visits its parts.
 func (w *scanWalker) call(n *tree.Node, fn *tree.Node) {
-	w.words = w.words[:0]
+	w.cmd = w.cmd[:0]
 	for _, c := range n.Children {
 		if c.Kind == tree.KWord {
-			w.words = append(w.words, c)
+			w.cmd = append(w.cmd, c)
 		}
 	}
 	var cmd *tree.Node
-	if n.Kind == tree.KCall && len(w.words) > 0 {
-		cmd = w.words[0]
+	if n.Kind == tree.KCall && len(w.cmd) > 0 {
+		cmd = w.cmd[0]
 	}
-	w.mention(n, cmd != nil)
+	if w.m != nil {
+		w.mention(n, cmd != nil)
+	}
 	for _, c := range n.Children {
 		w.visit(c, fn, c == cmd)
 	}
@@ -510,7 +546,7 @@ func (w *scanWalker) call(n *tree.Node, fn *tree.Node) {
 
 // mention records `-v NAME` (a test that reads NAME by name) and `set -a`.
 func (w *scanWalker) mention(n *tree.Node, isCall bool) {
-	words := w.words
+	words := w.cmd
 	addVar := func(wd *tree.Node) {
 		name, _ := literalText(wd)
 		if j := strings.IndexByte(name, '['); j > 0 {
@@ -610,41 +646,60 @@ func addDollarNames(m map[string]bool, v string) {
 }
 
 // nameUnion is what the files visible from a file read or mention by name,
-// and whether one of them may read or call by a computed name.
+// and whether one of them may read or call by a computed name. The flags
+// come from the scans; reads and words, each a walk of every visible file
+// (cached per file), only when a rule asks.
 type nameUnion struct {
-	reads    map[string]bool // unbound reads, `"$cmd"` calls, `$name` in strings, `-v name`, `declare -p name`
-	words    map[string]bool // literal argument words and string tokens
 	indirect bool
 	nameref  bool
-	dynamic  bool // an expansion or an unknown variable used as a command name
-	gap      bool // code not analysed: an error gap or a skipped file
-	export   bool // allexport
+	dynamic  bool            // an expansion or an unknown variable used as a command name
+	gap      bool            // code not analysed: an error gap or a skipped file
+	reads    map[string]bool // unbound reads, `"$cmd"` calls, `$name` in strings, `-v name`, `declare -p name`
+	export   bool            // allexport, set with reads
+	words    map[string]bool // literal argument words and string tokens
 }
 
-func (c *diagCtx) visibleNames() *nameUnion {
+// visible returns the flags of the file's visibility.
+func (c *diagCtx) visible() *nameUnion {
 	if c.union != nil {
 		return c.union
 	}
 	s := c.s
-	u := &nameUnion{reads: map[string]bool{}, words: map[string]bool{}}
+	u := &nameUnion{}
 	s.visible[c.file].each(func(j int) {
 		ff := s.facts[j]
 		if ff == nil || ff.File == nil || ff.File.Skipped != "" {
 			u.gap = true
 			return
 		}
-		sc, m := s.scanOf(j), s.mentionsOf(j)
-		for k := range m.dollar {
-			u.reads[k] = true
-		}
-		for k := range m.words {
-			u.words[k] = true
-		}
+		sc := s.scanOf(j)
 		u.indirect = u.indirect || sc.indirect
 		u.nameref = u.nameref || sc.nameref
 		u.gap = u.gap || sc.hasGap
-		u.export = u.export || m.allexport
 		u.dynamic = u.dynamic || len(s.dyn[j]) > 0
+	})
+	c.union = u
+	return u
+}
+
+// visibleReads returns the names the file's visibility reads by name.
+func (c *diagCtx) visibleReads() *nameUnion {
+	u := c.visible()
+	if u.reads != nil {
+		return u
+	}
+	s := c.s
+	u.reads = map[string]bool{}
+	s.visible[c.file].each(func(j int) {
+		ff := s.facts[j]
+		if ff == nil || ff.File == nil || ff.File.Skipped != "" {
+			return
+		}
+		m := s.mentionsOf(j)
+		for k := range m.dollar {
+			u.reads[k] = true
+		}
+		u.export = u.export || m.allexport
 		for k := range s.bindings[j] {
 			b := &s.bindings[j][k]
 			if b.Use.Kind == UseVarRead && (b.Res == Unresolved || b.Reason == ReasonDynamicScope) {
@@ -657,6 +712,22 @@ func (c *diagCtx) visibleNames() *nameUnion {
 			}
 		}
 	})
-	c.union = u
 	return u
+}
+
+// visibleWords returns the words of the file's visibility.
+func (c *diagCtx) visibleWords() map[string]bool {
+	u := c.visible()
+	if u.words != nil {
+		return u.words
+	}
+	u.words = map[string]bool{}
+	c.s.visible[c.file].each(func(j int) {
+		if ff := c.s.facts[j]; ff != nil && ff.File != nil && ff.File.Skipped == "" {
+			for k := range c.s.wordsOf(j) {
+				u.words[k] = true
+			}
+		}
+	})
+	return u.words
 }

@@ -144,7 +144,7 @@ func (c *diagCtx) sources() {
 // --- WB1103, WB1104: function definitions ---
 
 func (c *diagCtx) functions() {
-	first := map[string]*tree.Node{}
+	first := make(map[string]*tree.Node, len(c.scan.topFuncs))
 	for _, fn := range c.scan.topFuncs {
 		if p, ok := first[fn.Name]; ok {
 			c.add("WB1103", fn.NameRange, fmt.Sprintf("function %s is already defined at line %d; this definition replaces it", fn.Name, p.NameRange.Start.Line))
@@ -265,7 +265,7 @@ func (c *diagCtx) scriptConditions() bool {
 	if !sc.shebang || !sc.topCommand || c.s.sourced[c.file] || c.s.incomplete[c.file] || c.f.Dialect == tree.Bats {
 		return false
 	}
-	u := c.visibleNames()
+	u := c.visible()
 	return !u.dynamic && !u.gap
 }
 
@@ -293,7 +293,7 @@ func (c *diagCtx) unusedFunctions() {
 		if ok == 0 {
 			return
 		}
-		if c.visibleNames().words[d.Name] {
+		if c.visibleWords()[d.Name] {
 			continue
 		}
 		dg := c.add("WB1201", d.NameRange, fmt.Sprintf("function %s is never called", d.Name))
@@ -345,8 +345,11 @@ func (c *diagCtx) unusedVariables() {
 				continue
 			}
 		}
-		u := c.visibleNames()
-		if u.indirect || u.nameref || u.reads[d.Name] || global && u.export {
+		u := c.visible()
+		if u.indirect || u.nameref {
+			continue
+		}
+		if u = c.visibleReads(); u.reads[d.Name] || global && u.export {
 			continue
 		}
 		if !global && c.dynamicIn(d) {
