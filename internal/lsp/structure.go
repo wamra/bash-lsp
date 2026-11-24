@@ -57,8 +57,8 @@ type selectionRangeParams struct {
 // whole lines and shows the closing line, so a fold ends on the line before
 // the closing keyword or bracket (comment and region folds keep their end). A
 // fold left with one line is dropped. With a range limit at most that many
-// are returned, the widest first (an enclosing fold is never narrower than
-// the folds inside it), in source order.
+// are returned, outermost first (by nesting depth, then in source order), and
+// listed in source order.
 func foldingRanges(folds []analysis.Fold, c clientCaps) []foldingRange {
 	out := make([]foldingRange, 0, len(folds))
 	for _, f := range folds {
@@ -73,17 +73,23 @@ func foldingRanges(folds []analysis.Fold, c clientCaps) []foldingRange {
 	if c.RangeLimit <= 0 || len(out) <= c.RangeLimit {
 		return out
 	}
-	// The widest span first: an enclosing fold is never narrower than the
-	// folds inside it, and out is in start order (enclosing first), so the
-	// stable sort keeps an enclosing fold ahead of an equally wide one inside.
+	// Outermost first: by nesting depth, then in source order. out is in start
+	// order with enclosing folds before the folds inside them, so a stack of
+	// the folds still open gives each fold's depth.
+	depth := make([]int, len(out))
+	var open []int
+	for i, f := range out {
+		for len(open) > 0 && out[open[len(open)-1]].EndLine < f.EndLine {
+			open = open[:len(open)-1]
+		}
+		depth[i] = len(open)
+		open = append(open, i)
+	}
 	idx := make([]int, len(out))
 	for i := range idx {
 		idx[i] = i
 	}
-	sort.SliceStable(idx, func(a, b int) bool {
-		x, y := idx[a], idx[b]
-		return out[x].EndLine-out[x].StartLine > out[y].EndLine-out[y].StartLine
-	})
+	sort.SliceStable(idx, func(a, b int) bool { return depth[idx[a]] < depth[idx[b]] })
 	idx = idx[:c.RangeLimit]
 	sort.Ints(idx)
 	kept := make([]foldingRange, len(idx))

@@ -32,9 +32,11 @@ func TestFoldingRangesCaps(t *testing.T) {
 	}{
 		{"plain", clientCaps{}, "(0,2,comment) (3,9,) (4,8,) (5,7,) (10,12,region)"},
 		{"lineFoldingOnly", clientCaps{LineFoldingOnly: true}, "(0,2,comment) (3,8,) (4,7,) (5,6,) (10,12,region)"},
-		{"rangeLimit 2", clientCaps{RangeLimit: 2}, "(3,9,) (4,8,)"},
+		{"rangeLimit 2", clientCaps{RangeLimit: 2}, "(0,2,comment) (3,9,)"},
+		{"rangeLimit 3", clientCaps{RangeLimit: 3}, "(0,2,comment) (3,9,) (10,12,region)"},
+		{"rangeLimit 4", clientCaps{RangeLimit: 4}, "(0,2,comment) (3,9,) (4,8,) (10,12,region)"},
 		{"rangeLimit above the count", clientCaps{RangeLimit: 9}, "(0,2,comment) (3,9,) (4,8,) (5,7,) (10,12,region)"},
-		{"both", clientCaps{LineFoldingOnly: true, RangeLimit: 3}, "(0,2,comment) (3,8,) (4,7,)"},
+		{"both", clientCaps{LineFoldingOnly: true, RangeLimit: 3}, "(0,2,comment) (3,8,) (10,12,region)"},
 	} {
 		if got := foldText(foldingRanges(structFolds, tc.caps)); got != tc.want {
 			t.Errorf("%s: %s, want %s", tc.name, got, tc.want)
@@ -216,5 +218,33 @@ func TestStructureCapabilities(t *testing.T) {
 	b, _ := json.Marshal(caps["documentLinkProvider"])
 	if string(b) != `{"resolveProvider":false}` {
 		t.Errorf("documentLinkProvider = %s", b)
+	}
+}
+
+// TestFoldingRangeRequestCaps sends the folding capabilities the way a client
+// does: the test sets the server's client capabilities after initialize, with
+// the same effect as reading them from the initialize request.
+func TestFoldingRangeRequestCaps(t *testing.T) {
+	ws := t.TempDir()
+	writeFile(t, ws, "a.sh", lspFoldSrc)
+	for _, tc := range []struct {
+		caps clientCaps
+		want string
+	}{
+		{clientCaps{LineFoldingOnly: true}, "(0,2,comment) (3,8,) (4,7,) (5,6,) (10,12,region)"},
+		{clientCaps{RangeLimit: 3}, "(0,2,comment) (3,9,) (10,12,region)"},
+	} {
+		var srv *server
+		c := clientWith(t, clientCfg{root: ws, onServer: func(s *server) { srv = s }})
+		srv.ccaps = tc.caps // after initialize returned; the next request is sent after this write
+		c.open("a.sh")
+		raw := c.call("textDocument/foldingRange", map[string]any{"textDocument": map[string]any{"uri": c.uri("a.sh")}})
+		var got []foldingRange
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatalf("%v: %s", err, raw)
+		}
+		if foldText(got) != tc.want {
+			t.Errorf("%+v: %s, want %s", tc.caps, foldText(got), tc.want)
+		}
 	}
 }
