@@ -514,3 +514,32 @@ func TestCheckNotAnalysedLineOncePerFile(t *testing.T) {
 		}
 	}
 }
+
+// The notice and "no shell files checked" lines of check, and the notice
+// line of doctor, are redacted like every other outward text.
+func TestCLINoticesAreRedacted(t *testing.T) {
+	emptyPath(t)
+	userConfig(t, "")
+	const secret = "token=sekrit123456"
+	root := t.TempDir()
+	putFile(t, root, ".git/HEAD", "x")
+	putFile(t, root, ".bash-lsp.toml", "[sources]\npaths = [\"../"+secret+"\"]\n")
+	putFile(t, root, "a.sh", "echo\n")
+	if err := os.MkdirAll(filepath.Join(root, "sub", secret), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, _, errs := runCode(t, "check", root)
+	if !strings.Contains(errs, "notice: sources.paths") {
+		t.Fatalf("stderr lacks the notice:\n%s", errs)
+	}
+	_, _, errs2 := runCode(t, "check", filepath.Join(root, "sub", secret))
+	if !strings.Contains(errs2, "no shell files checked") {
+		t.Fatalf("stderr lacks the line:\n%s", errs2)
+	}
+	if all := errs + errs2; strings.Contains(all, "sekrit123456") {
+		t.Errorf("check stderr holds the secret:\n%s", all)
+	}
+	if out := runOK(t, "doctor", root); strings.Contains(out, "sekrit123456") {
+		t.Errorf("doctor holds the secret:\n%s", out)
+	}
+}

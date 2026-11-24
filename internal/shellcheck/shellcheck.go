@@ -26,6 +26,7 @@ import (
 
 	"github.com/wamra/bash-lsp/analysis"
 	"github.com/wamra/bash-lsp/internal/extool"
+	"github.com/wamra/bash-lsp/internal/redact"
 	"github.com/wamra/bash-lsp/tree"
 )
 
@@ -176,7 +177,7 @@ func (r *Runner) Version(ctx context.Context) (string, error) {
 func firstLine(b []byte) string {
 	for _, l := range strings.Split(string(b), "\n") {
 		if l = strings.TrimSpace(l); l != "" {
-			return l
+			return redact.String(l)
 		}
 	}
 	return "(no message)"

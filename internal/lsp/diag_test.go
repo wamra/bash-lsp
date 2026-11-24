@@ -1267,3 +1267,47 @@ func TestReloadFailureReportedAgainAfterRecovery(t *testing.T) {
 	c.watchedPath(repo)
 	c.waitLogCount("not reloaded", 2)
 }
+
+// Text that goes out to the editor is redacted: a credential-looking value in
+// a .shellcheckrc or a settings file is not echoed in window/logMessage or
+// window/showMessage.
+func TestOutwardMessagesAreRedacted(t *testing.T) {
+	const secret = "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB"
+	setDebounce(t, 10*time.Millisecond)
+	root := t.TempDir()
+	put(t, filepath.Join(root, "a.sh"), "")
+	put(t, filepath.Join(root, ".shellcheckrc"), "enable="+secret+"\n")
+	put(t, filepath.Join(root, ".bash-lsp.toml"), "[diagnostics]\ndisable = [\"token=abcdef0123456789\"]\n")
+	c := clientInit(t, root, false, scInit(fakeShellCheck(t, "mark"), 0))
+	c.openText("a.sh", "#!/bin/bash\n# MARK 1\n")
+	note := c.waitLog("enable entry")
+	if strings.Contains(note, secret) || !strings.Contains(note, "[redacted]") {
+		t.Fatalf("logMessage: %q", note)
+	}
+	c.waitLog("enable entry")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		c.mu.Lock()
+		n := len(c.shown)
+		c.mu.Unlock()
+		if n > 0 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.shown) == 0 {
+		t.Fatal("no window/showMessage")
+	}
+	for _, m := range c.shown {
+		if strings.Contains(string(m), "abcdef0123456789") {
+			t.Fatalf("showMessage: %s", m)
+		}
+	}
+	for _, m := range c.logMsgs {
+		if strings.Contains(m, secret) || strings.Contains(m, "abcdef0123456789") {
+			t.Fatalf("logMessage: %q", m)
+		}
+	}
+}

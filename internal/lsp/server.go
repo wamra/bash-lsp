@@ -19,6 +19,7 @@ import (
 	"github.com/wamra/bash-lsp/analysis"
 	"github.com/wamra/bash-lsp/internal/config"
 	"github.com/wamra/bash-lsp/internal/extool"
+	"github.com/wamra/bash-lsp/internal/redact"
 	"github.com/wamra/bash-lsp/internal/workspace"
 	"github.com/wamra/bash-lsp/parse"
 	"github.com/wamra/bash-lsp/tree"
@@ -601,7 +602,7 @@ func (s *server) warnOnce(msg string) {
 		return
 	}
 	s.shown[msg] = true
-	s.c.notify("window/showMessage", showMessageParams{Type: messageTypeWarning, Message: "bash-lsp " + msg})
+	s.c.notify("window/showMessage", showMessageParams{Type: messageTypeWarning, Message: redact.String("bash-lsp " + msg)})
 }
 
 // logInternal writes the text of each recovered parser panic of f to the

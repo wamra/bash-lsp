@@ -14,6 +14,7 @@ import (
 	"github.com/wamra/bash-lsp/analysis"
 	"github.com/wamra/bash-lsp/internal/config"
 	"github.com/wamra/bash-lsp/internal/extool"
+	"github.com/wamra/bash-lsp/internal/redact"
 	"github.com/wamra/bash-lsp/internal/shellcheck"
 	"github.com/wamra/bash-lsp/internal/workspace"
 	"github.com/wamra/bash-lsp/tree"
@@ -156,6 +157,15 @@ type checkDiag struct {
 // cross-file rules their context). A file given with no repository above it is
 // analysed alone: no directory around it is read.
 func cmdCheck(args []string, stdout, stderr io.Writer) int {
+	// What check says about the repository (notices, limits, files not
+	// analysed, a tool's own error line) can hold text the repository
+	// controls, so credential-looking values never reach stderr.
+	rw := redact.Writer(stderr)
+	defer rw.(interface{ Flush() error }).Flush()
+	return runCheck(args, stdout, rw)
+}
+
+func runCheck(args []string, stdout, stderr io.Writer) int {
 	o, err := parseCheckArgs(args)
 	if err != nil {
 		return checkUsageError(stderr, err.Error())

@@ -462,13 +462,13 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "%s: %d\n", d, rep.Dialects[d])
 	}
 	for _, l := range rep.LimitsHit {
-		fmt.Fprintf(stdout, "limit hit: %s\n", l)
+		fmt.Fprintf(stdout, "limit hit: %s\n", redact.String(l))
 	}
 	for _, l := range snap.LimitsHit() {
-		fmt.Fprintf(stdout, "limit hit: %s\n", l)
+		fmt.Fprintf(stdout, "limit hit: %s\n", redact.String(l))
 	}
 	for _, n := range rep.Notices {
-		fmt.Fprintf(stdout, "notice: %s\n", n)
+		fmt.Fprintf(stdout, "notice: %s\n", redact.String(n))
 	}
 	errFiles := 0
 	var unresolved []string

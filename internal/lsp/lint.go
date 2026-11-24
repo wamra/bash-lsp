@@ -19,6 +19,7 @@ import (
 	"github.com/wamra/bash-lsp/format"
 	"github.com/wamra/bash-lsp/internal/config"
 	"github.com/wamra/bash-lsp/internal/extool"
+	"github.com/wamra/bash-lsp/internal/redact"
 	"github.com/wamra/bash-lsp/internal/shellcheck"
 	"github.com/wamra/bash-lsp/tree"
 )
@@ -491,7 +492,7 @@ const (
 
 // logMessage sends window/logMessage. Safe from any goroutine.
 func (s *server) logMessage(typ int, msg string) {
-	s.c.notify("window/logMessage", logMessageParams{Type: typ, Message: msg})
+	s.c.notify("window/logMessage", logMessageParams{Type: typ, Message: redact.String(msg)})
 }
 
 // forgetMessage lets msg be sent again by logMessageOnce.

@@ -42,7 +42,11 @@ var fakeModes = map[string]func(){
 		wd, _ := os.Getwd()
 		report(fmt.Sprintf("%s\x00%s\x00%s", strings.Join(os.Args[1:], "\n"), wd, b))
 	},
-	"exit2":   func() { fmt.Fprint(os.Stderr, "\nfirst line\nsecond line"); os.Exit(2) },
+	"exit2": func() { fmt.Fprint(os.Stderr, "\nfirst line\nsecond line"); os.Exit(2) },
+	"exit2secret": func() {
+		fmt.Fprint(os.Stderr, "bad option token=hunter2hunter2 ghp_0123456789abcdefghijklmnopqrstuvwxyzAB\nsecond")
+		os.Exit(2)
+	},
 	"version": func() { fmt.Print("ShellCheck - shell script analysis tool\nversion: 9.9.9\nlicense: GPL\n") },
 	"flood": func() {
 		chunk := bytes.Repeat([]byte("x"), 64<<10)
@@ -182,6 +186,11 @@ func TestCheckExitCodes(t *testing.T) {
 	_, err := fakeRunner(t, "exit2", Options{}).Check(context.Background(), f)
 	if err == nil || !strings.Contains(err.Error(), "first line") || strings.Contains(err.Error(), "second line") {
 		t.Errorf("exit 2: %v", err)
+	}
+	// A credential-looking value in that line is redacted.
+	_, err = fakeRunner(t, "exit2secret", Options{}).Check(context.Background(), f)
+	if err == nil || strings.Contains(err.Error(), "hunter2") || strings.Contains(err.Error(), "ghp_") || !strings.Contains(err.Error(), "[redacted]") {
+		t.Errorf("exit 2 with a secret: %v", err)
 	}
 	// Garbage on stdout is an error, not a panic.
 	r = fakeRunner(t, "json", Options{}, "WB_FAKE_OUT=not json")
