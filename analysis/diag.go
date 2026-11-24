@@ -273,7 +273,7 @@ type fileScan struct {
 // NAME`). A second walk, made only for files whose visibility holds a
 // candidate for an unused finding.
 type fileMentions struct {
-	dollar    map[string]bool // `$name` inside strings, `-v name`, `declare -p name`
+	dollar    map[string]bool // every `$name` of the text, `-v name`, `declare -p name`, arithmetic operands in `[[ ]]` and `$[ ]`
 	reads     map[string]bool // dollar, plus the name of every read and every `"$name"` call, whatever it binds to
 	allexport bool            // `set -a` or `set -o allexport`: assignments are exported
 }
@@ -361,7 +361,15 @@ func (s *Snapshot) mentionsOf(file int) *fileMentions {
 		return m
 	}
 	m = &fileMentions{dollar: map[string]bool{}}
-	walkMentions(ff, &scanWalker{m: m})
+	if ff != nil && ff.File != nil {
+		// Every `$name` in the text, read or inside a string: an over-count
+		// (a read bound elsewhere counts too) that needs no walk. The forms
+		// only a walk finds are rare; walk only when their text appears.
+		addDollarNames(m.dollar, ff.File.Src)
+		if mentionWalkNeeded(ff.File.Src) {
+			walkMentions(ff, &scanWalker{m: m})
+		}
+	}
 	m.reads = make(map[string]bool, len(m.dollar))
 	for k := range m.dollar {
 		m.reads[k] = true
@@ -380,6 +388,30 @@ func (s *Snapshot) mentionsOf(file int) *fileMentions {
 	s.mentions[ff] = m
 	s.diagMu.Unlock()
 	return m
+}
+
+// mentionWalkNeeded reports text that the forms only a walk recognises
+// contain: `-v name`, `declare -p name`, `$[ ]`, an arithmetic comparison in
+// `[[ ]]` (`-eq` and the others), `set -a` and `set -o allexport`. One pass
+// over the dashes, and two searches.
+func mentionWalkNeeded(src []byte) bool {
+	if bytes.Contains(src, []byte("$[")) || bytes.Contains(src, []byte("allexport")) {
+		return true
+	}
+	for i := bytes.IndexByte(src, '-'); i >= 0 && i+1 < len(src); {
+		switch c := src[i+1]; {
+		case c == 'v' || c == 'p' || c == 'a':
+			return true
+		case i+2 < len(src) && arithOps[string(src[i:i+3])]:
+			return true
+		}
+		j := bytes.IndexByte(src[i+1:], '-')
+		if j < 0 {
+			break
+		}
+		i += 1 + j
+	}
+	return false
 }
 
 // wordsOf returns the words of file (fileMentions describes them), made on
@@ -749,12 +781,14 @@ var arithOps = map[string]bool{"-eq": true, "-ne": true, "-lt": true, "-le": tru
 // between the words holds them).
 func (w *scanWalker) arithOperand(n *tree.Node, i int) bool {
 	words := w.cmd
-	gap := func(a, b int) bool {
+	gap := func(a, b int) bool { // a field of src[a:b] is one of arithOps, read without allocating
 		if a < 0 || b > len(w.src) || a >= b {
 			return false
 		}
-		for _, f := range strings.Fields(string(w.src[a:b])) {
-			if arithOps[f] {
+		t := w.src[a:b]
+		for i := 0; i+3 <= len(t); i++ {
+			if t[i] == '-' && (i == 0 || t[i-1] == ' ' || t[i-1] == '\t') && (i+3 == len(t) || t[i+3] == ' ' || t[i+3] == '\t' || t[i+3] == '\n') &&
+				arithOps[string(t[i:i+3])] {
 				return true
 			}
 		}
@@ -831,8 +865,11 @@ func addTokens(m map[string]bool, v string) {
 
 // addDollarNames adds every name that follows `$` or `${` in v: text the
 // shell may expand later (an eval or trap string, an escaped `\$x`).
-func addDollarNames(m map[string]bool, v string) {
-	for i := strings.IndexByte(v, '$'); i >= 0; {
+func addDollarNames[T string | []byte](m map[string]bool, v T) {
+	for i := 0; i < len(v); i++ {
+		if v[i] != '$' {
+			continue
+		}
 		j := i + 1
 		if j < len(v) && v[j] == '{' {
 			j++
@@ -845,13 +882,8 @@ func addDollarNames(m map[string]bool, v string) {
 			k++
 		}
 		if k > j && isIdentStart(v[j]) {
-			m[v[j:k]] = true
+			m[string(v[j:k])] = true
 		}
-		next := strings.IndexByte(v[i+1:], '$')
-		if next < 0 {
-			break
-		}
-		i += 1 + next
 	}
 }
 
