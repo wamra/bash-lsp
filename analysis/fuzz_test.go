@@ -23,7 +23,7 @@ func fuzzBudget(n int) time.Duration {
 // parseBudget is the time Parse may take on n bytes. Parsing is linear but
 // deep nesting costs about 7 µs a level, and after an error resync parses the
 // rest again from several lines (25 µs a byte for 3 KB of `(((`, found by this
-// fuzzer); resync's cost is milestone 3's (docs/m1-deferred.md). The bound
+// fuzzer); resync's cost is bounded by a resync cap (docs/m1-deferred.md). The bound
 // catches what grows faster than that.
 func parseBudget(n int) time.Duration {
 	b := time.Second + time.Duration(n)*100*time.Microsecond

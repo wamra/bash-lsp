@@ -996,7 +996,7 @@ func TestDidCloseRereadsDisk(t *testing.T) {
 	}
 }
 
-// Decision 33: an unresolved `source` is published as WB1101 on the path word.
+// An unresolved `source` is published as WB1101 on the path word.
 func TestUnresolvedSourcePublished(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "m.sh"), []byte("source ./nope.sh\necho hi\n"), 0o644); err != nil {
@@ -1011,7 +1011,7 @@ func TestUnresolvedSourcePublished(t *testing.T) {
 	}
 }
 
-// Decision 33: hover on the path word of an unresolved `source` says why.
+// Hover on the path word of an unresolved `source` says why.
 func TestHoverOnUnresolvedSourceWire(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "m.sh"), []byte("source ./nope.sh\necho hi\n"), 0o644); err != nil {

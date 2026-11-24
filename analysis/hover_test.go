@@ -270,7 +270,7 @@ func TestHoverDynamicScopeCapped(t *testing.T) {
 	}
 }
 
-// Decision 33: hover on the path word of an unresolved `source` names the
+// Hover on the path word of an unresolved `source` names the
 // reason; a resolved one and the `source` keyword have no hover.
 func TestHoverUnresolvedSource(t *testing.T) {
 	root := "/w"

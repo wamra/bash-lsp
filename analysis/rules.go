@@ -44,7 +44,7 @@ var ruleByID = func() map[string]RuleInfo {
 	return m
 }()
 
-// reservedRules are the ids of rules the plan names that are not built yet:
+// reservedRules are the ids of rules that are named but not built yet:
 // settings and directives naming them are not mistakes.
 var reservedRules = map[string]bool{"WB1004": true}
 

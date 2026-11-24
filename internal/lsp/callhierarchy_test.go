@@ -146,10 +146,9 @@ func TestCallHierarchyPrepare(t *testing.T) { // C09
 	}
 
 	// Outside every function and not on a function name: the file's
-	// top-level item (plan, "Pinned semantics", Call hierarchy:
-	// "prepareCallHierarchy on a function name (definition or call site) or
-	// anywhere outside a function returns one item (function, or the file's
-	// top-level item)"): the path of a `source` command, an alias
+	// top-level item (prepareCallHierarchy on a function name, a
+	// definition or a call site, or anywhere outside a function returns one
+	// item: the function, or the file's top-level item): the path of a `source` command, an alias
 	// definition, the argument of a top-level call.
 	for _, at := range []struct {
 		text string
@@ -160,8 +159,8 @@ func TestCallHierarchyPrepare(t *testing.T) { // C09
 			t.Errorf("prepare at %q: %+v, want the file's top-level item", at.text, got)
 		}
 	}
-	// Inside a function body and not on a function name (not pinned by the
-	// plan): null, as before.
+	// Inside a function body and not on a function name (not specified):
+	// null, as before.
 	for _, at := range []struct {
 		text string
 		col  int

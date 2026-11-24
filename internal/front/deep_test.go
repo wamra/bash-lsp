@@ -192,8 +192,8 @@ func TestNestingErrorKeepsTheRestOfTheFile(t *testing.T) {
 // construct that takes two levels (a command substitution is a word part and
 // a statement) or three reaches it sooner, and what surrounds the repeated
 // part takes a few. Every operator of a chain and every elif is a level too:
-// a chain or ladder longer than this is a syntax error (ruling for milestone
-// 2a; real scripts do not have them). docs/m2a-nesting-design.md has the table.
+// a chain or ladder longer than this is a syntax error (real scripts do not
+// have them). docs/m2a-nesting-design.md has the table.
 var limits = []struct {
 	name, pre, open, mid, close, post string
 	ok                                int
