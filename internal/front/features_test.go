@@ -224,3 +224,38 @@ func TestTransformOpsRecorded(t *testing.T) {
 		}
 	}
 }
+
+// Shebang lines that name a shell through env or busybox.
+func TestDetectShebangForms(t *testing.T) {
+	cases := []struct {
+		line string
+		want Dialect
+	}{
+		{"#!/bin/busybox sh", POSIX},
+		{"#!/usr/bin/env busybox sh", POSIX},
+		{"#!/bin/busybox ash", POSIX},
+		{"#!/usr/bin/env busybox ash", POSIX},
+		{"#!/bin/busybox sh -e", POSIX},
+		{"#!/usr/bin/env -S sh -e", POSIX},
+		{"#!/usr/bin/env -S bash -e", Bash},
+		{"#!/usr/bin/env -S busybox sh", POSIX},
+		{"#!/usr/bin/env -i sh", POSIX},
+		{"#!/usr/bin/env -i FOO=1 sh", POSIX},
+		{"#!/usr/bin/env -u FOO sh", POSIX},
+		{"#!/usr/bin/env -C /tmp sh", POSIX},
+		{"#!/usr/bin/env -P /bin:/usr/bin sh", POSIX},
+		{"#!/usr/bin/env -iS sh", POSIX},
+		{"#!/usr/bin/env sh", POSIX},
+		{"#!/usr/bin/env bash", Bash},
+		{"#!/bin/sh", POSIX},
+		{"#!/bin/bash", Bash},
+		{"#!/bin/busybox", Bash},
+		{"#!/bin/busybox bash", Bash},
+		{"#!/usr/bin/env -u", Bash},
+	}
+	for _, c := range cases {
+		if got := Detect("x.sh", []byte(c.line+"\necho\n")); got != c.want {
+			t.Errorf("%q: %v, want %v", c.line, got, c.want)
+		}
+	}
+}

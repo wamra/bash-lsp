@@ -41,7 +41,8 @@ func byShellName(name string) (Dialect, bool) {
 }
 
 // Detect picks the dialect, in order: a `# shellcheck shell=NAME` comment in
-// the first 5 lines; the shebang interpreter (basename, `env NAME` unwrapped);
+// the first 5 lines; the shebang interpreter (basename; `env` options, `env -S` strings and
+// `busybox APPLET` unwrapped);
 // the file extension; else Bash.
 func Detect(path string, src []byte) Dialect {
 	lines := bytes.SplitN(src, []byte("\n"), 6)
@@ -78,18 +79,39 @@ func byShebang(line string) (Dialect, bool) {
 	if len(fields) == 0 {
 		return 0, false
 	}
-	name := baseName(fields[0])
-	if name == "env" {
-		name = ""
-		for _, a := range fields[1:] {
-			if strings.HasPrefix(a, "-") || strings.Contains(a, "=") {
-				continue // env flags and VAR=value assignments
-			}
-			name = baseName(a)
-			break
-		}
+	name, fields := baseName(fields[0]), fields[1:]
+	for name == "env" {
+		name, fields = envCommand(fields)
+	}
+	if name == "busybox" && len(fields) > 0 {
+		name = baseName(strings.Trim(fields[0], `"'`)) // `busybox sh`: the applet is the shell
 	}
 	return byShellName(name)
+}
+
+// envCommand skips the options and VAR=value assignments of an `env`
+// shebang and returns the command name with the words after it. The options
+// are env(1)'s: -C, -P and -u take an argument, -S holds a string that env
+// splits into more options and the command (`env -S sh -e`), the others
+// (-i, -v, -0) stand alone.
+func envCommand(fields []string) (string, []string) {
+	for len(fields) > 0 {
+		a := strings.Trim(fields[0], `"'`)
+		switch {
+		case a == "-C" || a == "-P" || a == "-u":
+			if len(fields) < 2 {
+				return "", nil
+			}
+			fields = fields[2:]
+		case strings.HasPrefix(a, "-S") && len(a) > 2:
+			fields = append([]string{a[2:]}, fields[1:]...)
+		case strings.HasPrefix(a, "-") || strings.Contains(a, "="):
+			fields = fields[1:] // other env flags and VAR=value assignments
+		default:
+			return baseName(a), fields[1:]
+		}
+	}
+	return "", nil
 }
 
 // baseName is the last element of a slash-separated path (shebangs always use '/').
