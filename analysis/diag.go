@@ -458,7 +458,6 @@ func scanFile(ff *FileFacts) *fileScan {
 	sc.shebang = len(src) >= 2 && src[0] == '#' && src[1] == '!'
 	sc.indirect = bytes.Contains(src, []byte("${!"))
 	sc.lastpipe = bytes.Contains(src, []byte("lastpipe"))
-	sc.version.text(src)
 	for _, st := range f.Root.Children {
 		if st.Kind == tree.KErrorGap {
 			sc.hasGap = true
@@ -502,8 +501,13 @@ func scanFile(ff *FileFacts) *fileScan {
 	}
 	var words []*tree.Node
 	for _, u := range ff.Uses {
-		if u.Kind == UseVarRead && (u.Name == "EPOCHSECONDS" || u.Name == "EPOCHREALTIME") {
-			sc.version.epoch = append(sc.version.epoch, u)
+		if u.Kind == UseVarRead {
+			switch u.Name {
+			case "EPOCHSECONDS", "EPOCHREALTIME":
+				sc.version.epoch = append(sc.version.epoch, u)
+			case "BASH_VERSION", "BASH_VERSINFO":
+				sc.version.read(u)
+			}
 		}
 		if u.Kind != UseCall || u.Via != ViaNone || u.ViaAlias || u.Node == nil || u.Node.Kind != tree.KCall {
 			continue

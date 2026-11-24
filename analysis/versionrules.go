@@ -1,7 +1,6 @@
 package analysis
 
 import (
-	"bytes"
 	"fmt"
 	"slices"
 	"sort"
@@ -109,11 +108,52 @@ type versionScan struct {
 	hits    []featureHit
 	epoch   []*Use // reads of EPOCHSECONDS and EPOCHREALTIME
 	assoc   map[string]bool
-	guarded bool // the text mentions BASH_VERSION or BASH_VERSINFO
+	guarded bool // some code reads BASH_VERSION or BASH_VERSINFO other than to print it
+	guardAt int  // the offset of the first such read; features before it are not guarded
 }
 
-func (vs *versionScan) text(src []byte) {
-	vs.guarded = bytes.Contains(src, []byte("BASH_VERSINFO")) || bytes.Contains(src, []byte("BASH_VERSION"))
+// printers are the commands whose arguments are only shown: a read of the
+// bash version there is a report, not a check.
+var printers = map[string]bool{"echo": true, "printf": true, "log": true}
+
+// read notes a read of BASH_VERSION or BASH_VERSINFO. Only a read in code
+// that does more than print the value counts as a check, and only the
+// first one in source order matters: comments, single-quoted strings and
+// heredoc bodies are not reads, and the arguments of echo, printf and log
+// outside a test or an arithmetic expression only print.
+func (vs *versionScan) read(u *Use) {
+	if !versionCheck(u.Node) {
+		return
+	}
+	if off := u.Range.Start.Offset; !vs.guarded || off < vs.guardAt {
+		vs.guarded, vs.guardAt = true, off
+	}
+}
+
+// versionCheck reports whether a read at n is more than a print.
+func versionCheck(n *tree.Node) bool {
+	for p := n; p != nil; p = p.Parent {
+		switch p.Kind {
+		case tree.KHeredoc:
+			return false
+		case tree.KTest, tree.KArith, tree.KArithExp, tree.KLet, tree.KDecl, tree.KStmt:
+			return true
+		case tree.KCall:
+			name, _ := callWord(p)
+			return !printers[name]
+		}
+	}
+	return true
+}
+
+// callWord is the literal command word of a call node.
+func callWord(call *tree.Node) (string, bool) {
+	for _, c := range call.Children {
+		if c.Kind == tree.KWord {
+			return literalText(c)
+		}
+	}
+	return "", false
 }
 
 // decl notes the version evidence of a declaration: an associative array, a
@@ -227,18 +267,26 @@ func (c *diagCtx) versions() {
 }
 
 // bashVersions reports each feature whose first version is above the
-// target's minimum. A file that mentions BASH_VERSION or BASH_VERSINFO is
-// taken to guard its newer features and is not reported (the guard may be
-// an `if`, an `&&`, or an early exit before the feature).
+// target's minimum, except where the script shows it copes with an older
+// bash: a read of BASH_VERSION or BASH_VERSINFO guards every feature after
+// it (the guard may be an `if`, an `&&`, or an early exit), and a use that
+// tolerates failure or sits behind a test is skipped (see tolerated).
 func (c *diagCtx) bashVersions() {
 	vs := &c.scan.version
-	if vs.guarded {
-		return
-	}
 	min := c.target.Min
+	var loc *tree.Locator
 	report := func(key string, r tree.Range) {
 		info := featureByKey[key]
 		if info.MinBash == (BashVersion{}) || !min.Less(info.MinBash) {
+			return
+		}
+		if vs.guarded && r.Start.Offset >= vs.guardAt {
+			return
+		}
+		if loc == nil {
+			loc = c.f.NewLocator()
+		}
+		if tolerated(c.f.Src, loc.At(r.Start.Offset)) {
 			return
 		}
 		c.add("WB1301", r, fmt.Sprintf("%s (%s) need bash %s; the target range starts at %s", info.Name, featureSyntax[key], info.MinBash, min))
@@ -256,7 +304,7 @@ func (c *diagCtx) bashVersions() {
 	if len(vs.epoch) > 0 {
 		bs = c.s.bindings[c.file]
 		for _, u := range vs.epoch {
-			if r, ok := c.epochRead(bs, u); ok {
+			if r, ok := c.epochRead(bs, u); ok && !inTest(u.Node) {
 				report("epochseconds", r)
 			}
 		}
@@ -340,4 +388,169 @@ func (c *diagCtx) bashOnly() {
 		}
 		c.add("WB1302", ft.Range, fmt.Sprintf("%s (%s) are bash only; this file is an sh script", info.Name, featureSyntax[ft.Key]))
 	}
+}
+
+// tolerated reports whether the command at n copes with the feature being
+// missing, or only runs when a test allows it. n is the deepest node at the
+// start of the finding. The command is tolerated when
+//   - it is the left side of `||` in an and-or list, or its standard error
+//     goes to /dev/null (`shopt -s globstar 2>/dev/null || true`);
+//   - it is the right side of `&&` after a test (`[ -n "$x" ] && cmd`), the
+//     operands between joined by `&&`; or
+//   - it is a statement of the then-body of an `if` or `elif` whose
+//     condition holds a test.
+//
+// A test is any `[[ ]]`, `[ ]`, `test` or `(( ))`: what it checks cannot be
+// told apart from a version probe, so the rule leaves such code alone.
+// Code at the top level, after `;`, behind a command, in an else branch,
+// deeper than the then-body's own statements, in a loop or in a function
+// is not tolerated.
+func tolerated(src []byte, n *tree.Node) bool {
+	for n != nil && n.Kind != tree.KStmt {
+		n = n.Parent
+	}
+	if n == nil {
+		return false
+	}
+	if stderrToNull(src, n) {
+		return true
+	}
+	p := n.Parent
+	if p == nil {
+		return false
+	}
+	switch p.Kind {
+	case tree.KAndOr:
+		return andOrTolerated(src, p, n)
+	case tree.KBlock:
+		if g := p.Parent; g != nil && g.Kind == tree.KIf && len(g.Children) > 1 && g.Children[1] == p {
+			return condHasTest(g.Children[0])
+		}
+	}
+	return false
+}
+
+// stderrToNull reports whether the statement redirects standard error to
+// /dev/null: `2>/dev/null`, `2>>/dev/null`, `&>/dev/null`, `&>>/dev/null`.
+func stderrToNull(src []byte, st *tree.Node) bool {
+	for _, c := range st.Children {
+		if c.Kind != tree.KRedirect {
+			continue
+		}
+		a, b := c.Range.Start.Offset, c.Range.End.Offset
+		if a < 0 || b > len(src) || a >= b {
+			continue
+		}
+		t := strings.Join(strings.Fields(string(src[a:b])), "")
+		if t == "2>/dev/null" || t == "2>>/dev/null" || t == "&>/dev/null" || t == "&>>/dev/null" {
+			return true
+		}
+	}
+	return false
+}
+
+// andOrOp is the operator between operands i and i+1 of an and-or node:
+// "&&", "||" or "" when the text between them holds neither.
+func andOrOp(src []byte, p *tree.Node, i int) string {
+	a, b := p.Children[i].Range.End.Offset, p.Children[i+1].Range.Start.Offset
+	if a < 0 || b > len(src) || a > b {
+		return ""
+	}
+	t := src[a:b]
+	for k := 0; k+1 < len(t); k++ {
+		if t[k] == '&' && t[k+1] == '&' {
+			return "&&"
+		}
+		if t[k] == '|' && t[k+1] == '|' {
+			return "||"
+		}
+	}
+	return ""
+}
+
+func andOrTolerated(src []byte, p, n *tree.Node) bool {
+	i := slices.Index(p.Children, n)
+	if i < 0 {
+		return false
+	}
+	if i+1 < len(p.Children) && andOrOp(src, p, i) == "||" {
+		return true
+	}
+	for j := i - 1; j >= 0 && andOrOp(src, p, j) == "&&"; j-- {
+		if isTestStmt(p.Children[j]) {
+			return true
+		}
+	}
+	return false
+}
+
+// isTestStmt reports whether a statement is a test: `[[ ]]`, `(( ))`, or a
+// call of `[` or `test`.
+func isTestStmt(st *tree.Node) bool {
+	for _, c := range st.Children {
+		switch c.Kind {
+		case tree.KTest, tree.KArith:
+			return true
+		case tree.KCall:
+			if name, ok := callWord(c); ok && (name == "[" || name == "test") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// condHasTest reports whether the condition of an if (a block of
+// statements) holds a test as a statement or as the first operand of an
+// and-or list.
+func condHasTest(cond *tree.Node) bool {
+	for _, st := range cond.Children {
+		if st.Kind != tree.KStmt {
+			continue
+		}
+		if isTestStmt(st) {
+			return true
+		}
+		for _, c := range st.Children {
+			if c.Kind == tree.KAndOr && len(c.Children) > 0 && isTestStmt(c.Children[0]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// inTest reports whether the read at n is an operand of a test: inside
+// `[[ ]]`, a `[` or `test` call, or a `(( ))` used as a condition. A test of
+// EPOCHSECONDS is how a script finds out whether it has it.
+func inTest(n *tree.Node) bool {
+	for p := n; p != nil && p.Kind != tree.KStmt; p = p.Parent {
+		switch p.Kind {
+		case tree.KTest:
+			return true
+		case tree.KCall:
+			name, ok := callWord(p)
+			return ok && (name == "[" || name == "test")
+		case tree.KArith:
+			return arithIsCondition(p)
+		}
+	}
+	return false
+}
+
+// arithIsCondition reports whether a `(( ))` command is an operand of an
+// and-or list or part of an if or while condition.
+func arithIsCondition(a *tree.Node) bool {
+	st := a.Parent
+	if st == nil || st.Kind != tree.KStmt || st.Parent == nil {
+		return false
+	}
+	switch p := st.Parent; p.Kind {
+	case tree.KAndOr:
+		return true
+	case tree.KBlock:
+		g := p.Parent
+		return g != nil && (g.Kind == tree.KIf || g.Kind == tree.KWhile) && len(g.Children) > 0 && g.Children[0] == p
+	}
+	return false
 }
