@@ -20,6 +20,7 @@ import (
 	"github.com/wamra/bash-lsp/analysis"
 	"github.com/wamra/bash-lsp/internal/config"
 	"github.com/wamra/bash-lsp/internal/extool"
+	"github.com/wamra/bash-lsp/internal/helpdoc"
 	"github.com/wamra/bash-lsp/internal/redact"
 	"github.com/wamra/bash-lsp/internal/workspace"
 	"github.com/wamra/bash-lsp/parse"
@@ -126,7 +127,9 @@ type server struct {
 	epoch        int               // settings reloads so far (part of a pull result id)
 	reloadMsg    map[string]string // per folder root: the "not reloaded" message sent for its last failed reload (loop only)
 	profileOnce  sync.Once
-	profile      *extool.Profile // the PATH profile, read once per session (pathProfile)
+	profile      *extool.Profile             // the PATH profile, read once per session (pathProfile)
+	helpRun      helpdoc.Runner              // starts help and man (helpdoc.go); extool.Run, a fake in tests
+	helpTools    map[backend]*helpdoc.Lookup // per folder, built on first hover (loop only)
 
 	started bool
 	ready   chan struct{} // closed when folders is set
@@ -203,6 +206,7 @@ func newServer(in io.Reader, out io.Writer, logw io.Writer, version string) *ser
 		live:      map[string]*liveReq{},
 		folderSig: make(chan struct{}, 1),
 		fmtSem:    make(chan struct{}, 2),
+		helpRun:   extool.Run,
 		reloadMsg: map[string]string{},
 	}
 }
@@ -775,7 +779,7 @@ func (s *server) hover(raw json.RawMessage) (any, *rpcError) {
 	}
 	md, rng, found := snap.Hover(path, off)
 	if !found {
-		return nil, nil
+		return s.helpHover(p.TextDocument.URI, snap, path, off)
 	}
 	return hover{Contents: markupContent{Kind: "markdown", Value: md}, Range: s.rangeIn(converters{}, snap, path, rng)}, nil
 }
