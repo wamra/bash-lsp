@@ -300,6 +300,54 @@ func (w *Workspace) Owns(path string) bool {
 	return !w.excluded(path)
 }
 
+// Reaches reports whether the discovery walk descends into dir (absolute,
+// resolved): dir is the root, or it is inside the root, not in an excluded
+// subtree, not a skipped directory name, and neither it nor a directory above
+// it is git-ignored. A folder this workspace does not reach is indexed by
+// nobody unless it is served on its own. Only .gitignore files are read.
+func (w *Workspace) Reaches(dir string) bool {
+	dir = filepath.Clean(dir)
+	if !w.within(dir) {
+		return false
+	}
+	if w.IsRoot(dir) {
+		return true
+	}
+	w.mu.Lock()
+	excluded := w.excluded(dir)
+	w.mu.Unlock()
+	if excluded {
+		return false
+	}
+	if w.skipDir(filepath.Base(dir)) {
+		return false
+	}
+	// The spelling relative to the root keeps the case the patterns see;
+	// a case variant of the root's own spelling falls back to the folded one.
+	rel, err := filepath.Rel(w.root, dir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		if rel, err = filepath.Rel(w.key(w.root), w.key(dir)); err != nil {
+			return false
+		}
+	}
+	return !w.ignoredPath(rel, true)
+}
+
+// SameDir reports whether x and y (absolute, resolved) name one directory:
+// equal spellings, or both exist and are the same file on disk (a case
+// variant on a case-insensitive volume). It needs no volume flag.
+func SameDir(x, y string) bool {
+	if x == y {
+		return true
+	}
+	fx, err := os.Stat(x)
+	if err != nil {
+		return false
+	}
+	fy, err := os.Stat(y)
+	return err == nil && os.SameFile(fx, fy)
+}
+
 // SetExcluded replaces the excluded subtrees (see OpenExcluding) and, when
 // they changed, re-walks the root and rebuilds. Overlays below a newly
 // excluded directory stay until CloseOverlay.

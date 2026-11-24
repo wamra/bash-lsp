@@ -13,9 +13,13 @@ import (
 // ---- workspace folders ----
 //
 // One workspace per outermost folder. A folder nested inside another
-// workspace folder is served by the outer folder's backend: it is not
-// excluded from the outer walk and gets no backend of its own (ruling R58),
-// so answers are the same whether or not the nested folder is also named.
+// workspace folder is served by the outer folder's backend when the outer walk
+// reaches it: it is not excluded from the outer walk and gets no backend of
+// its own (ruling R58), so answers are the same whether or not the nested
+// folder is also named. A nested folder the outer walk does not reach (it is
+// git-ignored, or inside a skipped directory such as node_modules) is indexed
+// by nobody else, so it gets its own backend, exactly as if it were the only
+// folder; a document inside it is served there, by the innermost folder.
 // Removing the outer folder while the inner remains gives the inner its own
 // backend; removing the inner while the outer remains changes nothing;
 // adding an outer folder after the inner absorbs the inner. A document
@@ -53,12 +57,23 @@ func resolveRoot(p string) string {
 }
 
 // declare records the client's folders. A root that does not resolve is
-// logged and kept (it serves nothing).
+// logged and kept (it serves nothing). A root named twice (the same cleaned
+// spelling, or the same directory) is kept once, so one removal undeclares it.
 func (s *server) declare(roots []string) []declaredFolder {
 	out := make([]declaredFolder, 0, len(roots))
 	for _, r := range roots {
 		r = filepath.Clean(r)
 		real := resolveRoot(r)
+		dup := false
+		for _, e := range out {
+			if e.client == r || real != "" && s.sameRoot(e.real, real) {
+				dup = true
+				break
+			}
+		}
+		if dup {
+			continue
+		}
 		if real == "" {
 			s.log.Printf("cannot open workspace folder %s: it does not resolve", r)
 		}
@@ -68,7 +83,8 @@ func (s *server) declare(roots []string) []declaredFolder {
 }
 
 // reconcile returns the folders that serve the declared ones: each declared
-// root not inside a served folder, outermost first, reusing a folder of
+// root not inside a served folder whose walk reaches it (a root the outer walk
+// skips keeps a backend of its own), outermost first, reusing a folder of
 // existing with the same root and opening the others (each file is read and
 // parsed once: no two served folders overlap). A root that does not open is
 // logged and left out, so a folder nested in it is served instead. A root
@@ -111,10 +127,12 @@ func (s *server) reconcile(declared []declaredFolder, existing []*folder) []*fol
 	return out
 }
 
-// covered reports whether one of fs holds real (its root or below).
+// covered reports whether one of fs serves real: it holds real (its root or
+// below) and its walk reaches it. A directory inside a folder that the walk
+// skips is not covered; it needs a backend of its own.
 func (s *server) covered(fs []*folder, real string) bool {
 	for _, f := range fs {
-		if f.ws.Contains(real) {
+		if f.ws.Contains(real) && f.ws.Reaches(real) {
 			return true
 		}
 	}
@@ -130,27 +148,30 @@ func (s *server) route(p string) (backend, string) {
 	return s.loose, s.loose.Canon(p)
 }
 
-// folderOfClient is the folder that holds the client path p, and p's
-// canonical spelling in it; nil outside every folder.
+// folderOfClient is the innermost folder (the longest root) that holds the
+// client path p, and p's canonical spelling in it; nil outside every folder.
 func (s *server) folderOfClient(p string) (*folder, string) {
 	p = filepath.Clean(p)
+	var best *folder
+	var canon string
 	for _, f := range s.folders {
-		if c := f.ws.Canon(p); f.ws.Owns(c) {
-			return f, c
+		if c := f.ws.Canon(p); f.ws.Owns(c) && (best == nil || len(f.ws.Root()) > len(best.ws.Root())) {
+			best, canon = f, c
 		}
 	}
-	return nil, ""
+	return best, canon
 }
 
-// folderOf is the folder that holds the canonical path p, by its spelling
-// alone (no file is touched); nil outside every folder.
+// folderOf is the innermost folder that holds the canonical path p, by its
+// spelling alone (no file is touched); nil outside every folder.
 func (s *server) folderOf(p string) *folder {
+	var best *folder
 	for _, f := range s.folders {
-		if f.ws.Owns(p) {
-			return f
+		if f.ws.Owns(p) && (best == nil || len(f.ws.Root()) > len(best.ws.Root())) {
+			best = f
 		}
 	}
-	return nil
+	return best
 }
 
 // snapshotHolding is the current snapshot that holds the file p, by
@@ -256,20 +277,13 @@ func (s *server) didChangeFolders(raw json.RawMessage) *rpcError {
 }
 
 // sameRoot reports whether two resolved roots name one directory: equal
-// spellings, or both the root of one served folder (its case rule).
+// spellings, or the same directory on disk (a case variant on a
+// case-insensitive volume). Empty (unresolved) roots are never the same.
 func (s *server) sameRoot(x, y string) bool {
-	if x == y {
-		return true
-	}
 	if x == "" || y == "" {
 		return false
 	}
-	for _, f := range s.folders {
-		if f.ws.IsRoot(x) && f.ws.IsRoot(y) {
-			return true
-		}
-	}
-	return false
+	return x == y || workspace.SameDir(x, y)
 }
 
 // rehome moves each open document whose backend or canonical path changed:

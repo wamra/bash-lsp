@@ -154,7 +154,8 @@ func TestNoPlanReferencesInComments(t *testing.T) {
 // has no dependencies (the parser is vendored under internal/front/syntax).
 func TestGoModHasNoRequire(t *testing.T) {
 	// The detector itself, on go.mod texts that do require something.
-	for _, src := range []string{"module m\n\nrequire example.com/x v1.0.0\n", "module m\nrequire (\n\texample.com/x v1.0.0\n)\n"} {
+	for _, src := range []string{"module m\n\nrequire example.com/x v1.0.0\n", "module m\nrequire (\n\texample.com/x v1.0.0\n)\n",
+		"module m\nrequire(\n\tx v1\n)\n", "module m\nrequire(x v1)\n"} {
 		if len(goModRequires(src)) == 0 {
 			t.Fatalf("a require is not detected in %q", src)
 		}
@@ -173,7 +174,7 @@ func TestGoModHasNoRequire(t *testing.T) {
 func goModRequires(src string) []string {
 	var out []string
 	for i, line := range strings.Split(src, "\n") {
-		if f := strings.Fields(line); len(f) > 0 && f[0] == "require" {
+		if f := strings.Fields(line); len(f) > 0 && (f[0] == "require" || strings.HasPrefix(f[0], "require(")) {
 			out = append(out, strconv.Itoa(i+1)+": "+strings.TrimSpace(line))
 		}
 	}

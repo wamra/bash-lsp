@@ -623,3 +623,79 @@ func TestSkippedListsEachFileWithItsReason(t *testing.T) {
 		t.Fatalf("Report().Skipped = %d, Skipped() has %d", n, len(got))
 	}
 }
+
+func TestReachesFollowsTheWalk(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, ".gitignore"), "vendor/\n")
+	write(t, filepath.Join(root, "plain", "p.sh"), "p() { :; }\n")
+	write(t, filepath.Join(root, "vendor", "v.sh"), "v() { :; }\n")
+	write(t, filepath.Join(root, "vendor", "deep", "d.sh"), "d() { :; }\n")
+	write(t, filepath.Join(root, "node_modules", "nm", "n.sh"), "n() { :; }\n")
+	write(t, filepath.Join(root, "a", ".gitignore"), "b/\n")
+	write(t, filepath.Join(root, "a", "b", "b.sh"), "b() { :; }\n")
+	write(t, filepath.Join(root, "a", "c", "c.sh"), "c() { :; }\n")
+	write(t, filepath.Join(root, "inner", "i.sh"), "i() { :; }\n")
+	real, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := OpenExcluding(real, Limits{}, []string{filepath.Join(real, "inner")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		rel  string
+		want bool
+	}{
+		{".", true},
+		{"plain", true},
+		{"vendor", false},
+		{"node_modules", false},
+		{"node_modules/nm", false},
+		{"vendor/deep", false},
+		{"a", true},
+		{"a/b", false},
+		{"a/c", true},
+		{"inner", false},
+	} {
+		if got := w.Reaches(filepath.Join(real, filepath.FromSlash(c.rel))); got != c.want {
+			t.Errorf("Reaches(%s) = %v, want %v", c.rel, got, c.want)
+		}
+	}
+	if w.Reaches(filepath.Dir(real)) || w.Reaches(t.TempDir()) {
+		t.Error("a path outside the root is reached")
+	}
+}
+
+func TestSameDir(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := filepath.Join(base, "dir")
+	other := filepath.Join(base, "other")
+	for _, p := range []string{d, other} {
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !SameDir(d, d) {
+		t.Error("equal spellings differ")
+	}
+	if SameDir(d, other) {
+		t.Error("two directories are the same")
+	}
+	if SameDir(d, filepath.Join(base, "missing")) {
+		t.Error("a missing path is the same as an existing one")
+	}
+	variant := filepath.Join(base, "DIR")
+	folds := false
+	if fi, err := os.Stat(variant); err == nil {
+		if a, err := os.Stat(d); err == nil && os.SameFile(a, fi) {
+			folds = true
+		}
+	}
+	if got := SameDir(d, variant); got != folds {
+		t.Errorf("SameDir(case variant) = %v, volume folds = %v", got, folds)
+	}
+}
