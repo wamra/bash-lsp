@@ -442,14 +442,14 @@ func BenchmarkFormatPhases(b *testing.B) {
 	}
 	b.Run("parse", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
-			if _, _, err := strictParse("x.sh", src, Bash); err != nil {
+			if _, _, err := strictParse("x.sh", src, Bash, FormatOptions{}); err != nil {
 				b.Fatal(err)
 			}
 		}
 	})
 	b.Run("parse+print", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
-			f, _, err := strictParse("x.sh", src, Bash)
+			f, _, err := strictParse("x.sh", src, Bash, FormatOptions{})
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -472,4 +472,70 @@ func BenchmarkFormatPhases(b *testing.B) {
 			}
 		}
 	})
+}
+
+// An sh file is read with the POSIX grammar, which takes `[[` for a command:
+// `[[ $a<$b ]]` would be a test and a redirection, `=~ a|b` a pipe. A file
+// that the two grammars read differently is not formatted.
+func TestFormatShGrammarDependent(t *testing.T) {
+	bodies := []string{"[[ $a<$b ]]\n", "[[ $x =~ a|b ]]\n", "if [[ $a>$b ]]; then :; fi\n"}
+	for _, body := range bodies {
+		for name, c := range map[string]struct{ path, head string }{
+			"noext":   {"script", ""},
+			"nosheb":  {"x.sh", ""},
+			"binsh":   {"x.sh", "#!/bin/sh\n"},
+			"envsh":   {"x", "#!/usr/bin/env sh\n"},
+			"directv": {"x.sh", "# shellcheck shell=sh\n"},
+		} {
+			src := []byte(c.head + body)
+			out, err := Format(c.path, src, FormatOptions{})
+			if err != nil {
+				if !errors.Is(err, ErrFormatUnsupported) || !strings.Contains(err.Error(), "grammar-dependent") {
+					t.Errorf("%s %q: %v", name, body, err)
+				}
+				continue
+			}
+			if bytes.Contains(out, []byte("| b")) || bytes.Contains(out, []byte("]] <")) || bytes.Contains(out, []byte("]] >")) {
+				t.Errorf("%s %q: meaning changed: %q", name, body, out)
+			}
+		}
+	}
+	for _, c := range []struct{ src string }{{"#!/bin/sh\n[[ $a<$b ]]\n"}, {"#!/bin/sh\n[[ $x =~ a|b ]]\n"}} {
+		if _, err := Format("x.sh", []byte(c.src), FormatOptions{}); !errors.Is(err, ErrFormatUnsupported) || !strings.Contains(err.Error(), "grammar-dependent") {
+			t.Errorf("%q: %v", c.src, err)
+		}
+		if _, _, _, err := FormatRange("x.sh", []byte(c.src), 0, len(c.src), FormatOptions{}); !errors.Is(err, ErrFormatUnsupported) {
+			t.Errorf("range %q: %v", c.src, err)
+		}
+	}
+	// A plain POSIX file, and sh text both grammars print alike, format as before.
+	out, err := Format("x.sh", []byte("#!/bin/sh\nif [ -n \"$a\" ];then echo   a;fi\nf(){ echo   b; }\n"), FormatOptions{})
+	if err != nil || string(out) != "#!/bin/sh\nif [ -n \"$a\" ]; then echo a; fi\nf() { echo b; }\n" {
+		t.Fatalf("%q %v", out, err)
+	}
+}
+
+// A here-document delimiter that is quoted in one part and not in another is
+// not formatted: the shell takes the body as literal, and the tree check
+// cannot be trusted on a delimiter the parser may read differently.
+func TestFormatRefusesMixedHeredocDelimiter(t *testing.T) {
+	for _, d := range []string{`"E"F`, `'E'F`, `E"F"`, `E'F'`} {
+		src := []byte("cat <<" + d + "\n$(echo   a;b)  `c`\nEF\necho   x\n")
+		if _, err := Format("x.sh", src, FormatOptions{}); !errors.Is(err, ErrFormatUnsupported) || !strings.Contains(err.Error(), "delimiter") {
+			t.Errorf("%s: %v", d, err)
+		}
+		if _, _, _, err := FormatRange("x.sh", src, 0, len(src), FormatOptions{}); !errors.Is(err, ErrFormatUnsupported) {
+			t.Errorf("range %s: %v", d, err)
+		}
+	}
+	for _, d := range []string{`"EF"`, `'EF'`, `\EF`, `EF`} {
+		src := []byte("cat <<" + d + "\n$(echo   a;b)\nEF\necho   x\n")
+		out, err := Format("x.sh", src, FormatOptions{})
+		if err != nil || !strings.Contains(string(out), "$(echo   a;b)") && !strings.Contains(string(out), "echo a") {
+			t.Errorf("%s: %q %v", d, out, err)
+		}
+	}
+	if out, err := Format("x.sh", []byte("cat <<\"EF\"\n$(echo   a;b)\nEF\necho   x\n"), FormatOptions{}); err != nil || string(out) != "cat <<\"EF\"\n$(echo   a;b)\nEF\necho x\n" {
+		t.Errorf("quoted body: %q %v", out, err)
+	}
 }

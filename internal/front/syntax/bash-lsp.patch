@@ -22,10 +22,21 @@ index 82a5c0c..651dfa4 100644
  			// `[` only starts an `[idx]=val` element when it begins a new word;
  			// otherwise it continues a glob like `foo[0-9]`.
 diff --git a/internal/front/syntax/parser.go b/internal/front/syntax/parser.go
-index 0318f0b..c864807 100644
+index 0318f0b..1f68668 100644
 --- a/internal/front/syntax/parser.go
 +++ b/internal/front/syntax/parser.go
-@@ -770,6 +770,8 @@ func (p *Parser) doHeredocs() {
+@@ -733,7 +733,9 @@ func (p *Parser) unquotedWordBytes(w *Word) ([]byte, bool) {
+ 	buf := make([]byte, 0, 4)
+ 	didUnquote := false
+ 	for _, wp := range w.Parts {
+-		buf, didUnquote = p.unquotedWordPart(buf, wp, false)
++		var q bool
++		buf, q = p.unquotedWordPart(buf, wp, false)
++		didUnquote = didUnquote || q
+ 	}
+ 	return buf, didUnquote
+ }
+@@ -770,6 +772,8 @@ func (p *Parser) doHeredocs() {
  		return
  	}
  	p.rune() // consume '\n', since we know p.tok == _Newl
@@ -34,7 +45,7 @@ index 0318f0b..c864807 100644
  	old := p.quote
  	p.heredocs = p.heredocs[:p.buriedHdocs]
  	for i, r := range hdocs {
-@@ -941,8 +943,12 @@ func (p *Parser) errPass(err error) {
+@@ -941,8 +945,12 @@ func (p *Parser) errPass(err error) {
  		p.bsp = uint(len(p.bs)) + 1
  		p.r = runeEOF
  		p.w = 1

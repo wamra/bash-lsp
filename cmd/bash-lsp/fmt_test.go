@@ -155,3 +155,93 @@ func TestFmtUsageAndMissingFile(t *testing.T) {
 		t.Fatalf("directory: exit %d err %q", code, errs)
 	}
 }
+
+func TestFmtRefusesReadOnlyFile(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "ro.sh")
+	write(t, p, "echo   a\n", 0o444)
+	write(t, filepath.Join(dir, "ok.sh"), "echo   a\n", 0o644)
+	code, _, errs := runFmt(t, dir, "-w", "ro.sh", "ok.sh")
+	if code != 1 || !strings.Contains(errs, "ro.sh") || !strings.Contains(errs, "not writable") {
+		t.Fatalf("exit %d err %q", code, errs)
+	}
+	if b, _ := os.ReadFile(p); string(b) != "echo   a\n" {
+		t.Fatalf("read-only file rewritten: %q", b)
+	}
+	if st, _ := os.Stat(p); st.Mode().Perm() != 0o444 {
+		t.Fatalf("mode %v", st.Mode())
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "ok.sh")); string(b) != "echo a\n" {
+		t.Fatalf("the other file was not formatted: %q", b)
+	}
+}
+
+func TestFmtRefusesPathOutsideRoot(t *testing.T) {
+	outer := t.TempDir()
+	root := filepath.Join(outer, "ws")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(outer, "out.sh"), "echo   a\n", 0o644)
+	write(t, filepath.Join(root, "in.sh"), "echo   a\n", 0o644)
+	code, out, errs := runFmt(t, root, "-w", "../out.sh", "in.sh")
+	if code != 1 || !strings.Contains(errs, "outside") || out != "" {
+		t.Fatalf("exit %d out %q err %q", code, out, errs)
+	}
+	if b, _ := os.ReadFile(filepath.Join(outer, "out.sh")); string(b) != "echo   a\n" {
+		t.Fatalf("outside file written: %q", b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(root, "in.sh")); string(b) != "echo a\n" {
+		t.Fatalf("inside file: %q", b)
+	}
+	// --root names the directory that bounds it.
+	if code, _, errs := runFmt(t, root, "-w", "--root", outer, "../out.sh"); code != 0 {
+		t.Fatalf("--root: exit %d %q", code, errs)
+	}
+	// A link that leaves the root is outside it.
+	if err := os.Symlink(filepath.Join(outer, "out.sh"), filepath.Join(root, "link.sh")); err == nil {
+		write(t, filepath.Join(outer, "out.sh"), "echo   b\n", 0o644)
+		if code, _, errs := runFmt(t, root, "-w", "link.sh"); code != 1 || !strings.Contains(errs, "outside") {
+			t.Fatalf("link: exit %d %q", code, errs)
+		}
+	}
+}
+
+func TestFmtDoubleDashEndsOptions(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "-w"), "echo   a\n", 0o644)
+	code, out, errs := runFmt(t, dir, "--", "-w")
+	if code != 0 || out != "echo a\n" {
+		t.Fatalf("exit %d out %q err %q", code, out, errs)
+	}
+	if code, _, errs := runFmt(t, dir, "-w", "--", "-w"); code != 0 {
+		t.Fatalf("exit %d %q", code, errs)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "-w")); string(b) != "echo a\n" {
+		t.Fatalf("%q", b)
+	}
+}
+
+func TestFmtHonoursMaxFileBytes(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, ".bash-lsp.toml"), "[limits]\nmax_file_bytes = 20\n", 0o644)
+	write(t, filepath.Join(dir, "big.sh"), "echo   a\necho   b\necho   c\n", 0o644)
+	write(t, filepath.Join(dir, "small.sh"), "echo   a\n", 0o644)
+	code, out, errs := runFmt(t, dir, "-w", "big.sh", "small.sh")
+	if code != 1 || !strings.Contains(errs, "big.sh") || !strings.Contains(errs, "limit") || out != "" {
+		t.Fatalf("exit %d out %q err %q", code, out, errs)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "big.sh")); !strings.Contains(string(b), "   ") {
+		t.Fatalf("over-limit file written: %q", b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "small.sh")); string(b) != "echo a\n" {
+		t.Fatalf("small: %q", b)
+	}
+}
+
+func TestFmtHelpNamesTheLimits(t *testing.T) {
+	code, out, _ := runFmt(t, t.TempDir(), "-h")
+	if code != 0 || !strings.Contains(out, "temporary file") || !strings.Contains(out, "CRLF") || !strings.Contains(out, "$[ ]") {
+		t.Fatalf("exit %d out %q", code, out)
+	}
+}

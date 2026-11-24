@@ -43,7 +43,7 @@ A Go stack overflow is fatal, and upstream's parser is recursive. Commit
 levels`. That commit is not in a release, and three things remained that a
 release would not fix either. They are the patch.
 
-## The patch (`bash-lsp.patch`: 4 files, 14 lines added, 5 removed)
+## The patch (`bash-lsp.patch`: 4 files, 17 lines added, 7 removed)
 
 1. `lexer.go`, `(*Parser).next`: after a comment the lexer called itself to
    read the next token, one stack frame per comment line. 2 MiB of `#` lines
@@ -68,6 +68,14 @@ release would not fix either. They are the patch.
    call `fileutil.Shebang` (in `(*Printer).comments`, only reached with
    `Minify`) is `Shebang`, defined in `shebang.go`. Nothing else in the
    printer differs from upstream.
+5. `parser.go`, `(*Parser).unquotedWordBytes`: a here-document delimiter is
+   quoted when any of its parts is quoted (`<<"E"F`, `<<'E'F`, `<<E\F`).
+   Upstream kept the flag of the last part only, so `<<"E"F` was read as
+   unquoted and its body as expandable, where bash takes it literally.
+   `TestHeredocDelimiterQuotedInAnyPart` pins it; the effect on analysis is
+   that such a body is one literal (no expansion nodes, no uses or
+   declarations inside it). Worth reporting upstream; nobody has been
+   contacted.
 
 Items 1 and 2 are bugs in upstream at `0e0eb36bb6dd`, and also at `v3.14.1`
 and at `95154f9b8122` (the tip when this was written). They are worth

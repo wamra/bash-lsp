@@ -24,9 +24,12 @@
 // Each ignored repo value is reported in Settings.Warnings with the key and
 // the line. The keys that describe the repository (bash.target, bash.dialect,
 // files.include, files.exclude, sources.paths, the [format] options) are
-// replaced by the repo file, except that its files.exclude is added to the
-// user's and a negated pattern in it is dropped: they cannot run code or widen a bound, and the
-// repo knows its own layout. A sources.paths entry is kept to that: the
+// replaced by the repo file: they cannot run code or widen a bound, and the
+// repo knows its own layout. files.exclude is the exception: the user's list
+// and the repo's are two lists, each with its own negations, and a path is
+// excluded when either excludes it. So a repo negation cannot bring back what
+// the user excluded, and a repo pattern excludes a file the user's list
+// re-included (user ["*", "!keep.sh"] with repo ["*.sh"] excludes keep.sh). A sources.paths entry is kept to that: the
 // workspace (workspace.Config) drops, with a notice in Report.Notices, one that
 // is absolute, spelled with ~ or $ (never expanded) or resolves outside the
 // root; a .shellcheckrc source-path is held to the same rule. Lists are
@@ -84,6 +87,7 @@ type Settings struct {
 	CodeIndexPath    string
 	PathProfile      []string // nil = $PATH
 	Include, Exclude []string // files.include / files.exclude, gitignore syntax, root-relative
+	RepoExclude      []string // files.exclude of the repo file: a list of its own (see the package comment)
 	SourcePaths      []string // sources.paths, root-relative, appended after .shellcheckrc source-path entries
 	MaxFiles         int      // [limits] max_files; 0 = built-in; may only lower
 	MaxFileBytes     int64    // [limits] max_file_bytes; 0 = built-in; may only lower
@@ -453,19 +457,10 @@ func (s *Settings) set(l layer, e entry, name string) {
 	case "files.include":
 		s.Include = append([]string{}, e.val.([]string)...)
 	case "files.exclude":
-		pats := e.val.([]string)
-		if l.src != SrcRepo {
-			s.Exclude = append([]string{}, pats...)
-			break
-		}
-		// The repo file adds to the user's excludes. A negation would bring
-		// back what the user excluded, so it is left out.
-		for _, p := range pats {
-			if strings.HasPrefix(p, "!") {
-				s.warn(l, e, "files.exclude: negated pattern %q is not allowed in a repo file (ignored)", p)
-				continue
-			}
-			s.Exclude = append(s.Exclude, p)
+		if l.src == SrcRepo {
+			s.RepoExclude = append([]string{}, e.val.([]string)...)
+		} else {
+			s.Exclude = append([]string{}, e.val.([]string)...)
 		}
 	case "sources.paths":
 		s.SourcePaths = append([]string{}, e.val.([]string)...)
@@ -526,7 +521,7 @@ func (s Settings) Limits() workspace.Limits {
 // Workspace is the part of the settings workspace.OpenWith takes besides the
 // limits; commands is the PATH profile lookup (nil: no command edges).
 func (s Settings) Workspace(commands func(name string) (string, bool)) workspace.Config {
-	return workspace.Config{Commands: commands, Include: s.Include, Exclude: s.Exclude, SourcePaths: s.SourcePaths, Dialect: s.Dialect}
+	return workspace.Config{Commands: commands, Include: s.Include, Exclude: s.Exclude, RepoExclude: s.RepoExclude, SourcePaths: s.SourcePaths, Dialect: s.Dialect}
 }
 
 // UserPath is the user settings file: $BASH_LSP_CONFIG when set (an empty

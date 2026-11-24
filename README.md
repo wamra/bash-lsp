@@ -48,6 +48,7 @@ A comment directive silences findings:
   header). After a command on the same line, before `else` or `elif`, between
   case arms, or with no command after it in its block, it applies to nothing.
 - The settings key `diagnostics.disable` turns a rule off everywhere.
+- The settings key `files.exclude` skips files and directories (gitignore syntax). The user file and the repo file each have their own list with their own `!` negations, and a path is skipped when either list skips it: a repo negation cannot bring back what the user excluded, and a repo pattern skips a file the user's list re-included (user `["*", "!keep.sh"]` with repo `["*.sh"]` skips `keep.sh`).
 
 ## Command line
 
@@ -78,6 +79,32 @@ Positions are 1-based `line:col`, with columns counted in UTF-16 code units
 (the LSP column plus one), printed and accepted alike. Paths are
 relative to the workspace root, with forward slashes on every OS. Exit codes:
 0 success, 1 runtime failure, 2 usage error.
+
+## Formatting
+
+`bash-lsp fmt [-w] [--root DIR] [--] FILE...` formats with the in-process
+printer (shfmt's), with options from the `.editorconfig` files between the
+file and the root, then `[format]` of the settings, then tabs. One file
+without `-w` prints the text; several list the files that would change and
+exit 1 if any does; `-w` rewrites them. A file is left alone, reported, and
+makes the exit code 1 when it has a syntax error, is zsh, has a byte order
+mark, NUL bytes or mixed line endings, is over the size cap (2 MiB, or
+`[limits] max_file_bytes` if lower), is outside the root (the current
+directory unless `--root`), cannot be written, or is an sh file that the POSIX
+and the bash grammar read differently (`[[ $a<$b ]]`). Every printed text is
+parsed again and must give the same tree as the input.
+
+What it does not do:
+
+- `-w` writes a temporary file and renames it over the original. The mode
+  bits are kept; the owner, extended attributes, hard links and setuid or
+  sticky bits are not, and a change made to the file between the read and the
+  rename is lost.
+- A CRLF file is read as line-terminated (bash sees the `\r` as part of the
+  last word of a line); the output keeps CRLF.
+- `$[ ... ]` and `for ((;;)) { ... }` are refused: the printer does not keep
+  them.
+- Command substitutions in backquotes are printed as `$( )`.
 
 ## JSON records
 

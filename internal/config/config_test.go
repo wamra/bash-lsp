@@ -174,7 +174,7 @@ func TestListsAndSections(t *testing.T) {
 		"[format]\nindent = 2\nbinary_next_line = true\nswitch_case_indent = false\nspace_redirects = true\nfunction_next_line = false\nsimplify = true\n[references]\nresolvedOnly = true\n[severity]\nWB1401 = \"error\"\n")
 	s := Merge(nil, repo, nil)
 	if !s.Disabled["WB1401"] || !s.Disabled["WB1301"] || len(s.Disabled) != 2 ||
-		len(s.Include) != 1 || s.Exclude[0] != "vendor/" || len(s.SourcePaths) != 2 || s.SourcePaths[1] != "My Docs/x" ||
+		len(s.Include) != 1 || s.RepoExclude[0] != "vendor/" || len(s.SourcePaths) != 2 || s.SourcePaths[1] != "My Docs/x" ||
 		s.Format.Indent == nil || *s.Format.Indent != 2 || *s.Format.BinaryNextLine != true || *s.Format.SwitchCaseIndent != false ||
 		*s.Format.SpaceRedirects != true || *s.Format.FunctionNextLine != false || *s.Format.Simplify != true ||
 		!s.ResolvedOnly || s.Severity["WB1401"] != analysis.SevError || len(s.Warnings) != 0 {

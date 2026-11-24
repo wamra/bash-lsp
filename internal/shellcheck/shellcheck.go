@@ -2,6 +2,15 @@
 // file at a time on standard input, reads the json1 report and turns the
 // findings into analysis diagnostics. The program is started only through the
 // extool runner, which bounds its time and output.
+//
+// Known limits. The user's own ShellCheck rc is honoured by design: when it
+// sets external-sources=true, a repository file with `source /dev/zero` makes
+// ShellCheck grow to gigabytes until the timeout (the repo's own rc is never
+// given to it). No per-child memory limit exists in the standard library. A
+// descendant that calls setsid escapes the process-group kill. On Windows only
+// the child is killed. The program path is checked and then run, so a swap in
+// between needs write access outside the workspace. A shim that picks its
+// program by its own name or by a relative PATH entry may fail.
 package shellcheck
 
 import (
@@ -136,7 +145,7 @@ func (r *Runner) CheckNotes(ctx context.Context, f *tree.File) ([]analysis.Diagn
 	if err != nil {
 		return nil, rc.notes, fmt.Errorf("shellcheck: %w", err)
 	}
-	if len(rc.ranges) > 0 {
+	if len(rc.ranges) > 0 || rc.all {
 		kept := ds[:0]
 		for _, d := range ds {
 			if code, err := strconv.Atoi(strings.TrimPrefix(d.Rule, "SC")); err == nil && rc.disabled(code) {
@@ -326,7 +335,10 @@ func (m *mapper) offset(line, col int) int {
 		}
 	}
 	if a {
-		return min(start+col-1, end)
+		if col-1 >= end-start {
+			return end
+		}
+		return start + col - 1
 	}
 	offs := m.runes[line]
 	if col-1 >= len(offs) {

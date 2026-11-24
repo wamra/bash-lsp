@@ -226,3 +226,23 @@ func TestGlobIndexLimitsComparisons(t *testing.T) {
 		t.Errorf("a pattern directory scan compared %d names, want %d", got, len(s.paths))
 	}
 }
+
+// An over-cap file is listed; a later Diagnostics run on it that cuts nothing
+// clears the entry; a full run lists it again.
+func TestFindingsCapEntryClearedWhenUnderCap(t *testing.T) {
+	src := "#!/bin/bash\n" + strings.Repeat("local x=1\n", 2100)
+	s := diagWorld(map[string]string{"x.sh": src}, Options{})
+	p := filepath.Join(diagRoot, "x.sh")
+	s.Diagnostics(p, DiagOptions{})
+	if len(limitLines(s, "findings cap")) != 1 {
+		t.Fatalf("no entry after the capped run: %q", s.LimitsHit())
+	}
+	s.Diagnostics(p, DiagOptions{Disabled: map[string]bool{"WB1105": true}})
+	if got := limitLines(s, "findings cap"); len(got) != 0 {
+		t.Errorf("stale entry after a run under the cap: %q", got)
+	}
+	s.Diagnostics(p, DiagOptions{})
+	if len(limitLines(s, "findings cap")) != 1 {
+		t.Errorf("a full run does not list the file again: %q", s.LimitsHit())
+	}
+}
