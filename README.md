@@ -47,11 +47,48 @@ The graph commands print every edge with its resolution and reason
 (`resolved/direct`, `resolved/alias`, `candidate/variable-constant`,
 `candidate/string-eval`, ...); SYMBOL is a function name, `path` or
 `path:line:col`.
+The JSON each command prints with `--json` is described in
+[JSON records](#json-records).
 
 Positions are 1-based `line:col`, with columns counted in UTF-16 code units
 (the LSP column plus one), printed and accepted alike. Paths are
 relative to the workspace root, with forward slashes on every OS. Exit codes:
 0 success, 1 runtime failure, 2 usage error.
+
+## JSON records
+
+Every `--json` answer is one object that carries `generation` (the snapshot it
+was computed from). Paths are relative to the workspace root, with forward
+slashes; `line` and `col` are 1-based with UTF-16 columns. The table lists,
+for each command, the keys of that object and the fields of one record; a
+field followed by `?` is left out when it does not apply. `status` is flat:
+the object is the record. `ast` and `extract` are not in the table (`extract`
+prints JSON lines, see `docs/code-index-integration.md`).
+
+<!-- json-records:begin -->
+| command | wrapper object | fields of one record |
+|---|---|---|
+| `status` | flat | `generation`, `root`, `files`, `dialects`, `skipped`, `skipped_files`, `limits`, `nesting_errors`, `cache` |
+| `symbols` | `generation`, `symbols` | `path`, `line`, `col`, `kind`, `name`, `container` |
+| `callers` | `generation`, `results` | `caller`, `callee`, `relation`, `resolution`, `reason`, `site`, `definition`? |
+| `callees` | `generation`, `results` | `caller`, `callee`, `relation`, `resolution`, `reason`, `site`, `definition`? |
+| `refs` | `generation`, `results` | `path`, `line`, `col`, `resolution`?, `reason`?, `relation`? |
+| `impact` | `generation`, `results` | `path`, `function` |
+| `trace` | `generation`, `found`, `results` | `caller`, `callee`, `relation`, `resolution`, `reason`, `site`, `definition`? |
+| `unresolved` | `generation`, `results` | `caller`, `callee`, `relation`, `resolution`, `reason`, `site`, `text`? |
+| `cycles` | `generation`, `results` | `files` |
+<!-- json-records:end -->
+
+In an edge record (`callers`, `callees`, `trace`, `unresolved`), `caller` and
+`callee` are `{path, function}` (`function` is null for a file); `site` and
+`definition` are `{path, line, col}`. `callee` is null only in `unresolved`,
+where `text` holds the source text of the target that could not be resolved.
+`definition` is the callee's definition the edge goes to; it is on calls, not
+on `source` edges. `found` in `trace` is false, with an empty `results`, when
+there is no path. In `refs`, `resolution`, `reason` and `relation` are left
+out for a reference that is not a call edge to the function (such as the
+`cmd=name` value that a `"$cmd"` call later reaches). The definition itself
+is not listed.
 
 ## Packaging
 
