@@ -354,7 +354,10 @@ func TestProfileTotalBudgetAcrossDirectories(t *testing.T) {
 			budget++
 		}
 	}
-	if budget == 0 || int(opened.Load()) >= len(dirs) || p.Dirs() != len(dirs) {
+	// Two waits of 100 ms and a third cut to what is left use the 250 ms up
+	// (a slow machine can use it up sooner): at most three directories are
+	// opened and every other one is skipped for the budget.
+	if o := int(opened.Load()); budget < len(dirs)-3 || o > 3 || o+budget != len(dirs) || p.Dirs() != len(dirs) {
 		t.Errorf("%d directories opened, %d skipped for the budget, Dirs() = %d; skipped: %q", opened.Load(), budget, p.Dirs(), sk)
 	}
 }
