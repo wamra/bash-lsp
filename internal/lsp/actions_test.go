@@ -128,6 +128,19 @@ func TestHintsRedacted(t *testing.T) {
 	}
 }
 
+func TestInlayHintInvertedRange(t *testing.T) {
+	root := t.TempDir()
+	put(t, filepath.Join(root, "lib/u.sh"), "u() { :; }\n")
+	c := client(t, root)
+	c.openText("a.sh", "source \"${0%/*}/lib/u.sh\"\n")
+	if got := c.inlay("a.sh", wholeRange()); len(got) != 1 {
+		t.Fatalf("whole range: %+v", got)
+	}
+	if got := c.inlay("a.sh", rng(1, 0, 0, 0)); len(got) != 0 {
+		t.Fatalf("inverted range: %+v", got)
+	}
+}
+
 func TestInlayHintUnknownDocument(t *testing.T) {
 	c := client(t, t.TempDir())
 	if got := c.inlay("nope.sh", wholeRange()); len(got) != 0 {
@@ -177,10 +190,17 @@ func TestInlayRefreshAfterReload(t *testing.T) {
 	root := t.TempDir()
 	put(t, filepath.Join(root, "a.sh"), "")
 	c := clientWith(t, clientCfg{root: root, workspaceCap: inlayRefreshCap})
-	c.openText("a.sh", "echo\n")
-	// A reload that changes nothing about the hints sends no refresh.
+	c.openText("a.sh", "rm $f\n")
+	if _, ds := c.waitPush("a.sh"); !hasCode(ds, "WB1401") {
+		t.Fatalf("no WB1401 to begin with: %v", codes(ds))
+	}
+	// A reload that changes nothing about the hints sends no refresh. The
+	// findings republished without WB1401 show that the reload happened.
 	writeUserConfig(t, user, "[diagnostics]\ndisable = [\"WB1401\"]\n")
 	c.notify("workspace/didChangeConfiguration", map[string]any{})
+	if _, ds := c.waitPushWhere("a.sh", func(_ int, ds []Diagnostic) bool { return !hasCode(ds, "WB1401") }); hasCode(ds, "WB1401") {
+		t.Fatalf("reload did not happen: %v", codes(ds))
+	}
 	c.docSymbols("a.sh") // requests are handled in order
 	if n := inlayRefreshes(c); n != 0 {
 		t.Fatalf("%d refresh requests after an unrelated change", n)

@@ -1,10 +1,14 @@
 package analysis
 
 import (
+	"fmt"
+	"math/rand/v2"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wamra/bash-lsp/tree"
 )
@@ -173,5 +177,139 @@ func TestFixAllInsertionsAtOnePoint(t *testing.T) {
 	got := FixAll([]Fix{fix(true, "a", [2]int{5, 5}), fix(true, "b", [2]int{5, 5}), fix(true, "c", [2]int{4, 8}), fix(true, "d", [2]int{5, 9})})
 	if len(got) != 2 || got[0].NewText != "a" || got[1].NewText != "d" {
 		t.Fatalf("%+v", got)
+	}
+}
+
+func TestQuoteExpansionPrefixListAndCRLF(t *testing.T) {
+	for _, src := range []string{"echo ${!▮pre*}\n", "echo ${!▮pre@}\n"} {
+		if fx, ok := quoteAt(t, src); ok {
+			t.Errorf("%q: offered %+v", src, fx)
+		}
+	}
+	fx, ok := quoteAt(t, "echo ${!▮arr[@]}\n")
+	if !ok {
+		t.Error("the key list of an array is a plain expansion")
+	} else if got := apply("echo ${!arr[@]}\n", fx.Edits); got != "echo \"${!arr[@]}\"\n" {
+		t.Errorf("%q", got)
+	}
+	src := "echo $▮x\r\nrm $y\r\n"
+	fx, ok = quoteAt(t, src)
+	if !ok {
+		t.Fatal("a CRLF file gets no offer")
+	}
+	if got := apply(strings.Replace(src, "▮", "", 1), fx.Edits); got != "echo \"$x\"\r\nrm $y\r\n" {
+		t.Errorf("%q", got)
+	}
+}
+
+func TestAddShebangBOMAndLineEnding(t *testing.T) {
+	const bom = "\xEF\xBB\xBF"
+	for _, c := range []struct{ name, src, want string }{
+		{"a.sh", bom + "echo hi\n", bom + "#!/usr/bin/env bash\necho hi\n"},
+		{"b.sh", "echo hi\r\necho\r\n", "#!/usr/bin/env bash\r\necho hi\r\necho\r\n"},
+		{"c.sh", bom + "echo hi\r\n", bom + "#!/usr/bin/env bash\r\necho hi\r\n"},
+		{"d.sh", "echo hi", "#!/usr/bin/env bash\necho hi"},
+	} {
+		q := buildMem(t, map[string]string{c.name: c.src})
+		fx, ok := q.s.AddShebang(filepath.Join(q.root, c.name))
+		if !ok || len(fx.Edits) != 1 {
+			t.Errorf("%s: %+v %v", c.name, fx, ok)
+			continue
+		}
+		if got := apply(c.src, fx.Edits); got != c.want {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
+	}
+	for _, src := range []string{bom + "#!/bin/sh\necho\n", bom + "#!/bin/bash\r\n"} {
+		q := buildMem(t, map[string]string{"x.sh": src})
+		if _, ok := q.s.AddShebang(filepath.Join(q.root, "x.sh")); ok {
+			t.Errorf("%q: offered", src)
+		}
+	}
+}
+
+// fixAllNaive is the definition FixAll must agree with: in order, a safe fix
+// is taken when none of its edits overlaps another of its own or one taken.
+func fixAllNaive(fixes []Fix) []TextEdit {
+	over := func(a, b TextEdit) bool {
+		as, ae, bs, be := a.Range.Start.Offset, a.Range.End.Offset, b.Range.Start.Offset, b.Range.End.Offset
+		if as == ae && bs == be {
+			return as == bs
+		}
+		return as < be && bs < ae
+	}
+	var out []TextEdit
+	for _, fx := range fixes {
+		if !fx.Safe || len(fx.Edits) == 0 {
+			continue
+		}
+		ok := true
+		for i, e := range fx.Edits {
+			for _, o := range append(append([]TextEdit(nil), out...), fx.Edits[:i]...) {
+				if over(o, e) {
+					ok = false
+				}
+			}
+		}
+		if ok {
+			out = append(out, fx.Edits...)
+		}
+	}
+	slices.SortStableFunc(out, byPosition)
+	return out
+}
+
+func TestFixAllAgreesWithTheDefinition(t *testing.T) {
+	rnd := rand.New(rand.NewPCG(7, 11))
+	for round := 0; round < 3000; round++ {
+		var fixes []Fix
+		for i, n := 0, rnd.IntN(12); i < n; i++ {
+			var spans [][2]int
+			for j, m := 0, 1+rnd.IntN(3); j < m; j++ {
+				a := rnd.IntN(14)
+				b := a
+				if rnd.IntN(3) > 0 {
+					b = a + rnd.IntN(6)
+				}
+				spans = append(spans, [2]int{a, b})
+			}
+			fixes = append(fixes, fix(rnd.IntN(5) > 0, fmt.Sprint(i), spans...))
+		}
+		got, want := FixAll(fixes), fixAllNaive(fixes)
+		if len(got) == 0 && len(want) == 0 {
+			continue
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("round %d: %+v\nwant %+v\nfrom %+v", round, got, want, fixes)
+		}
+	}
+}
+
+// Many edits, and wide edits that are taken and rolled back, stay fast.
+func TestFixAllScales(t *testing.T) {
+	const n = 40000
+	var desc, wide []Fix
+	for i := n; i > 0; i-- {
+		desc = append(desc, fix(true, "x", [2]int{i * 2, i*2 + 1}))
+	}
+	for i := 0; i < n; i++ {
+		wide = append(wide, fix(true, "w", [2]int{0, n * 2}, [2]int{n*2 - 1, n*2 - 1})) // the second edit lands inside the first: the fix is rolled back
+	}
+	for _, c := range []struct {
+		name  string
+		fixes []Fix
+		want  int
+	}{{"descending", desc, n}, {"rolled back", wide, 0}} {
+		start := time.Now()
+		got := FixAll(c.fixes)
+		if d := time.Since(start); d > 2*time.Second {
+			t.Errorf("%s: %d fixes took %v", c.name, len(c.fixes), d)
+		}
+		if len(got) != c.want {
+			t.Errorf("%s: %d edits, want %d", c.name, len(got), c.want)
+		}
+	}
+	if got := FixAll(desc); len(got) != n || got[0].Range.Start.Offset != 2 {
+		t.Errorf("descending: %d edits, first at %d", len(got), got[0].Range.Start.Offset)
 	}
 }

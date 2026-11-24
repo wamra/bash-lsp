@@ -54,9 +54,6 @@ func (s *server) inlayHint(raw json.RawMessage) (any, *rpcError) {
 	}
 	r := tree.Range{Start: f.FromUTF16(p.Range.Start.Line, p.Range.Start.Character),
 		End: f.FromUTF16(p.Range.End.Line, p.Range.End.Character)}
-	if r.Start.Offset > r.End.Offset {
-		return out, nil
-	}
 	conv := f.NewConverter()
 	for _, h := range snap.Hints(path, r, st.SourceTargets, st.ParameterNames) {
 		line, col := conv.ToUTF16(h.Pos)

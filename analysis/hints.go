@@ -30,7 +30,7 @@ type Hint struct {
 //   - params: before each argument of a call to a script function whose
 //     parameter at that position has a name, `name:`.
 //
-// A path the snapshot does not hold gives nil.
+// A path the snapshot does not hold gives nil, and so does an inverted range.
 func (s *Snapshot) Hints(path string, within tree.Range, sources, params bool) []Hint {
 	file, ok := s.idx[path]
 	if !ok || (!sources && !params) {
@@ -105,6 +105,7 @@ func (s *Snapshot) paramHints(out []Hint, file, lo, hi int) []Hint {
 	if len(want) == 0 {
 		return out
 	}
+	src := s.facts[file].File.Src
 	sigs := map[*Symbol]*FuncSignature{}
 	for _, b := range s.bindings[file] {
 		words, ok := want[b.Use]
@@ -119,12 +120,12 @@ func (s *Snapshot) paramHints(out []Hint, file, lo, hi int) []Hint {
 			}
 			sigs[b.Sym] = sig
 		}
-		if sig == nil || b.Sym.Decls[0].Name != b.Use.Name {
-			continue // a call through an alias names the alias
+		if sig == nil || b.Reason == ReasonAlias {
+			continue // a call through an alias: the alias may add arguments
 		}
 		for i, w := range words[1:] {
-			if i >= len(sig.Params) {
-				break
+			if i >= len(sig.Params) || isSpread(w, src) {
+				break // past the named parameters, or the position of this argument is unknown
 			}
 			name := sig.Params[i].Name
 			start := w.Range.Start
@@ -135,4 +136,19 @@ func (s *Snapshot) paramHints(out []Hint, file, lo, hi int) []Hint {
 		}
 	}
 	return out
+}
+
+// isSpread reports whether the word w expands to any number of words: `$@`,
+// `$*`, `${@}`, `${*}` or `${name[@]}`, quoted or not.
+func isSpread(w *tree.Node, src []byte) bool {
+	a, b := w.Range.Start.Offset, w.Range.End.Offset
+	if a < 0 || b > len(src) || a >= b {
+		return false
+	}
+	t := strings.Trim(string(src[a:b]), "\"")
+	switch t {
+	case "$@", "$*", "${@}", "${*}":
+		return true
+	}
+	return strings.HasPrefix(t, "${") && (strings.HasSuffix(t, "[@]}") || strings.HasSuffix(t, "[*]}"))
 }

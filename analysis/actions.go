@@ -1,10 +1,14 @@
 package analysis
 
 import (
+	"bytes"
 	"slices"
+	"strings"
 
 	"github.com/wamra/bash-lsp/tree"
 )
+
+var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 
 // shebangFor is the shebang line a file of dialect d is given.
 func shebangFor(d tree.Dialect) (string, bool) {
@@ -32,12 +36,19 @@ func (s *Snapshot) AddShebang(path string) (Fix, bool) {
 		return Fix{}, false
 	}
 	f := s.facts[file].File
-	if len(f.Src) >= 2 && f.Src[0] == '#' && f.Src[1] == '!' {
+	at := 0
+	if bytes.HasPrefix(f.Src, utf8BOM) {
+		at = len(utf8BOM) // the line goes after the byte order mark
+	}
+	if bytes.HasPrefix(f.Src[at:], []byte("#!")) {
 		return Fix{}, false
 	}
 	text, ok := shebangFor(f.Dialect)
 	if !ok {
 		return Fix{}, false
+	}
+	if i := bytes.IndexByte(f.Src, '\n'); i > 0 && f.Src[i-1] == '\r' {
+		text = strings.TrimSuffix(text, "\n") + "\r\n" // the file's own line ending
 	}
 	g := s.adjacency()
 	for _, i := range g.in[Node{Path: path}] {
@@ -45,10 +56,10 @@ func (s *Snapshot) AddShebang(path string) (Fix, bool) {
 			return Fix{}, false
 		}
 	}
-	at := f.PosAt(0)
+	pos := f.PosAt(at)
 	return Fix{
-		Title: "Add shebang " + text[:len(text)-1],
-		Edits: []TextEdit{{Range: tree.Range{Start: at, End: at}, NewText: text}},
+		Title: "Add shebang " + strings.TrimRight(text, "\r\n"),
+		Edits: []TextEdit{{Range: tree.Range{Start: pos, End: pos}, NewText: text}},
 	}, true
 }
 
@@ -85,80 +96,75 @@ func (s *Snapshot) QuoteExpansion(path string, offset int) (Fix, bool) {
 		w.Parent == nil || w.Parent.Kind != tree.KCall {
 		return Fix{}, false
 	}
-	p := w.Children[0]
+	pe := *w.Children[0]
 	words := callWords(w.Parent)
-	if len(words) < 2 || words[0] == w || !slices.Contains(words, w) || !quoteCandidate(p, f.Src) {
+	if len(words) < 2 || words[0] == w || !slices.Contains(words, w) {
 		return Fix{}, false
 	}
 	a, b := w.Range.Start.Offset, w.Range.End.Offset
-	if a != p.Range.Start.Offset || b != p.Range.End.Offset || offset < a || offset > b {
+	if b > a && b <= len(f.Src) && f.Src[b-1] == '\r' { // a CRLF line ending is not part of the word
+		b--
+		if pe.Range.End.Offset == b+1 {
+			pe.Range.End = f.PosAt(b)
+		}
+	}
+	if a != pe.Range.Start.Offset || b != pe.Range.End.Offset || offset < a || offset > b || !quoteCandidate(&pe, f.Src) {
 		return Fix{}, false
 	}
 	return Fix{
 		Title: "Quote the expansion",
-		Edits: []TextEdit{{Range: w.Range, NewText: "\"" + string(f.Src[a:b]) + "\""}},
+		Edits: []TextEdit{{Range: tree.Range{Start: w.Range.Start, End: f.PosAt(b)}, NewText: "\"" + string(f.Src[a:b]) + "\""}},
 	}, true
 }
 
 // FixAll is the edits of the Safe fixes of fixes, in position order. A fix
 // whose edits overlap the edits of an earlier fix (two insertions at one point
 // count) is dropped whole, so the first of two competing fixes wins and no fix
-// is applied in part. nil when no Safe fix is left.
+// is applied in part. An insertion at the start or end of a replaced range
+// does not overlap it. nil when no Safe fix is left.
+//
+// The offsets of all edits are compressed to ranks; the edits taken so far
+// live in Fenwick trees, so each
+// edit costs O(log n) and a fix that fails is rolled back by the same moves.
 func FixAll(fixes []Fix) []TextEdit {
+	var coords []int
+	for _, fx := range fixes {
+		if fx.Safe {
+			for _, e := range fx.Edits {
+				coords = append(coords, e.Range.Start.Offset, e.Range.End.Offset)
+			}
+		}
+	}
+	if len(coords) == 0 {
+		return nil
+	}
+	slices.Sort(coords)
+	coords = slices.Compact(coords)
+	rank := func(off int) int { i, _ := slices.BinarySearch(coords, off); return i }
+	t := &takenSet{starts: newFenwick(len(coords)), ends: newFenwick(len(coords)), point: newFenwick(len(coords)), at: make([]bool, len(coords))}
 	var out []TextEdit
 	for _, fx := range fixes {
 		if !fx.Safe || len(fx.Edits) == 0 {
 			continue
 		}
-		if !disjointFrom(out, fx.Edits) {
+		done := 0
+		for _, e := range fx.Edits {
+			lo, hi := rank(e.Range.Start.Offset), rank(e.Range.End.Offset)
+			if hi < lo || !t.add(lo, hi) {
+				break
+			}
+			done++
+		}
+		if done < len(fx.Edits) {
+			for _, e := range fx.Edits[:done] {
+				t.remove(rank(e.Range.Start.Offset), rank(e.Range.End.Offset))
+			}
 			continue
 		}
-		for _, e := range fx.Edits {
-			i, _ := slices.BinarySearchFunc(out, e, byPosition)
-			out = slices.Insert(out, i, e)
-		}
+		out = append(out, fx.Edits...)
 	}
+	slices.SortStableFunc(out, byPosition)
 	return out
-}
-
-// disjointFrom reports whether edits overlap neither each other nor any of
-// taken, which is sorted by start and has no overlaps.
-func disjointFrom(taken, edits []TextEdit) bool {
-	for i, e := range edits {
-		if overlapsAny(taken, e) {
-			return false
-		}
-		for _, o := range edits[:i] {
-			if editsOverlap(o, e) {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-func editsOverlap(a, b TextEdit) bool {
-	as, ae, bs, be := a.Range.Start.Offset, a.Range.End.Offset, b.Range.Start.Offset, b.Range.End.Offset
-	if as == ae && bs == be { // two insertions: the same point conflicts
-		return as == bs
-	}
-	return as < be && bs < ae
-}
-
-func overlapsAny(taken []TextEdit, e TextEdit) bool {
-	// taken is disjoint and sorted by start, so of the edits that start before
-	// e does only the last can reach into it, and of the others only those at
-	// e's own start and the first one after it can begin inside it.
-	i, _ := slices.BinarySearchFunc(taken, e, byPosition)
-	for j := max(i-1, 0); j < len(taken); j++ {
-		if editsOverlap(taken[j], e) {
-			return true
-		}
-		if j >= i && taken[j].Range.Start.Offset > e.Range.Start.Offset {
-			break
-		}
-	}
-	return false
 }
 
 // byPosition orders edits by start, then by end, so an insertion comes before
@@ -168,4 +174,70 @@ func byPosition(a, b TextEdit) int {
 		return d
 	}
 	return a.Range.End.Offset - b.Range.End.Offset
+}
+
+// takenSet is the edits accepted so far, over ranks lo..hi of the compressed
+// offsets. The replacements taken are disjoint, so those overlapping the range
+// x..y are the ones starting before y minus the ones ending at or before x. An
+// insertion occupies one point.
+type takenSet struct {
+	starts, ends fenwick // the replacements taken, at their start and end ranks
+	point        fenwick // the insertions taken, at their rank
+	at           []bool  // per rank: an insertion is there
+}
+
+// replaced is how many replacements taken overlap the range x..y (x <= y; for
+// x == y, those that have the point strictly inside).
+func (t *takenSet) replaced(x, y int) int { return t.starts.prefix(y) - t.ends.prefix(x+1) }
+
+// add takes the edit lo..hi and reports false, changing nothing, when it
+// overlaps one already taken.
+func (t *takenSet) add(lo, hi int) bool {
+	if lo == hi {
+		if t.at[lo] || t.replaced(lo, lo) > 0 {
+			return false
+		}
+		t.at[lo] = true
+		t.point.add(lo, 1)
+		return true
+	}
+	if t.replaced(lo, hi) > 0 || t.point.sum(lo+1, hi) > 0 {
+		return false
+	}
+	t.starts.add(lo, 1)
+	t.ends.add(hi, 1)
+	return true
+}
+
+// remove undoes add for an edit that was taken.
+func (t *takenSet) remove(lo, hi int) {
+	if lo == hi {
+		t.at[lo] = false
+		t.point.add(lo, -1)
+		return
+	}
+	t.starts.add(lo, -1)
+	t.ends.add(hi, -1)
+}
+
+// fenwick is a binary indexed tree of counts.
+type fenwick []int
+
+func newFenwick(n int) fenwick { return make(fenwick, n+1) }
+
+func (f fenwick) add(i, d int) {
+	for i++; i < len(f); i += i & -i {
+		f[i] += d
+	}
+}
+
+// sum is the total of the entries lo..hi-1.
+func (f fenwick) sum(lo, hi int) int { return f.prefix(hi) - f.prefix(lo) }
+
+func (f fenwick) prefix(n int) int {
+	s := 0
+	for ; n > 0; n -= n & -n {
+		s += f[n]
+	}
+	return s
 }
