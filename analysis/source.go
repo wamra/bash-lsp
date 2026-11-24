@@ -25,6 +25,10 @@ type SourceEdge struct {
 	Targets []string
 	Status  SourceStatus
 	How     string
+	// Skipped, for an unresolved source, is the clean absolute path of the
+	// existing file it names that Options.Oversize reports skipped for its
+	// size; "" otherwise.
+	Skipped string
 }
 
 // scriptDirForms are the spellings of "the directory of this script", with
@@ -51,6 +55,23 @@ func ResolveSources(ff *FileFacts, root string, searchPaths []string, exists fun
 		out = append(out, r.resolve(ref))
 	}
 	return out
+}
+
+// markOversize sets Skipped on each unresolved edge of es whose path
+// resolves, by the same rules, to a file oversize reports.
+func markOversize(es []SourceEdge, ff *FileFacts, root string, searchPaths []string, oversize func(string) bool) {
+	var r *resolver
+	for i := range es {
+		if es[i].Status != SourceUnresolved {
+			continue
+		}
+		if r == nil {
+			r = &resolver{ff: ff, root: root, search: searchPaths, exists: oversize, glob: func(string) []string { return nil }, dir: filepath.Dir(ff.Path)}
+		}
+		if e := r.resolve(es[i].Ref); e.Status == SourceResolved && len(e.Targets) > 0 {
+			es[i].Skipped = e.Targets[0]
+		}
+	}
 }
 
 type resolver struct {

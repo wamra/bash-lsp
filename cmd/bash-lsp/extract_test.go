@@ -572,3 +572,26 @@ func TestExtractOutsideClosureCandidates(t *testing.T) {
 		t.Fatalf("callers b.sh:1:1 does not list the site: %q", out)
 	}
 }
+
+// A `source` of an existing file the workspace skipped for its size is not
+// `not-found`: it carries the skipped-for-size reason, and extract's path is
+// absolute as for every other source of an existing file.
+func TestSourceOfFileSkippedForSize(t *testing.T) {
+	root := writeRoot(t, map[string]string{
+		"m.sh":   "source ./big.sh\nbig_fn\nsource ./missing.sh\n",
+		"big.sh": "big_fn() { :; }\n" + strings.Repeat("# pad\n", 400000), // 2.4 MB
+	})
+	got := find(extractRoot(t, root), "dotsource", "m.sh", 1)
+	if len(got) != 1 || got[0].Resolution != "unresolved" || got[0].Reason != "skipped-for-size" ||
+		!filepath.IsAbs(got[0].Path) || filepath.Base(got[0].Path) != "big.sh" || got[0].Expr != "./big.sh" {
+		t.Errorf("dotsource of the skipped file: %+v", got)
+	}
+	got = find(extractRoot(t, root), "dotsource", "m.sh", 3)
+	if len(got) != 1 || got[0].Reason != "not-found" || got[0].Path != "./missing.sh" {
+		t.Errorf("dotsource of a missing file: %+v", got)
+	}
+	out := runOK(t, "unresolved", "--root", root)
+	if !strings.Contains(out, "m.sh:1:8") || !strings.Contains(out, "unresolved/skipped-for-size") {
+		t.Errorf("unresolved:\n%s", out)
+	}
+}

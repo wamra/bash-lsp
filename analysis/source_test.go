@@ -260,3 +260,23 @@ func TestLoopGlobFallsBackToRoot(t *testing.T) {
 		t.Fatalf("%+v", es)
 	}
 }
+
+// Options.Oversize turns the not-found of a source naming an existing file
+// the caller skipped for its size into skipped-for-size, with that file as
+// ToFile; the source still counts as unresolved for the FDS-008 fallback.
+func TestSourceOfOversizeFile(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "w")
+	big, main := filepath.Join(root, "big.sh"), filepath.Join(root, "m.sh")
+	s := Analyze(map[string][]byte{main: []byte("source ./big.sh\nsource ./none.sh\n")},
+		Options{Root: root, Oversize: func(p string) bool { return p == big }})
+	var got []string
+	for _, e := range s.Edges() {
+		got = append(got, e.Res.String()+"/"+e.Reason+" "+e.ToFile+" "+e.Text)
+	}
+	if strings.Join(got, "|") != "unresolved/skipped-for-size "+big+" ./big.sh|unresolved/not-found  ./none.sh" {
+		t.Fatalf("edges %q", got)
+	}
+	if !s.GraphIncomplete(main) {
+		t.Fatal("a skipped source does not leave the graph incomplete")
+	}
+}

@@ -86,7 +86,10 @@ subshell or similar scope the call is outside of), `ReasonVariableConstant`,
 closure removes the function with `unset -f`; order is not tracked, so the
 edge is never resolved), `ReasonVariableUnknown` and `ReasonExpansion` (both
 `Dynamic`: the command name is an expansion with no known target),
-`ReasonNotFound` (a `source` whose file was not found) and
+`ReasonNotFound` (a `source` whose file was not found),
+`ReasonSkippedForSize` (`skipped-for-size`: a `source` of an existing file
+the caller left out for its size, reported by `Options.Oversize`; `ToFile` is
+that file) and
 `ReasonDynamicScope` (variable reads only, never an edge). `ReasonEnvironment`
 belongs to variable reads. A string body over the per-file string budget, or
 nested more than three strings deep, is a `Dynamic`/`expansion` edge.
@@ -120,14 +123,19 @@ nested more than three strings deep, is a `Dynamic`/`expansion` edge.
 
 - `func Build(files map[string]*FileFacts, opt Options, generation uint64) *Snapshot`
   builds a snapshot from facts (keys are absolute paths); `Options{Root,
-  SearchPaths func(path string) []string, Prev *Snapshot}`. When `Prev` is
-  set, `Build` reuses its visibility sets if the files and the source graph
-  are unchanged; the result is the same as without it. `Analyze` is `Build`
+  SearchPaths func(path string) []string, Prev *Snapshot, Oversize func(path
+  string) bool}`. When `Prev` is set, `Build` reuses its visibility sets if
+  the files and the source graph are unchanged; the result is the same as
+  without it. `Oversize`, when set, reports whether a clean absolute path is
+  an existing file left out of `files` for its size; a `source` naming one is
+  `Unresolved`/`skipped-for-size` instead of `not-found`. `Analyze` is `Build`
   plus parsing and binding.
 - `func ResolveSources(ff *FileFacts, root string, searchPaths []string, exists func(string) bool, glob func(string) []string) []SourceEdge`
   resolves every `source` command of one file; `SourceEdge{Ref SourceRef,
-  Targets []string, Status SourceStatus, How string}` (`How` is `directive`,
-  `literal`, `script-dir` or `loop-glob`; empty when unresolved);
+  Targets []string, Status SourceStatus, How string, Skipped string}` (`How`
+  is `directive`, `literal`, `script-dir` or `loop-glob`; empty when
+  unresolved; `Build` sets `Skipped` on an unresolved source naming a file
+  `Options.Oversize` reports);
   `SourceStatus` is `SourceResolved`, `SourceUnresolved` or `SourceIgnored`
   (directive `source=/dev/null`).
 - `func IsBuiltin(name string) bool` reports whether `name` is a bash builtin

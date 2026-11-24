@@ -66,8 +66,9 @@ type Caller struct {
 // ToDecl the one definition of it this edge goes to: a function with several
 // definitions in view gets one edge per definition. To and ToDecl are nil for
 // RelSources, RelInvokes and dynamic or unresolved edges; ToFile is the target
-// of RelSources and RelInvokes. Text is the expression text of a dynamic edge
-// and the path word of an unresolved source.
+// of RelSources and RelInvokes (for an unresolved/skipped-for-size source, the
+// existing file that was skipped). Text is the expression text of a dynamic
+// edge and the path word of an unresolved source.
 type Edge struct {
 	From   Caller
 	To     *Symbol
@@ -95,7 +96,8 @@ type edgeRec struct {
 
 // reasonNames are the reasons an edge can carry, by edgeRec.reason.
 var reasonNames = []string{"", ReasonDirect, ReasonAlias, ReasonOutsideClosure, ReasonNotFound, ReasonConditional,
-	ReasonVariableConstant, ReasonStringEval, ReasonStringTrap, ReasonStringShellC, ReasonVariableUnknown, ReasonExpansion, ReasonUnsetInView}
+	ReasonVariableConstant, ReasonStringEval, ReasonStringTrap, ReasonStringShellC, ReasonVariableUnknown, ReasonExpansion, ReasonUnsetInView,
+	ReasonSkippedForSize}
 
 func reasonCode(r string) uint8 {
 	for i, n := range reasonNames {
@@ -109,6 +111,7 @@ func reasonCode(r string) uint8 {
 var (
 	codeDirect      = reasonCode(ReasonDirect)
 	codeNotFound    = reasonCode(ReasonNotFound)
+	codeSkipped     = reasonCode(ReasonSkippedForSize)
 	codeConditional = reasonCode(ReasonConditional)
 )
 
@@ -225,6 +228,7 @@ func (s *Snapshot) edgeOf(file int, r *edgeRec) Edge {
 		e.ToFile = se.Targets[r.tgt]
 		return e
 	}
+	e.ToFile = se.Skipped
 	src := s.facts[file].File.Src
 	if a, b := se.Ref.Range.Start.Offset, se.Ref.Range.End.Offset; a >= 0 && a <= b && b <= len(src) {
 		e.Text = string(src[a:b])
@@ -395,7 +399,8 @@ func (s *Snapshot) funcDeclOf(file int, n *tree.Node) *Decl {
 
 // appendSourceEdges adds one RelSources edge per resolved target of each
 // source command of file, and an unresolved/not-found edge, with the path
-// word as Text, for one that could not be resolved.
+// word as Text, for one that could not be resolved (unresolved/skipped-for-size
+// when it names an existing file skipped for its size).
 func (s *Snapshot) appendSourceEdges(out []edgeRec, file int) []edgeRec {
 	for k, se := range s.edges[file] {
 		r := edgeRec{at: int32(k), rel: RelSources}
@@ -408,6 +413,9 @@ func (s *Snapshot) appendSourceEdges(out []edgeRec, file int) []edgeRec {
 			}
 		case SourceUnresolved:
 			r.res, r.reason, r.tgt = Unresolved, codeNotFound, -1
+			if se.Skipped != "" {
+				r.reason = codeSkipped
+			}
 			out = append(out, r)
 		}
 	}

@@ -41,6 +41,9 @@ const (
 	ReasonNotFound       = "not-found"
 	ReasonEnvironment    = "environment"
 	ReasonConditional    = "conditional-definition"
+	// ReasonSkippedForSize labels an unresolved `source` of an existing file
+	// the caller left out of the build for its size (Options.Oversize).
+	ReasonSkippedForSize = "skipped-for-size"
 )
 
 // Binding ties one Use to the symbol it names.
@@ -62,11 +65,14 @@ type Location struct {
 // snapshot of the previous generation: Build reuses its visibility sets when
 // the files and the source graph are unchanged, which is the case for most
 // edits (a change inside a function body). The result is the same as a build
-// without Prev.
+// without Prev. Oversize, when set, reports whether a clean absolute path is
+// an existing file the caller left out of files for its size: a `source` that
+// names one is unresolved with reason skipped-for-size instead of not-found.
 type Options struct {
 	Root        string
 	SearchPaths func(path string) []string
 	Prev        *Snapshot
+	Oversize    func(path string) bool
 }
 
 // maxAliasDepth bounds alias chains.
@@ -207,6 +213,9 @@ func Build(files map[string]*FileFacts, opt Options, generation uint64) *Snapsho
 		}
 		searches[i] = search
 		s.edges[i] = ResolveSources(s.facts[i], opt.Root, search, exists, glob)
+		if opt.Oversize != nil {
+			markOversize(s.edges[i], s.facts[i], opt.Root, search, opt.Oversize)
+		}
 		for _, e := range s.edges[i] {
 			switch e.Status {
 			case SourceUnresolved:
