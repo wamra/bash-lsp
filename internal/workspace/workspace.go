@@ -47,6 +47,10 @@ type Report struct {
 	Files, Skipped int
 	LimitsHit      []string // human-readable lines
 	Dialects       map[string]int
+	// Notices lists settings the workspace dropped, one line each, sorted: a
+	// sources.paths entry or a .shellcheckrc source-path that resolves outside
+	// the root or is not root-relative.
+	Notices []string
 }
 
 var (
@@ -236,17 +240,43 @@ type Workspace struct {
 	rcCache  map[string]rcInfo
 	excl     map[string]bool    // keys of directories whose subtrees another workspace owns
 	listings map[string]listing // directory listings for spelling on a folding volume, by key
+	rcNotes  map[string]string  // dropped .shellcheckrc entries, by rc directory and entry; cleared with rcCache
 	snap     atomic.Pointer[analysis.Snapshot]
+
+	// Fixed at Open (Config).
+	commands func(name string) (string, bool)
+	include  *ignore.Set // nil: every file the walk lists
+	exclude  *ignore.Set // never nil
+	dialect  tree.Dialect
+	srcDirs  []string // sources.paths: absolute, inside the root
+	notes    []string // sources.paths entries dropped
+}
+
+// Config is what the settings give a workspace besides its limits. The zero
+// Config is today's discovery and analysis.
+type Config struct {
+	Commands    func(name string) (string, bool) // PATH profile lookup; nil = no command edges
+	Include     []string                         // gitignore syntax, root-relative; nil = every file discovery lists, else only matching files (a directory pattern includes what is below it)
+	Exclude     []string                         // matching files and directories are skipped, as .gitignore'd ones are; wins over a .gitignore negation and over Include
+	SourcePaths []string                         // root-relative directories searched by `source`, after the .shellcheckrc ones; one that is absolute, spelled with ~ or $, or resolves outside the root is dropped and reported in Report.Notices
+	Dialect     tree.Dialect                     // fallback dialect for a file that names none; 0 = Bash
 }
 
 // Open walks root, parses and binds every shell file and builds generation 1.
 func Open(root string, lim Limits) (*Workspace, error) { return OpenExcluding(root, lim, nil) }
+
+// OpenExcluding is OpenWith with a zero Config.
 
 // OpenExcluding is Open without the subtrees of exclude: the roots of other
 // workspaces nested inside this one (a file belongs to one workspace). An
 // entry not strictly inside the root is ignored. Entries are absolute,
 // symlink-resolved paths.
 func OpenExcluding(root string, lim Limits, exclude []string) (*Workspace, error) {
+	return OpenWith(root, lim, exclude, Config{})
+}
+
+// OpenWith is OpenExcluding with the workspace's settings (Config).
+func OpenWith(root string, lim Limits, exclude []string, cfg Config) (*Workspace, error) {
 	if lim.MaxFileBytes <= 0 {
 		lim.MaxFileBytes = defaultMaxFileBytes
 	}
@@ -267,7 +297,16 @@ func OpenExcluding(root string, lim Limits, exclude []string) (*Workspace, error
 		return nil, fmt.Errorf("%s is not a directory", root)
 	}
 	w := &Workspace{root: real, lim: lim, fold: windows || detectFold(real), disk: map[string]*entry{}, overlays: map[string]*overlay{},
-		skips: map[string]skipInfo{}, dirName: map[string]string{}, rcCache: map[string]rcInfo{}, listings: map[string]listing{}}
+		skips: map[string]skipInfo{}, dirName: map[string]string{}, rcCache: map[string]rcInfo{}, rcNotes: map[string]string{}, listings: map[string]listing{},
+		commands: cfg.Commands, dialect: cfg.Dialect}
+	if w.dialect == 0 {
+		w.dialect = tree.Bash
+	}
+	w.exclude = patternSet(cfg.Exclude)
+	if cfg.Include != nil {
+		w.include = patternSet(cfg.Include)
+	}
+	w.srcDirs, w.notes = w.sourceDirs(cfg.SourcePaths)
 	w.excl = w.exclusions(exclude)
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -432,9 +471,9 @@ func (w *Workspace) SetOverlay(path string, version int, text []byte) {
 		if int64(len(text)) > w.lim.MaxFileBytes {
 			// Held to the disk limit: skipped, with the line doctor prints for a
 			// file that size, and its disk entry (if any) hidden as for any overlay.
-			e = &entry{path: path, hash: hash, facts: analysis.Bind(OversizeFile(path, text, w.bigLine(w.relSlash(path), int64(len(text)))))}
+			e = &entry{path: path, hash: hash, facts: analysis.Bind(oversizeFile(path, text, w.bigLine(w.relSlash(path), int64(len(text))), w.dialect))}
 		} else {
-			e = parseEntry(path, text)
+			e = w.parseEntry(path, text)
 		}
 	}
 	w.mu.Lock()
@@ -517,9 +556,13 @@ func (w *Workspace) diskPath(c string) string {
 // statements, Skipped set to reason, and the dialect detection gives path and
 // text (only the first lines of text are read).
 func OversizeFile(path string, text []byte, reason string) *tree.File {
+	return oversizeFile(path, text, reason, tree.Bash)
+}
+
+func oversizeFile(path string, text []byte, reason string, fallback tree.Dialect) *tree.File {
 	f := tree.NewFile(path, nil)
 	f.Skipped = reason
-	f.Dialect = parse.Detect(path, text)
+	f.Dialect = parse.DetectWith(path, text, fallback)
 	return f
 }
 
@@ -559,6 +602,7 @@ func (w *Workspace) Refresh(paths ...string) {
 	changed := w.rcStale()
 	if changed {
 		w.rcCache = map[string]rcInfo{}
+		w.rcNotes = map[string]string{}
 	}
 	full := len(paths) == 0 || len(paths) > maxRefreshPaths
 	var todo []string
@@ -677,6 +721,11 @@ func (w *Workspace) Report() Report {
 	for _, e := range w.disk {
 		r.Dialects[e.dialect]++
 	}
+	r.Notices = append(r.Notices, w.notes...)
+	for _, n := range w.rcNotes {
+		r.Notices = append(r.Notices, n)
+	}
+	sort.Strings(r.Notices)
 	return r
 }
 
@@ -762,8 +811,8 @@ func resolveExisting(dir string) string {
 	return filepath.Join(resolveExisting(parent), filepath.Base(dir))
 }
 
-func parseEntry(path string, src []byte) *entry {
-	f := parse.File(path, src)
+func (w *Workspace) parseEntry(path string, src []byte) *entry {
+	f := parse.FileWith(path, src, w.dialect)
 	return &entry{path: path, hash: sha256.Sum256(src), dialect: f.Dialect.String(), facts: analysis.Bind(f)}
 }
 
@@ -829,7 +878,7 @@ func (w *Workspace) rebuild() {
 		files[o.entry.path] = o.entry.facts
 	}
 	w.gen++
-	w.snap.Store(analysis.Build(files, analysis.Options{Root: w.root, SearchPaths: w.searchPaths, Prev: w.snap.Load(), Oversize: w.oversize}, w.gen))
+	w.snap.Store(analysis.Build(files, analysis.Options{Root: w.root, SearchPaths: w.searchPaths, Prev: w.snap.Load(), Oversize: w.oversize, Commands: w.commands}, w.gen))
 }
 
 // oversize reports whether path is a file the walk skipped for its size.
@@ -952,7 +1001,7 @@ func (w *Workspace) walk() (cands []candidate) {
 				isDir, target = true, rt
 			}
 			if isDir {
-				if w.skipDir(name) || set.Ignored(relp, true) || visited[w.key(target)] || w.excluded(target) {
+				if w.skipDir(name) || set.Ignored(relp, true) || w.exclude.Ignored(relp, true) || visited[w.key(target)] || w.excluded(target) {
 					continue
 				}
 				visited[w.key(target)] = true
@@ -960,7 +1009,7 @@ func (w *Workspace) walk() (cands []candidate) {
 				rec(full, target, relp, set)
 				continue
 			}
-			if !de.Type().IsRegular() || set.Ignored(relp, false) {
+			if !de.Type().IsRegular() || set.Ignored(relp, false) || w.exclude.Ignored(relp, false) || !w.included(relp) {
 				continue
 			}
 			switch classify(full) {
@@ -1034,7 +1083,7 @@ func (w *Workspace) reconcileAll() (changed bool) {
 				loaded[i].e = &entry{path: e.path, size: c.size, mtime: c.mtime, hash: h, dialect: e.dialect, facts: e.facts}
 				return
 			}
-			e := parseEntry(c.path, src)
+			e := w.parseEntry(c.path, src)
 			e.size, e.mtime = c.size, c.mtime
 			loaded[i].e = e
 		}()
@@ -1112,7 +1161,7 @@ func (w *Workspace) refreshOne(path string) (changed bool) {
 		old.size, old.mtime = fi.Size(), fi.ModTime().UnixNano()
 		return false
 	}
-	e := parseEntry(path, src)
+	e := w.parseEntry(path, src)
 	e.size, e.mtime = fi.Size(), fi.ModTime().UnixNano()
 	w.disk[k] = e
 	return true
@@ -1126,7 +1175,7 @@ func (w *Workspace) accepts(path string) status {
 	if err != nil || !w.within(path) || w.excluded(path) {
 		return notShell
 	}
-	if w.ignoredPath(rel, false) {
+	if w.ignoredPath(rel, false) || !w.included(filepath.ToSlash(rel)) {
 		return notShell
 	}
 	return classify(path)
@@ -1155,16 +1204,80 @@ func (w *Workspace) ignoredPath(rel string, dir bool) bool {
 		if relDir != "" {
 			relp = relDir + "/" + part
 		}
-		if i < len(parts)-1 {
-			if set.Ignored(relp, true) {
-				return true
-			}
-		} else if set.Ignored(relp, dir) {
+		isDir := i < len(parts)-1 || dir
+		if set.Ignored(relp, isDir) || w.exclude.Ignored(relp, isDir) {
 			return true
 		}
 		d, relDir = filepath.Join(d, part), relp
 	}
 	return false
+}
+
+// patternSet compiles files.include or files.exclude patterns (gitignore
+// syntax, relative to the root) into one matcher.
+func patternSet(patterns []string) *ignore.Set {
+	set := &ignore.Set{}
+	set.Add(ignore.Parse("", []byte(strings.Join(patterns, "\n"))))
+	return set
+}
+
+// included reports whether the file rel (slash-separated, relative to the
+// root) passes files.include: always without the key, else when a pattern
+// matches the file or a directory above it. A match here is the set's
+// "ignored" verdict; a negated pattern ("!x") takes a file out again unless a
+// directory above it matched.
+func (w *Workspace) included(rel string) bool {
+	if w.include == nil {
+		return true
+	}
+	if w.include.Ignored(rel, false) {
+		return true
+	}
+	for i := 0; i < len(rel); i++ {
+		if rel[i] == '/' && w.include.Ignored(rel[:i], true) {
+			return true
+		}
+	}
+	return false
+}
+
+// sourceDirs checks the sources.paths entries. An entry must be a directory
+// below the root named relative to it: one that is empty, absolute, spelled
+// with ~ or $ (nothing expands them here), or that resolves outside the root,
+// lexically or through a symlink, is dropped and gives a note. Duplicates
+// are kept once.
+func (w *Workspace) sourceDirs(entries []string) (dirs, notes []string) {
+	seen := map[string]bool{}
+	drop := func(e, why string) {
+		notes = append(notes, fmt.Sprintf("sources.paths %q: %s (ignored)", e, why))
+	}
+	for _, e := range entries {
+		switch {
+		case e == "":
+			drop(e, "empty entry")
+			continue
+		case filepath.IsAbs(e) || filepath.VolumeName(e) != "" || strings.HasPrefix(e, "/") || strings.HasPrefix(e, `\\`):
+			drop(e, "an absolute path; use a path relative to the workspace root")
+			continue
+		case strings.HasPrefix(e, "~") || strings.Contains(e, "$"):
+			drop(e, "~ and $ are not expanded; use a path relative to the workspace root")
+			continue
+		}
+		d := filepath.Join(w.root, filepath.FromSlash(e))
+		if !w.within(d) {
+			drop(e, "resolves outside the workspace root")
+			continue
+		}
+		if rt, err := filepath.EvalSymlinks(d); err == nil && !w.within(rt) {
+			drop(e, "resolves outside the workspace root")
+			continue
+		}
+		if !seen[w.key(d)] {
+			seen[w.key(d)] = true
+			dirs = append(dirs, d)
+		}
+	}
+	return dirs, notes
 }
 
 // ---- .shellcheckrc ----
@@ -1180,11 +1293,15 @@ func (w *Workspace) rcStale() bool {
 	return false
 }
 
-// searchPaths returns the source-path= entries of the nearest .shellcheckrc at
-// or above path's directory, inside the root only. SCRIPTDIR is path's dir.
-// Called from analysis.Build, i.e. with w.mu held (or before w is shared).
+// searchPaths returns the directories `source` looks in for path: the
+// source-path= entries of the nearest .shellcheckrc at or above path's
+// directory (inside the root only; SCRIPTDIR is path's dir), then the
+// sources.paths of the settings. An rc entry that leads outside the root is
+// dropped (and noted); nothing here touches the disk. Called from
+// analysis.Build, i.e. with w.mu held (or before w is shared).
 func (w *Workspace) searchPaths(path string) []string {
 	dir := filepath.Dir(path)
+	var out []string
 	for w.within(dir) {
 		info, ok := w.rcCache[dir]
 		if !ok {
@@ -1192,23 +1309,38 @@ func (w *Workspace) searchPaths(path string) []string {
 			w.rcCache[dir] = info
 		}
 		if info.raw != nil {
-			var out []string
 			for _, v := range info.raw {
-				out = append(out, resolveSearch(filepath.Dir(path), v))
+				r := resolveSearch(filepath.Dir(path), v)
+				if !w.within(r) {
+					w.noteRC(dir, v)
+					continue
+				}
+				out = append(out, r)
 			}
-			return out
+			break
 		}
 		if dir == w.root {
 			break
 		}
 		dir = filepath.Dir(dir)
 	}
-	return nil
+	return append(out, w.srcDirs...)
+}
+
+// noteRC records that the source-path= entry v of dir's .shellcheckrc was
+// dropped.
+func (w *Workspace) noteRC(dir, v string) {
+	k := dir + "\x00" + v
+	if _, ok := w.rcNotes[k]; !ok {
+		w.rcNotes[k] = fmt.Sprintf("%s: source-path=%s resolves outside the workspace root (ignored)", filepath.ToSlash(w.relSlash(filepath.Join(dir, ".shellcheckrc"))), v)
+	}
 }
 
 // readRC reads dir/.shellcheckrc. raw is nil when the file is absent, not a
 // regular file, larger than 64 KiB, or a symlink resolving outside the root;
-// non-nil (possibly empty) otherwise.
+// non-nil (possibly empty) otherwise. An absolute entry outside the root, or
+// one that reaches outside through a symlink, is left out and noted; a
+// relative one is checked against each script's directory by searchPaths.
 func (w *Workspace) readRC(dir string) rcInfo {
 	file := filepath.Join(dir, ".shellcheckrc")
 	var info rcInfo
@@ -1229,11 +1361,27 @@ func (w *Workspace) readRC(dir string) rcInfo {
 		}
 		// One path per line: ShellCheck takes the whole value, so a space or
 		// a path-list separator belongs to the path. Quotes are optional.
-		if p := unquoteRC(strings.TrimSpace(v)); p != "" {
-			info.raw = append(info.raw, p)
+		p := unquoteRC(strings.TrimSpace(v))
+		if p == "" {
+			continue
 		}
+		if filepath.IsAbs(p) && !w.insideRoot(filepath.Clean(p)) {
+			w.noteRC(dir, p)
+			continue
+		}
+		info.raw = append(info.raw, p)
 	}
 	return info
+}
+
+// insideRoot reports whether p is inside the root by its spelling and, when it
+// exists, by where its links lead.
+func (w *Workspace) insideRoot(p string) bool {
+	if !w.within(p) {
+		return false
+	}
+	rt, err := filepath.EvalSymlinks(p)
+	return err != nil || w.within(rt)
 }
 
 // unquoteRC removes one pair of matching quotes around an rc value.

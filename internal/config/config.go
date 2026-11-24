@@ -500,6 +500,18 @@ func boolPtr(e entry) *bool {
 	return &b
 }
 
+// Limits are the [limits] values for workspace.OpenWith; a zero field means
+// the built-in cap.
+func (s Settings) Limits() workspace.Limits {
+	return workspace.Limits{MaxFiles: s.MaxFiles, MaxFileBytes: s.MaxFileBytes}
+}
+
+// Workspace is the part of the settings workspace.OpenWith takes besides the
+// limits; commands is the PATH profile lookup (nil: no command edges).
+func (s Settings) Workspace(commands func(name string) (string, bool)) workspace.Config {
+	return workspace.Config{Commands: commands, Include: s.Include, Exclude: s.Exclude, SourcePaths: s.SourcePaths, Dialect: s.Dialect}
+}
+
 // UserPath is the user settings file: $BASH_LSP_CONFIG when set (an empty
 // value means no user file), else <user config dir>/bash-lsp/config.toml.
 func UserPath() (string, error) {

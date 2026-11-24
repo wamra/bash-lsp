@@ -51,6 +51,9 @@ func Detect(path string, src []byte) Dialect { return DetectWith(path, src, Bash
 // .sh or none that says anything (.bash, .ksh, .mksh, .bats and .zsh still
 // decide). It is what the bash.dialect setting reaches.
 func DetectWith(path string, src []byte, fallback Dialect) Dialect {
+	if fallback == 0 {
+		fallback = Bash
+	}
 	lines := bytes.SplitN(src, []byte("\n"), 6)
 	if len(lines) > 5 {
 		lines = lines[:5]
