@@ -327,3 +327,19 @@ func TestShellcheckrcRelativeSymlinkEntryNoticed(t *testing.T) {
 		t.Errorf("notices repeated: %q", w.Report().Notices)
 	}
 }
+
+func TestKeyLongPathAndDrive(t *testing.T) {
+	want := keyFor(`c:\x`, true)
+	for _, p := range []string{`\\?\C:\x`, `C:\x`, `c:\x`, `\\?\c:\X`} {
+		if got := keyFor(p, true); got != want {
+			t.Errorf("keyFor(%q, true) = %q, want %q", p, got, want)
+		}
+	}
+	if got := keyFor(`\\?\UNC\Srv\Share\x`, true); got != `\\srv\share\x` {
+		t.Errorf("UNC long path key = %q", got)
+	}
+	// Case-sensitive keys are the path as given.
+	if got := keyFor(`\\?\C:\x`, false); got != `\\?\C:\x` {
+		t.Errorf("keyFor without fold changed the path: %q", got)
+	}
+}

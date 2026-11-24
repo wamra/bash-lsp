@@ -36,10 +36,15 @@ const DefaultMaxFiles = 20000
 // It applies to open documents too.
 const DefaultMaxFileBytes = analysis.MaxFileBytes
 
-// Limits bound discovery. Zero values mean 2<<20 and 20000.
+// DefaultMaxDirDepth is the directory depth limit when Limits.MaxDirDepth is
+// zero: a directory more than this many levels below the root is not read.
+const DefaultMaxDirDepth = 64
+
+// Limits bound discovery. Zero values mean 2<<20, 20000 and 64.
 type Limits struct {
 	MaxFileBytes int64
 	MaxFiles     int
+	MaxDirDepth  int
 }
 
 // Report describes the last discovery and the files now held.
@@ -66,8 +71,16 @@ const windows = runtime.GOOS == "windows"
 // original spelling is kept for display. strings.ToLower is simple
 // per-rune folding; names that differ only by Unicode normalisation (NFC
 // against NFD) get different keys.
+//
+// On a folding volume a Windows long-path prefix is dropped (`\\?\C:\x`
+// and `C:\x` are one file; `\\?\UNC\s\x` is `\\s\x`).
 func keyFor(p string, fold bool) string {
 	if fold {
+		if rest, ok := strings.CutPrefix(p, `\\?\UNC\`); ok {
+			p = `\\` + rest
+		} else if rest, ok := strings.CutPrefix(p, `\\?\`); ok && len(rest) >= 2 && isLetter(rest[0]) && rest[1] == ':' {
+			p = rest
+		}
 		return strings.ToLower(p)
 	}
 	return p
@@ -105,9 +118,27 @@ func (w *Workspace) inSkipDir(path string) bool {
 	return false
 }
 
-// readDir lists a directory to find the spelling of a name on a folding
-// volume; a variable so tests can count the listings.
-var readDir = os.ReadDir
+// maxFoldListing is the most entries of one directory read to find the
+// spelling of a name on a folding volume; a directory with more is left
+// unlisted.
+const maxFoldListing = 1024
+
+// readDirN lists dir for the spelling of a name on a folding volume, sorted by
+// name, reading at most n entries (n <= 0 reads all of them); a variable so
+// tests can count the listings.
+var readDirN = func(dir string, n int) ([]os.DirEntry, error) {
+	f, err := os.Open(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	ents, err := f.ReadDir(n)
+	if err == io.EOF {
+		err = nil
+	}
+	sort.Slice(ents, func(i, j int) bool { return ents[i].Name() < ents[j].Name() })
+	return ents, err
+}
 
 // detectFold reports whether the volume of a resolved root is
 // case-insensitive; a variable so tests can force it.
@@ -241,6 +272,8 @@ type Workspace struct {
 	rcReal   map[string]bool    // search directory -> inside the root after links; cleared with rcCache
 	excl     map[string]bool    // keys of directories whose subtrees another workspace owns
 	listings map[string]listing // directory listings for spelling on a folding volume, by key
+	unlisted map[string]string  // keys of directories too large to list for spelling -> their LimitsHit line; cleared by a full walk
+	depthHit map[string]string  // root-relative directories the walk did not enter for depth -> LimitsHit line; reset by a walk
 	rcNotes  map[string]string  // dropped .shellcheckrc entries, by rc directory and entry; cleared with rcCache
 	snap     atomic.Pointer[analysis.Snapshot]
 
@@ -285,6 +318,9 @@ func OpenWith(root string, lim Limits, exclude []string, cfg Config) (*Workspace
 	if lim.MaxFiles <= 0 {
 		lim.MaxFiles = defaultMaxFiles
 	}
+	if lim.MaxDirDepth <= 0 {
+		lim.MaxDirDepth = DefaultMaxDirDepth
+	}
 	abs, err := filepath.Abs(root)
 	if err != nil {
 		return nil, err
@@ -299,14 +335,14 @@ func OpenWith(root string, lim Limits, exclude []string, cfg Config) (*Workspace
 		return nil, fmt.Errorf("%s is not a directory", root)
 	}
 	w := &Workspace{root: real, lim: lim, fold: windows || detectFold(real), disk: map[string]*entry{}, overlays: map[string]*overlay{},
-		skips: map[string]skipInfo{}, dirName: map[string]string{}, rcCache: map[string]rcInfo{}, rcReal: map[string]bool{}, rcNotes: map[string]string{}, listings: map[string]listing{},
+		skips: map[string]skipInfo{}, dirName: map[string]string{}, rcCache: map[string]rcInfo{}, rcReal: map[string]bool{}, rcNotes: map[string]string{}, listings: map[string]listing{}, unlisted: map[string]string{}, depthHit: map[string]string{},
 		commands: cfg.Commands, dialect: cfg.Dialect}
 	if w.dialect == 0 {
 		w.dialect = tree.Bash
 	}
-	w.exclude = excludeSets{patternSet(cfg.Exclude), patternSet(cfg.RepoExclude)}
+	w.exclude = excludeSets{patternSet(cfg.Exclude, w.fold), patternSet(cfg.RepoExclude, w.fold)}
 	if cfg.Include != nil {
-		w.include = patternSet(cfg.Include)
+		w.include = patternSet(cfg.Include, w.fold)
 	}
 	w.srcDirs, w.notes = w.sourceDirs(cfg.SourcePaths)
 	w.excl = w.exclusions(exclude)
@@ -497,18 +533,27 @@ const maxListings = 64
 // names lists dir through the cache: a directory is read again only when
 // its modification time changed (a rename or create in it changes it), so
 // repeated events in an unchanged directory cost one stat. nil when dir
-// cannot be listed. Caller holds w.mu.
+// cannot be listed, or holds more than maxFoldListing entries: such a
+// directory is not read again until the next full walk. Caller holds w.mu.
 func (w *Workspace) names(dir string) map[string]string {
+	k := w.key(dir)
+	if _, ok := w.unlisted[k]; ok {
+		return nil
+	}
 	fi, err := os.Stat(dir)
 	if err != nil {
 		return nil
 	}
-	k := w.key(dir)
 	if l, ok := w.listings[k]; ok && l.mtime == fi.ModTime().UnixNano() {
 		return l.names
 	}
-	ents, err := readDir(dir)
+	ents, err := readDirN(dir, maxFoldListing+1)
 	if err != nil {
+		return nil
+	}
+	if len(ents) > maxFoldListing {
+		w.unlisted[k] = fmt.Sprintf("case-folded spelling not corrected in %s: more than %d entries", w.relSlash(dir), maxFoldListing)
+		delete(w.listings, k)
 		return nil
 	}
 	names := make(map[string]string, 2*len(ents))
@@ -707,20 +752,31 @@ func (w *Workspace) Report() Report {
 	defer w.mu.Unlock()
 	r := Report{Files: len(w.disk), Skipped: len(w.skips), Dialects: map[string]int{}}
 	var big []string
-	count := false
+	first := ""
 	for _, s := range w.skips {
 		switch s.kind {
 		case skipBig:
 			big = append(big, s.line)
 		case skipCount:
-			count = true
+			if rel := w.relSlash(s.path); first == "" || rel < first {
+				first = rel
+			}
 		}
 	}
 	sort.Strings(big)
 	r.LimitsHit = big
-	if count {
-		r.LimitsHit = append(r.LimitsHit, fmt.Sprintf("file limit of %d reached: further files skipped", w.lim.MaxFiles))
+	if first != "" {
+		r.LimitsHit = append(r.LimitsHit, fmt.Sprintf("file limit of %d reached: further files skipped, first: %s", w.lim.MaxFiles, first))
 	}
+	var dirs []string
+	for _, l := range w.depthHit {
+		dirs = append(dirs, l)
+	}
+	for _, l := range w.unlisted {
+		dirs = append(dirs, l)
+	}
+	sort.Strings(dirs)
+	r.LimitsHit = append(r.LimitsHit, dirs...)
 	for _, e := range w.disk {
 		r.Dialects[e.dialect]++
 	}
@@ -972,12 +1028,14 @@ func (w *Workspace) bigLine(rel string, size int64) string {
 func (w *Workspace) walk() (cands []candidate) {
 	w.skips = map[string]skipInfo{}
 	w.dirName = map[string]string{w.key(w.root): w.root}
+	w.depthHit = map[string]string{}
+	w.unlisted = map[string]string{} // a full walk lists large directories again
 	visited := map[string]bool{w.key(w.root): true}
-	var rec func(dir, real, rel string, set *ignore.Set)
-	rec = func(dir, real, rel string, set *ignore.Set) {
+	var rec func(dir, real, rel string, set *ignore.Set, depth int)
+	rec = func(dir, real, rel string, set *ignore.Set, depth int) {
 		if data, ok := w.readConfig(filepath.Join(dir, ".gitignore"), maxIgnoreBytes); ok {
 			set = set.Clone()
-			set.Add(ignore.Parse(rel, data))
+			set.Add(ignore.ParseFold(rel, data, w.fold))
 		}
 		ents, err := os.ReadDir(dir) // sorted by name
 		if err != nil {
@@ -1007,9 +1065,16 @@ func (w *Workspace) walk() (cands []candidate) {
 				if w.skipDir(name) || set.Ignored(relp, true) || w.exclude.Ignored(relp, true) || visited[w.key(target)] || w.excluded(target) {
 					continue
 				}
+				if depth+1 > w.lim.MaxDirDepth {
+					w.depthHit[w.key(relp)] = fmt.Sprintf("directory depth limit of %d reached: %s and below not read", w.lim.MaxDirDepth, relp)
+					continue
+				}
+				if de.Type()&os.ModeSymlink != 0 && w.aliasIgnored(target) {
+					continue // a link to a directory the walk skips by its own name or place
+				}
 				visited[w.key(target)] = true
 				w.dirName[w.key(target)] = full
-				rec(full, target, relp, set)
+				rec(full, target, relp, set, depth+1)
 				continue
 			}
 			if !de.Type().IsRegular() || set.Ignored(relp, false) || w.exclude.Ignored(relp, false) || !w.included(relp) {
@@ -1037,7 +1102,7 @@ func (w *Workspace) walk() (cands []candidate) {
 			cands = append(cands, candidate{full, fi.Size(), fi.ModTime().UnixNano()})
 		}
 	}
-	rec(w.root, w.root, "", &ignore.Set{})
+	rec(w.root, w.root, "", &ignore.Set{}, 0)
 	return
 }
 
@@ -1196,12 +1261,15 @@ func (w *Workspace) ignoredPath(rel string, dir bool) bool {
 			return true
 		}
 	}
+	if n := len(parts) - 1; dir && n+1 > w.lim.MaxDirDepth || n > w.lim.MaxDirDepth {
+		return true // the walk does not enter a directory this deep
+	}
 	set := &ignore.Set{}
 	d, relDir := w.root, ""
 	for i, part := range parts {
 		if data, ok := w.readConfig(filepath.Join(d, ".gitignore"), maxIgnoreBytes); ok {
 			set = set.Clone()
-			set.Add(ignore.Parse(relDir, data))
+			set.Add(ignore.ParseFold(relDir, data, w.fold))
 		}
 		relp := part
 		if relDir != "" {
@@ -1216,8 +1284,6 @@ func (w *Workspace) ignoredPath(rel string, dir bool) bool {
 	return false
 }
 
-// patternSet compiles files.include or files.exclude patterns (gitignore
-// syntax, relative to the root) into one matcher.
 // excludeSets are the exclude lists; a path is excluded when any list
 // excludes it, and a negation works only inside its own list.
 type excludeSets []*ignore.Set
@@ -1231,10 +1297,29 @@ func (e excludeSets) Ignored(rel string, isDir bool) bool {
 	return false
 }
 
-func patternSet(patterns []string) *ignore.Set {
+// patternSet compiles files.include or files.exclude patterns (gitignore
+// syntax, relative to the root) into one matcher.
+func patternSet(patterns []string, fold bool) *ignore.Set {
 	set := &ignore.Set{}
-	set.Add(ignore.Parse("", []byte(strings.Join(patterns, "\n"))))
+	set.Add(ignore.ParseFold("", []byte(strings.Join(patterns, "\n")), fold))
 	return set
+}
+
+// aliasIgnored reports whether target, the resolved directory a link in the
+// walk leads to, is one the walk skips under its own name or place: a skipped
+// name, an ignored or excluded path as spelled from the root, or a path in an
+// excluded subtree. The link's own name is checked by the caller.
+func (w *Workspace) aliasIgnored(target string) bool {
+	rel, err := filepath.Rel(w.root, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		if rel, err = filepath.Rel(w.key(w.root), w.key(target)); err != nil {
+			return false
+		}
+	}
+	if rel == "." {
+		return false
+	}
+	return w.skipDir(filepath.Base(target)) || w.ignoredPath(rel, true)
 }
 
 // included reports whether the file rel (slash-separated, relative to the

@@ -1,10 +1,18 @@
 // Package ignore implements .gitignore-style pattern matching, used for the
 // .gitignore files the workspace walk honours.
+//
+// With fold (ParseFold) patterns and Base match case-insensitively by simple
+// Unicode case folding. Git on a case-insensitive volume (core.ignoreCase)
+// folds ASCII letters only, which was confirmed by experiment; the volume
+// itself (APFS) folds fully. Neither this package nor git treats names that
+// differ only by normalisation form (NFC against NFD) or by multi-letter
+// folding (ß against SS) as equal.
 package ignore
 
 import (
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 type rule struct {
@@ -18,21 +26,28 @@ type rule struct {
 type Matcher struct {
 	Base  string
 	rules []rule
+	fold  bool
 }
 
 // Parse compiles the lines of an ignore file located in directory base.
-func Parse(base string, data []byte) *Matcher {
-	m := &Matcher{Base: strings.Trim(base, "/")}
+// Parse(base, data) is ParseFold(base, data, false).
+func Parse(base string, data []byte) *Matcher { return ParseFold(base, data, false) }
+
+// ParseFold is Parse for a volume that does not tell upper and lower case
+// apart: with fold every pattern compiles case-insensitively and Base is
+// compared with strings.EqualFold.
+func ParseFold(base string, data []byte, fold bool) *Matcher {
+	m := &Matcher{Base: strings.Trim(base, "/"), fold: fold}
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimRight(line, "\r")
-		if r, ok := parseLine(line); ok {
+		if r, ok := parseLine(line, fold); ok {
 			m.rules = append(m.rules, r)
 		}
 	}
 	return m
 }
 
-func parseLine(line string) (rule, bool) {
+func parseLine(line string, fold bool) (rule, bool) {
 	// Trailing spaces are ignored unless escaped with a backslash.
 	for strings.HasSuffix(line, " ") && !strings.HasSuffix(line, `\ `) {
 		line = line[:len(line)-1]
@@ -57,6 +72,9 @@ func parseLine(line string) (rule, bool) {
 	anchored := strings.Contains(line, "/")
 	line = strings.TrimPrefix(line, "/")
 	expr := "^"
+	if fold {
+		expr = "(?i)^"
+	}
 	if !anchored {
 		expr += "(?:.*/)?"
 	}
@@ -109,10 +127,15 @@ func globToRegexp(g string) string {
 		case '\\':
 			if i+1 < len(g) {
 				i++
-				b.WriteString(regexp.QuoteMeta(string(g[i])))
+				_, n := utf8.DecodeRuneInString(g[i:])
+				b.WriteString(regexp.QuoteMeta(g[i : i+n]))
+				i += n - 1
 			}
 		default:
-			b.WriteString(regexp.QuoteMeta(string(c)))
+			// A literal is a whole rune, not one byte of it.
+			_, n := utf8.DecodeRuneInString(g[i:])
+			b.WriteString(regexp.QuoteMeta(g[i : i+n]))
+			i += n - 1
 		}
 	}
 	return b.String()
@@ -127,11 +150,20 @@ const (
 	Included // a negation rule matched
 )
 
+// inBase reports whether rel lies below Base, with the matcher's case rule.
+func (m *Matcher) inBase(rel string) bool {
+	if !m.fold {
+		return strings.HasPrefix(rel, m.Base+"/")
+	}
+	n := len(m.Base)
+	return len(rel) > n && rel[n] == '/' && strings.EqualFold(rel[:n], m.Base)
+}
+
 // Match evaluates rel (slash-separated, relative to the workspace root) and
 // returns the verdict of the last rule that matches, or None.
 func (m *Matcher) Match(rel string, isDir bool) Result {
 	if m.Base != "" {
-		if !strings.HasPrefix(rel, m.Base+"/") {
+		if !m.inBase(rel) {
 			return None
 		}
 		rel = rel[len(m.Base)+1:]

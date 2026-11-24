@@ -24,7 +24,7 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
-const usage = "usage: bash-lsp [serve|version|ast FILE [--json]|symbols [PATH...] [--json]|doctor [PATH]|fmt [-w] FILE...|extract [--root DIR] [--list-file FILE]|status|callers|callees|refs|impact|trace|unresolved|cycles]"
+const usage = "usage: bash-lsp [serve|version|ast FILE [--json]|symbols [PATH...] [--json]|doctor [PATH]|check [paths] [--format text|json] [--shellcheck auto|off] [--fail-on error|warning|info|hint] [--root DIR]|fmt [-w] FILE...|extract [--root DIR] [--list-file FILE]|status|callers|callees|refs|impact|trace|unresolved|cycles]"
 
 // Exit codes: 0 success, 1 runtime failure, 2 usage error.
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -52,6 +52,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return cmdSymbols(args[1:], stdout, stderr)
 	case "doctor":
 		return cmdDoctor(args[1:], stdout, stderr)
+	case "check":
+		return cmdCheck(args[1:], stdout, stderr)
 	case "fmt":
 		return cmdFmt(args[1:], stdout, stderr)
 	case "extract":
@@ -431,7 +433,7 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 	if len(pos) == 1 {
 		root = pos[0]
 	}
-	ws, err := openWorkspace(root, stderr)
+	ws, st, prof, err := openFull(root, stderr)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -450,6 +452,9 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "%s: %d\n", d, rep.Dialects[d])
 	}
 	for _, l := range rep.LimitsHit {
+		fmt.Fprintf(stdout, "limit hit: %s\n", l)
+	}
+	for _, l := range snap.LimitsHit() {
 		fmt.Fprintf(stdout, "limit hit: %s\n", l)
 	}
 	for _, n := range rep.Notices {
@@ -473,6 +478,6 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 	for _, u := range unresolved {
 		fmt.Fprintf(stdout, "  %s\n", u)
 	}
-	fmt.Fprintln(stdout, "shellcheck: not used in this version")
+	doctorTools(ws.Root(), st, prof, stdout)
 	return 0
 }

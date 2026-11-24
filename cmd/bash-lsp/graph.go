@@ -549,8 +549,8 @@ func (c *graphCtx) status(o graphOpts, stdout, stderr io.Writer) int {
 			}
 		}
 	}
-	limits := rep.LimitsHit
-	if limits == nil {
+	limits := append(append([]string(nil), rep.LimitsHit...), c.snap.LimitsHit()...)
+	if len(limits) == 0 {
 		limits = []string{}
 	}
 	dialects := rep.Dialects

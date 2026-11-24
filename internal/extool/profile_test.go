@@ -1,11 +1,14 @@
 package extool
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func write(t *testing.T, dir, name string, mode os.FileMode) string {
@@ -200,5 +203,158 @@ func TestProfileSkipsNonProgramsOfTheSameName(t *testing.T) {
 	pb := write(t, b, "tool", 0o755)
 	if got, ok := NewProfile([]string{a, b}).Lookup("tool"); !ok || got != pb {
 		t.Errorf("Lookup(tool) = %q, %v; want %q", got, ok, pb)
+	}
+}
+
+// fakeDir is a directory reader for tests: next gives each chunk.
+type fakeDir struct {
+	next   func(n int) ([]os.DirEntry, error)
+	closed *bool
+}
+
+func (f fakeDir) ReadDir(n int) ([]os.DirEntry, error) { return f.next(n) }
+func (f fakeDir) Close() error {
+	if f.closed != nil {
+		*f.closed = true
+	}
+	return nil
+}
+
+type fakeEntry struct{ name string }
+
+func (e fakeEntry) Name() string               { return e.name }
+func (e fakeEntry) IsDir() bool                { return false }
+func (e fakeEntry) Type() os.FileMode          { return 0 }
+func (e fakeEntry) Info() (os.FileInfo, error) { return nil, os.ErrInvalid }
+
+func useReader(t *testing.T, f func(dir string) (dirReader, error)) {
+	t.Helper()
+	old := openDir
+	openDir = f
+	t.Cleanup(func() { openDir = old })
+}
+
+// A directory on a hung mount does not hold the profile: it is skipped after
+// the per-directory time bound and the other directories are still read.
+func TestProfileHungDirectoryIsSkipped(t *testing.T) {
+	good := t.TempDir()
+	write(t, good, "tool", 0o755)
+	hung := filepath.Join(t.TempDir(), "hung")
+	if runtime.GOOS == "windows" {
+		hung = `C:\hung`
+	}
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	useReader(t, func(dir string) (dirReader, error) {
+		if dir == hung {
+			return fakeDir{next: func(int) ([]os.DirEntry, error) { <-release; return nil, io.EOF }}, nil
+		}
+		return osOpenDir(dir)
+	})
+	defer func(d time.Duration) { profileDirTimeout = d }(profileDirTimeout)
+	profileDirTimeout = 100 * time.Millisecond
+	start := time.Now()
+	p := NewProfile([]string{hung, good})
+	if el := time.Since(start); el > 5*time.Second {
+		t.Fatalf("NewProfile took %v with a hung directory", el)
+	}
+	if _, ok := p.Lookup("tool"); !ok && runtime.GOOS != "windows" {
+		t.Error("the directory after the hung one was not read")
+	}
+	if sk := p.Skipped(); len(sk) != 1 || !strings.HasPrefix(sk[0], hung+": ") || !strings.Contains(sk[0], "timed out") {
+		t.Errorf("Skipped() = %q; want the hung directory with a time-out reason", sk)
+	}
+}
+
+// A directory is read in chunks and reading stops at the name cap: a reader
+// that never ends is not drained.
+func TestProfileReadsInChunksAndStopsAtCap(t *testing.T) {
+	defer func(n int) { maxProfileNames = n }(maxProfileNames)
+	maxProfileNames = 500
+	dir := filepath.Join(t.TempDir(), "endless")
+	if runtime.GOOS == "windows" {
+		dir = `C:\endless`
+	}
+	asked, calls, closed := 0, 0, false
+	useReader(t, func(string) (dirReader, error) {
+		return fakeDir{closed: &closed, next: func(n int) ([]os.DirEntry, error) {
+			calls++
+			if n <= 0 || n > profileChunk {
+				t.Errorf("chunk size %d; want 1..%d", n, profileChunk)
+			}
+			var out []os.DirEntry
+			for i := 0; i < n; i++ {
+				asked++
+				out = append(out, fakeEntry{"n" + itoa(asked)})
+			}
+			return out, nil
+		}}, nil
+	})
+	p := NewProfile([]string{dir})
+	if asked > 2*maxProfileNames+profileChunk {
+		t.Errorf("%d entries read for a cap of %d", asked, maxProfileNames)
+	}
+	if p.Len() != 500 {
+		t.Errorf("Len() = %d; want the cap 500", p.Len())
+	}
+	if sk := p.Skipped(); len(sk) != 1 || !strings.Contains(sk[0], "more than 500 names") {
+		t.Errorf("Skipped() = %q", sk)
+	}
+	if !closed {
+		t.Error("the directory was not closed")
+	}
+}
+
+func TestProfileDirsCountsSkippedToo(t *testing.T) {
+	good := t.TempDir()
+	p := NewProfile([]string{good, "relative", filepath.Join(good, "missing")})
+	if p.Dirs() != 3 || len(p.Skipped()) != 2 {
+		t.Errorf("Dirs() = %d, Skipped() = %q; want 3 and two entries", p.Dirs(), p.Skipped())
+	}
+	var nilp *Profile
+	if nilp.Dirs() != 0 {
+		t.Error("Dirs() of a nil profile")
+	}
+}
+
+// Hung directories do not add up: past the total budget the remaining
+// directories are skipped without being opened.
+func TestProfileTotalBudgetAcrossDirectories(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	base := t.TempDir()
+	var dirs []string
+	for i := 0; i < 6; i++ {
+		dirs = append(dirs, filepath.Join(base, "hung"+itoa(i)))
+	}
+	if runtime.GOOS == "windows" {
+		for i := range dirs {
+			dirs[i] = `C:\hung` + itoa(i)
+		}
+	}
+	var opened atomic.Int32
+	useReader(t, func(string) (dirReader, error) {
+		opened.Add(1)
+		return fakeDir{next: func(int) ([]os.DirEntry, error) { <-release; return nil, io.EOF }}, nil
+	})
+	defer func(d, b time.Duration) { profileDirTimeout, profileTotalBudget = d, b }(profileDirTimeout, profileTotalBudget)
+	profileDirTimeout, profileTotalBudget = 100*time.Millisecond, 250*time.Millisecond
+	start := time.Now()
+	p := NewProfile(dirs)
+	if el := time.Since(start); el > 2*time.Second {
+		t.Fatalf("NewProfile took %v for %d hung directories", el, len(dirs))
+	}
+	sk := p.Skipped()
+	if len(sk) != len(dirs) {
+		t.Fatalf("Skipped() = %q; want every directory", sk)
+	}
+	budget := 0
+	for _, s := range sk {
+		if strings.Contains(s, "time budget") {
+			budget++
+		}
+	}
+	if budget == 0 || int(opened.Load()) >= len(dirs) || p.Dirs() != len(dirs) {
+		t.Errorf("%d directories opened, %d skipped for the budget, Dirs() = %d; skipped: %q", opened.Load(), budget, p.Dirs(), sk)
 	}
 }

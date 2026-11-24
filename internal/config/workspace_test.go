@@ -51,7 +51,7 @@ func TestLimitsKey(t *testing.T) {
 	}
 	w := openSettings(t, root, s, nil)
 	r := w.Report()
-	if r.Files != 2 || len(r.LimitsHit) != 1 || r.LimitsHit[0] != "file limit of 2 reached: further files skipped" {
+	if r.Files != 2 || len(r.LimitsHit) != 1 || r.LimitsHit[0] != "file limit of 2 reached: further files skipped, first: c.sh" {
 		t.Errorf("report = %+v", r)
 	}
 	put(t, root, "big.sh", "# "+string(make([]byte, 200))+"\n")
