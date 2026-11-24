@@ -300,7 +300,7 @@ func (x *extractor) fileRecords(path string) []extractRec {
 			switch {
 			case e.Res == analysis.Dynamic:
 				base.T, base.Expr = "dynamic", clip(e.Text)
-			case (e.Res == analysis.Resolved || e.Res == analysis.Candidate) && e.Reason != analysis.ReasonOutsideClosure && e.To != nil:
+			case (e.Res == analysis.Resolved || e.Res == analysis.Candidate) && e.To != nil:
 				base.T, base.Name, base.To = "call", e.To.Name, x.declPath[e.ToDecl]
 			default:
 				continue

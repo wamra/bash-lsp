@@ -153,11 +153,17 @@ Choices where the PowerShell extractor gives no direct model:
   does not. Writing it as `call` would need a function name. An unknown
   `t` is accepted and ignored (`edges.go:538-539`), so `invoke` is safe
   today and a patch can map it to a new edge kind.
-- **What is never a `call`.** A name match outside the sourced closure
-  (`name-match-outside-closure`), an unresolved edge, a builtin and an
-  external command. This keeps `orphan.sh`'s `build_release` out of the
-  callers of `lib/util.sh`'s (AC-03); `TestExtractNoCallToOrphanFromMain`
-  asserts it on `testdata/corpus`.
+- **What is never a `call`.** An unresolved edge, a builtin and an external
+  command. A name match outside the sourced closure
+  (`candidate`/`name-match-outside-closure`) is a `call` like any other
+  candidate, one record per candidate definition, with its `resolution` and
+  `reason` (spec 4.2 maps this reason to code-index confidence `possible`;
+  AC-17: candidates are returned, not dropped); `TestExtractOutsideClosureCandidates`
+  asserts it. It does not reach `orphan.sh` from `main.sh` on
+  `testdata/corpus`: FDS-008 makes such an edge only for a call that resolves
+  to no function in view, and every `build_release` call in `main.sh`
+  resolves inside its closure; `TestExtractNoCallToOrphanFromMain` asserts
+  that no call record goes into `orphan.sh` from another file (AC-03).
 - **`candidate` calls are written as `call`.** code-index has no notion of
   candidate: it would store them as `exact` (`edges.go:519`). The
   `resolution` and `reason` keys carry the truth for any consumer that reads

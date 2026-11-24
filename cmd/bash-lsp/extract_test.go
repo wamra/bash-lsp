@@ -171,9 +171,6 @@ func TestExtractNoCallToOrphanFromMain(t *testing.T) {
 		if r.T != "call" {
 			continue
 		}
-		if r.Reason == "name-match-outside-closure" {
-			t.Errorf("call with the outside-closure reason: %v", r)
-		}
 		if filepath.Base(r.To) == "orphan.sh" && filepath.Base(r.File) != "orphan.sh" {
 			t.Errorf("call into orphan.sh from another file: %v", r)
 		}
@@ -546,5 +543,32 @@ func TestExtractRawKeyOrder(t *testing.T) {
 		if !seen[typ] {
 			t.Errorf("no %s record in\n%s", typ, out)
 		}
+	}
+}
+
+// A name match outside the sourced closure is a candidate (spec 4.2 maps it
+// to code-index confidence `possible`; AC-17: candidates are returned, not
+// dropped): written as `call` with its resolution and reason, one record per
+// candidate definition, as `callers` lists it.
+func TestExtractOutsideClosureCandidates(t *testing.T) {
+	root := writeRoot(t, map[string]string{
+		"a.sh": ". \"$X\"\nhelper\n",
+		"b.sh": "helper() { :; }\n",
+		"c.sh": "helper() { :; }\n",
+	})
+	got := find(extractRoot(t, root), "call", "a.sh", 2)
+	var to []string
+	for _, r := range got {
+		if r.Name != "helper" || r.Resolution != "candidate" || r.Reason != "name-match-outside-closure" || r.Col != 1 || r.In != "" {
+			t.Errorf("record %v", r)
+		}
+		to = append(to, filepath.Base(r.To))
+	}
+	if strings.Join(to, ",") != "b.sh,c.sh" {
+		t.Fatalf("call records at a.sh:2 go to %v, want b.sh,c.sh: %v", to, got)
+	}
+	out := runOK(t, "callers", "--root", root, "b.sh:1:1")
+	if !strings.Contains(out, "a.sh:2:1") || !strings.Contains(out, "candidate/name-match-outside-closure") {
+		t.Fatalf("callers b.sh:1:1 does not list the site: %q", out)
 	}
 }
