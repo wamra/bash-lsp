@@ -226,9 +226,11 @@ func TestResolvedReferencesOnVariableProductInBoundedTime(t *testing.T) {
 	if !withinBound(t, "ResolvedReferences on the last \"$cmd\"", bound, func() { got = s.ResolvedReferences("/ws/a.sh", off, true) }) {
 		return
 	}
-	// Every site is candidate/variable-constant: only the n definitions and
-	// the n `cmd=fi` literals (ruling: literal values are left out) remain.
-	if len(got) != n {
-		t.Errorf("%d resolved references, want the %d definitions", len(got), n)
+	// Every site is candidate/variable-constant: only the definitions and
+	// the `cmd=fi` literals (ruling: literal values are left out) remain.
+	// A site lists its first maxSiteTargets functions (candidate-cap), so the
+	// n definitions are 16.
+	if want := min(n, maxSiteTargets); len(got) != want {
+		t.Errorf("%d resolved references, want the %d definitions", len(got), want)
 	}
 }

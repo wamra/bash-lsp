@@ -475,7 +475,11 @@ func (s *Snapshot) hoverDynamicScope(binds []Binding) string {
 	if len(ds) == 1 {
 		noun = "local"
 	}
-	fmt.Fprintf(&sb, "%d candidate caller %s:\n", len(ds), noun)
+	if total := s.lim.dynTotal[binds[0].Use]; total > len(ds) {
+		fmt.Fprintf(&sb, "%d caller locals exist, more than the %d bound (%s); the first %d are candidates:\n", total, maxDynScopeLocals, ReasonDynamicScopeCap, len(ds))
+	} else {
+		fmt.Fprintf(&sb, "%d candidate caller %s:\n", len(ds), noun)
+	}
 	for i, d := range ds {
 		if i == maxCallSites {
 			fmt.Fprintf(&sb, "- and %d more\n", len(ds)-maxCallSites)

@@ -363,6 +363,22 @@ func TestStatus(t *testing.T) {
 	wantLines(t, out, "generation: ", "cache: none\n", "bash: ")
 }
 
+// `unresolved` lists the sites past the per-site candidate cap. (The `candidate cap`
+// line of Snapshot.LimitsHit is checked where `status` prints it.)
+func TestUnresolvedListsCandidateCap(t *testing.T) {
+	root := writeRoot(t, map[string]string{"a.sh": strings.Repeat("f(){ :; }\n", 17) + "f\nf\n"})
+	var un gEdges
+	mustJSON(t, runOK(t, "unresolved", "--root", root, "--json"), &un)
+	if len(un.Results) != 2 {
+		t.Fatalf("unresolved: %v", edgeLines(un.Results))
+	}
+	for _, e := range un.Results {
+		if e.Resolution != "dynamic" || e.Reason != "candidate-cap" || e.Text != "f" || e.Callee != nil {
+			t.Errorf("edge %+v", e)
+		}
+	}
+}
+
 func TestStatusReportsNestingErrors(t *testing.T) {
 	deep := strings.Repeat("(", 10005) + ":" + strings.Repeat(")", 10005) + "\n"
 	root := writeRoot(t, map[string]string{"deep.sh": deep, "ok.sh": ":\n"})

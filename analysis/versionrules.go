@@ -121,9 +121,12 @@ type versionScan struct {
 	// majors of each function's own checks; wraps the guard functions each
 	// function calls unconditionally at its top level (guardAvoids).
 	topCalls map[string]uint16
+	// topOrder is the keys of topCalls in name order, set once topCalls is complete.
+	topOrder []string
 	own      map[string]uint16
 	wraps    map[string][]string
 	avoids   map[guardQuery]bool
+	cut      map[guardQuery]bool // the queries of avoids answered "yes" because the step budget was used up
 	steps    int
 }
 
@@ -330,6 +333,7 @@ func (vs *versionScan) finish(uses []*Use) {
 			vs.wraps[fn.Name] = append(vs.wraps[fn.Name], u.Name)
 		}
 	}
+	vs.topOrder = slices.Sorted(maps.Keys(vs.topCalls))
 }
 
 // topLevelCallIn is the function whose body holds call as one of its own
@@ -359,12 +363,18 @@ func topLevelCallIn(call *tree.Node) *tree.Node {
 
 // topGuarded reports whether a guard function called at the top level
 // guarantees need without its guard coming through the function fn.
-func (vs *versionScan) topGuarded(fn string, need int) bool {
-	for callee, m := range vs.topCalls {
+//
+// cut, when not nil, is set when an answer was "yes" because a search passed
+// the step budget (guardAvoids).
+func (vs *versionScan) topGuarded(fn string, need int, cut *bool) bool {
+	// In name order: the callees share the step budget, so the order decides
+	// which searches run out of it.
+	for _, callee := range vs.topOrder {
+		m := vs.topCalls[callee]
 		if m>>min(need, 10) == 0 { // bits need..10 and 11 (unknown)
 			continue
 		}
-		if fn == "" || vs.guardAvoids(callee, fn, need) {
+		if fn == "" || vs.guardAvoids(callee, fn, need, cut) {
 			return true
 		}
 	}
@@ -381,10 +391,14 @@ type guardQuery struct {
 // a function it calls unconditionally at its top level, transitively, that
 // guarantees need, without passing through the function fn. The answers are
 // kept, and the searches of a file share a step budget proportional to its
-// calls; past it the answer is yes (undecided keeps silencing).
-func (vs *versionScan) guardAvoids(callee, fn string, need int) bool {
+// calls; past it the answer is yes (undecided keeps silencing), and cut, when
+// not nil, is set for that answer, now and every time it is read again.
+func (vs *versionScan) guardAvoids(callee, fn string, need int, cut *bool) bool {
 	q := guardQuery{callee, fn, min(need, 10)}
 	if r, ok := vs.avoids[q]; ok {
+		if cut != nil && vs.cut[q] {
+			*cut = true
+		}
 		return r
 	}
 	r := false
@@ -395,6 +409,15 @@ func (vs *versionScan) guardAvoids(callee, fn string, need int) bool {
 			stack = stack[:len(stack)-1]
 			if vs.steps--; vs.steps < 0 || vs.own[f]>>q.need != 0 {
 				r = true
+				if vs.steps < 0 {
+					if vs.cut == nil {
+						vs.cut = map[guardQuery]bool{}
+					}
+					vs.cut[q] = true
+					if cut != nil {
+						*cut = true
+					}
+				}
 				break
 			}
 			for _, g := range vs.wraps[f] {
@@ -414,7 +437,7 @@ func (vs *versionScan) guardAvoids(callee, fn string, need int) bool {
 
 // covered reports whether a feature of bash major version need at node at,
 // offset off, sits behind a check.
-func (vs *versionScan) covered(at *tree.Node, off, need int) bool {
+func (vs *versionScan) covered(at *tree.Node, off, need int, cut *bool) bool {
 	fn := enclosingFunc(at)
 	if fn == nil {
 		return vs.top.covers(off, need)
@@ -427,7 +450,7 @@ func (vs *versionScan) covered(at *tree.Node, off, need int) bool {
 			return true
 		}
 	}
-	return vs.topGuarded(fn.Name, need)
+	return vs.topGuarded(fn.Name, need, cut)
 }
 
 // majorExpr is the major version of bash as a test or an arithmetic
@@ -778,7 +801,12 @@ func (c *diagCtx) bashVersions() {
 			loc = c.f.NewLocator()
 		}
 		at := loc.At(r.Start.Offset)
-		if vs.covered(at, r.Start.Offset, info.MinBash.Major) {
+		var cut bool
+		covered := vs.covered(at, r.Start.Offset, info.MinBash.Major, &cut)
+		if cut {
+			c.runLim.guard = c.runLim.guard.also(r.Start.Line)
+		}
+		if covered {
 			return
 		}
 		if tolerated(c.f.Src, at) {

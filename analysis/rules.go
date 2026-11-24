@@ -20,6 +20,7 @@ var rules = []RuleInfo{
 	{"WB1002", "file-skipped", SevInfo, nil, "the file was not parsed (too large, or a dialect that is not supported)"},
 	{"WB1003", "internal-error", SevInfo, nil, "the parser or lowerer failed on this region; it is incomplete"},
 	{"WB1005", "resync-budget", SevInfo, nil, "error recovery used up its budget: the rest of the file is one error gap"},
+	{"WB1006", "string-budget", SevInfo, nil, "a string body that was not analysed: the file's string-parse budget is used up"},
 	{"WB1007", "findings-cap", SevInfo, nil, "more findings than are shown for one file"},
 	{"WB1008", "unknown-directive-rule", SevInfo, nil, "a `# bash-lsp disable=` directive names a rule id no rule has"},
 	{"WB1101", "unresolved-source", SevWarning, []string{"SC1090", "SC1091"}, "a `source` whose file is not in the workspace or was skipped for its size"},
@@ -45,7 +46,7 @@ var ruleByID = func() map[string]RuleInfo {
 
 // reservedRules are the ids of rules the plan names that are not built yet:
 // settings and directives naming them are not mistakes.
-var reservedRules = map[string]bool{"WB1004": true, "WB1006": true}
+var reservedRules = map[string]bool{"WB1004": true}
 
 // KnownRule reports whether id names a native rule, built or reserved.
 func KnownRule(id string) bool { _, ok := ruleByID[id]; return ok || reservedRules[id] }
@@ -58,6 +59,19 @@ func Rules() []RuleInfo {
 		out[i] = r
 	}
 	return out
+}
+
+// --- WB1006: a string body past the string-parse budget ---
+
+// stringBudget reports each string body Bind left unparsed because the file's
+// string-parse budget was used up (DynamicRef.Budget); a string past the
+// nesting depth is no finding, it is a property of the code.
+func (c *diagCtx) stringBudget() {
+	for _, d := range c.ff.Dynamic {
+		if d.Budget {
+			c.add("WB1006", d.Range, fmt.Sprintf("this string is not analysed: the file's string bodies past %d bytes are not parsed (dynamic/%s)", MaxFileBytes, ReasonStringBudget))
+		}
+	}
 }
 
 // --- WB1001, WB1003, WB1005: syntax ---
@@ -926,6 +940,9 @@ func (x *localReach) reaches(c *diagCtx, name string, sc *Scope) bool {
 		if v, done = x.down(name, starts, q.fn, limit); done {
 			break
 		}
+	}
+	if !done {
+		c.runLim.reach = c.runLim.reach.also(d.NameRange.Start.Line)
 	}
 	v = v || !done
 	x.answers[q] = v

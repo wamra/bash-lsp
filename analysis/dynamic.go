@@ -21,7 +21,27 @@ const (
 	// site's visibility closure removes with `unset -f` (ruling R41). Order
 	// is not tracked, so such an edge is never resolved.
 	ReasonUnsetInView = "unset-in-view"
+	// ReasonCandidateCap: a Dynamic edge at a call site with more than
+	// maxSiteTargets candidate definitions (a call by name) or targets (a call
+	// through a variable); the edges to the first maxSiteTargets are listed.
+	ReasonCandidateCap = "candidate-cap"
+	// ReasonStringBudget: a Dynamic edge at a string body that was not parsed
+	// because the file's string-parse budget (MaxFileBytes) is used up.
+	ReasonStringBudget = "string-budget"
+	// ReasonDynamicScopeCap: a binding reason, never an edge and not in
+	// reasonNames: a variable read is bound to the first maxDynScopeLocals
+	// caller locals of its name only (Snapshot.LimitsHit says how many reads).
+	ReasonDynamicScopeCap = "dynamic-scope-cap"
 )
+
+// maxSiteTargets is the most targets one call site lists: candidate
+// definitions of a name, or functions a variable call may reach. A site with
+// more has the first maxSiteTargets and one dynamic/candidate-cap edge.
+const maxSiteTargets = 16
+
+// maxDynScopeLocals is the most caller locals one variable read binds to
+// through dynamic scope.
+const maxDynScopeLocals = 16
 
 // Via says how a UseCall names its target when it is not a plain command
 // word (Use.ViaAlias, the target inside an alias definition, is separate).
@@ -71,9 +91,10 @@ func (v Via) reason() string {
 // deeper than maxStringDepth. Range is the expression (in the file); Node is
 // the command in the file that holds it.
 type DynamicRef struct {
-	Range tree.Range
-	Scope *Scope
-	Node  *tree.Node
+	Range  tree.Range
+	Scope  *Scope
+	Node   *tree.Node
+	Budget bool // a string body not parsed because the file's string-parse budget is used up, not because of its depth
 }
 
 // InvokeRef is the execution of a file by literal path: a command word with
@@ -265,9 +286,13 @@ func shellOperand(args []*tree.Node) (w *tree.Node, cmd bool) {
 // dynamic site for a command name that is an expansion, and the strings
 // inside it, one level deeper.
 func (b *binder) fragment(via Via, args []*tree.Node, n *tree.Node, sc *Scope, m *fragMap, depth int) {
-	est := fragmentSize(args, m.src)
-	if depth >= maxStringDepth || est > b.fragLeft {
+	if depth >= maxStringDepth {
 		b.ff.Dynamic = append(b.ff.Dynamic, DynamicRef{Range: b.fileRange(m, args[0].Range.Start.Offset, args[len(args)-1].Range.End.Offset), Scope: sc, Node: n})
+		return
+	}
+	est := fragmentSize(args, m.src)
+	if est > b.fragLeft {
+		b.ff.Dynamic = append(b.ff.Dynamic, DynamicRef{Range: b.fileRange(m, args[0].Range.Start.Offset, args[len(args)-1].Range.End.Offset), Scope: sc, Node: n, Budget: true})
 		return
 	}
 	b.fragLeft -= est
@@ -599,6 +624,8 @@ var (
 	codeVariableUnknown = reasonCode(ReasonVariableUnknown)
 	codeExpansion       = reasonCode(ReasonExpansion)
 	codeUnsetInView     = reasonCode(ReasonUnsetInView)
+	codeCandidateCap    = reasonCode(ReasonCandidateCap)
+	codeStringBudget    = reasonCode(ReasonStringBudget)
 )
 
 // prepareDynamic starts the dynamic sites of every file from its facts.
@@ -617,7 +644,11 @@ func (s *Snapshot) prepareDynamic() {
 	}
 	for i, ff := range s.facts {
 		for _, d := range ff.Dynamic {
-			s.dyn[i] = append(s.dyn[i], dynSite{rng: d.Range, sc: d.Scope, reason: codeExpansion})
+			reason := codeExpansion
+			if d.Budget {
+				reason = codeStringBudget
+			}
+			s.dyn[i] = append(s.dyn[i], dynSite{rng: d.Range, sc: d.Scope, reason: reason})
 		}
 	}
 }
@@ -656,10 +687,20 @@ func (s *Snapshot) bindVariableCall(out []Binding, file int, u *Use, priv *Symbo
 		}
 		vals = append(vals, v)
 		for _, f := range v.targets {
+			if len(targets) > maxSiteTargets {
+				break // one past the cap says there are more; the rest is not collected
+			}
 			if !slices.Contains(targets, f) {
 				targets = append(targets, f)
 			}
 		}
+	}
+	if len(targets) > maxSiteTargets {
+		targets = targets[:maxSiteTargets]
+		if s.varCap == nil {
+			s.varCap = map[*Use]bool{}
+		}
+		s.varCap[u] = true
 	}
 	if len(targets) == 0 {
 		return unknown()
@@ -943,7 +984,7 @@ func (s *Snapshot) dynamicScope(added map[int][]Binding, replaced map[*Use]bool)
 				continue
 			}
 			cf := s.idx[cb.File]
-			scratch = s.appendTargets(scratch[:0], cf, edgeRec{}, &cb)
+			scratch, _ = s.appendTargets(scratch[:0], cf, edgeRec{}, &cb) // a capped list is all candidates: no Resolved record in it
 			var d *Decl
 			for k, r := range scratch {
 				if r.res != Resolved || r.to == nil || s.declSym[r.to] != gs ||
@@ -1019,6 +1060,10 @@ func (s *Snapshot) dynamicScope(added map[int][]Binding, replaced map[*Use]bool)
 			continue
 		}
 		replaced[u] = true
+		if len(syms) > maxDynScopeLocals {
+			s.lim.dynScopeCap(rd.file, u, len(syms))
+			syms = syms[:maxDynScopeLocals]
+		}
 		for _, sym := range syms {
 			added[rd.file] = append(added[rd.file], Binding{Use: u, File: b.File, Sym: sym, Res: Candidate, Reason: ReasonDynamicScope})
 		}
@@ -1039,13 +1084,21 @@ func (s *Snapshot) appendDynamicEdges(out []edgeRec, file int) []edgeRec {
 // appendViaTargets appends the edges of a string or variable call binding:
 // one candidate edge per definition of the symbol in view of file, with the
 // binding's reason.
-func (s *Snapshot) appendViaTargets(out []edgeRec, file int, r edgeRec, b *Binding) []edgeRec {
+//
+// At most maxSiteTargets definitions are listed; capped reports that the
+// symbol has more in view.
+func (s *Snapshot) appendViaTargets(out []edgeRec, file int, r edgeRec, b *Binding) (_ []edgeRec, capped bool) {
 	r.res, r.reason = Candidate, reasonCode(b.Reason)
+	n := 0
 	for _, d := range b.Sym.Decls {
 		if s.visible[file].has(s.declFile[d]) {
+			if n == maxSiteTargets {
+				return out, true
+			}
+			n++
 			r.to = d
 			out = append(out, r)
 		}
 	}
-	return out
+	return out, false
 }

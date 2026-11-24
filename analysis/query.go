@@ -1,7 +1,9 @@
 package analysis
 
 import (
+	"slices"
 	"sort"
+	"strings"
 
 	"github.com/wamra/bash-lsp/tree"
 )
@@ -79,31 +81,69 @@ func (s *Snapshot) declLoc(d *Decl) Location {
 	return Location{Path: s.paths[s.declFile[d]], Range: d.NameRange}
 }
 
-// locSet collects locations without duplicates and sorts them.
+// locSet collects locations and returns them sorted by path and offset, one
+// per place (the first added). It does not hash: the locations of one symbol
+// come in site order, so what is added is a few sorted runs (the
+// declarations, then each symbol's uses); they are merged, and equal places
+// meet and are dropped. A set with an entry per location was half of
+// References on a file with a million of them, and a stable sort of a
+// declaration run and a use run a third of what was left.
 type locSet struct {
-	seen map[[2]interface{}]bool
 	out  []Location
+	runs []int // start index in out of each sorted run
+}
+
+func locCmp(a, b Location) int {
+	if c := strings.Compare(a.Path, b.Path); c != 0 {
+		return c
+	}
+	return a.Range.Start.Offset - b.Range.Start.Offset
 }
 
 func (l *locSet) add(loc Location) {
-	k := [2]interface{}{loc.Path, loc.Range.Start.Offset}
-	if l.seen == nil {
-		l.seen = map[[2]interface{}]bool{}
+	if n := len(l.out); n == 0 || locCmp(l.out[n-1], loc) > 0 {
+		l.runs = append(l.runs, n)
 	}
-	if !l.seen[k] {
-		l.seen[k] = true
-		l.out = append(l.out, loc)
-	}
+	l.out = append(l.out, loc)
 }
 
+// maxMergeRuns is the most runs sorted() merges; more are sorted as a whole.
+const maxMergeRuns = 8
+
 func (l *locSet) sorted() []Location {
-	sort.SliceStable(l.out, func(a, b int) bool {
-		if l.out[a].Path != l.out[b].Path {
-			return l.out[a].Path < l.out[b].Path
+	out := l.out
+	switch {
+	case len(l.runs) <= 1:
+	case len(l.runs) > maxMergeRuns:
+		slices.SortStableFunc(out, locCmp) // equal places keep the order they were added in
+	default:
+		var buf []Location
+		end := len(out)
+		bounds := append(slices.Clone(l.runs), end)
+		for i := 1; i+1 < len(bounds); i++ { // merge run i into everything before it; ties take the earlier first
+			if buf == nil {
+				buf = make([]Location, end)
+			}
+			lo, mid, hi := 0, bounds[i], bounds[i+1]
+			a, b, k := lo, mid, lo
+			for a < mid && b < hi {
+				if locCmp(out[b], out[a]) < 0 {
+					buf[k] = out[b]
+					b++
+				} else {
+					buf[k] = out[a]
+					a++
+				}
+				k++
+			}
+			k += copy(buf[k:], out[a:mid])
+			copy(buf[k:], out[b:hi])
+			copy(out[lo:hi], buf[lo:hi])
 		}
-		return l.out[a].Range.Start.Offset < l.out[b].Range.Start.Offset
+	}
+	return slices.CompactFunc(out, func(a, b Location) bool {
+		return a.Range.Start.Offset == b.Range.Start.Offset && a.Path == b.Path
 	})
-	return l.out
 }
 
 // Definition returns where the name under the cursor is declared. On a
@@ -151,6 +191,13 @@ func (s *Snapshot) ResolvedReferences(path string, offset int, includeDecl bool)
 	return s.references(path, offset, includeDecl, true)
 }
 
+// refKey is a declaration's place, for references to tell a declaration's own
+// name from a use of it.
+type refKey struct {
+	path string
+	off  int
+}
+
 func (s *Snapshot) references(path string, offset int, includeDecl, resolvedOnly bool) []Location {
 	h, _, ok := s.at(path, offset)
 	if !ok {
@@ -163,16 +210,39 @@ func (s *Snapshot) references(path string, offset int, includeDecl, resolvedOnly
 	// cost O(n^3) for the use; once per use it is the n^2 edges there are.
 	resolvedTo := map[*Use]map[*Symbol]bool{}
 	for _, sym := range s.hitSyms(h) {
-		declAt := map[[2]interface{}]bool{}
+		filter := resolvedOnly && sym.Kind == DeclFunction
+		bs := s.bySym[sym] // read, not copied: a symbol can have a million bindings
+		if !filter {
+			ls.out = slices.Grow(ls.out, len(bs)+len(sym.Decls))
+		}
+		var declAt map[refKey]bool // the declarations' own places, to leave them out of the uses (includeDecl false)
+		if !includeDecl {
+			declAt = make(map[refKey]bool, len(sym.Decls))
+		}
+		declStart := len(ls.out)
 		for _, d := range sym.Decls {
-			declAt[[2]interface{}{s.paths[s.declFile[d]], d.NameRange.Start.Offset}] = true
 			if includeDecl {
 				ls.add(s.declLoc(d))
+			} else {
+				declAt[refKey{s.paths[s.declFile[d]], d.NameRange.Start.Offset}] = true
 			}
 		}
-		filter := resolvedOnly && sym.Kind == DeclFunction
-		for _, b := range s.BindingsOf(sym) {
-			if !includeDecl && declAt[[2]interface{}{b.File, b.Use.Range.Start.Offset}] {
+		// The declarations just added and the uses both come in site order:
+		// a use at a declaration's own place (an assignment is both) is left
+		// out as the walk passes it, not added and dropped after the merge.
+		// Declarations out of order only make this skip less; the merge
+		// drops what is left.
+		di, declEnd := declStart, len(ls.out)
+		for _, b := range bs {
+			if includeDecl {
+				off := b.Use.Range.Start.Offset
+				for di < declEnd && (ls.out[di].Path < b.File || ls.out[di].Path == b.File && ls.out[di].Range.Start.Offset < off) {
+					di++
+				}
+				if di < declEnd && ls.out[di].Path == b.File && ls.out[di].Range.Start.Offset == off {
+					continue
+				}
+			} else if declAt[refKey{b.File, b.Use.Range.Start.Offset}] {
 				continue
 			}
 			if filter {

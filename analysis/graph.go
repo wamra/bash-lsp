@@ -288,10 +288,15 @@ func (s *Snapshot) walk(n Node, depth int, forward bool) []Step {
 	frontier := []Node{n}
 	var out []Step
 	for level := 1; len(frontier) > 0 && (depth <= 0 || level <= depth); level++ {
-		var idx []int32
+		n := 0
+		for _, x := range frontier {
+			n += len(adj[x])
+		}
+		idx := make([]int32, 0, n) // sized once: appends grew it by a quarter at a time
 		for _, x := range frontier {
 			idx = append(idx, adj[x]...)
 		}
+		out = slices.Grow(out, n)
 		g.sortSteps(idx)
 		frontier = frontier[:0:0]
 		for _, i := range idx {
