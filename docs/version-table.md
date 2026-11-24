@@ -155,6 +155,14 @@ behind `env` (its options `-i`, `-v`, `-0`, `-C dir`, `-P path`, `-u name`,
   each use a feature before their call, a top-level guard call covers the
   remaining function bodies. A guard in a sourced file
   does not guard the sourcing file (see "Known gaps").
+  Three more gaps, all missed reports: a wrapper's early feature stays
+  hidden when a sibling wrapper calls the same guard function
+  (`g() { <check>; }; w1() { declare -A a; g; }; w2() { g; }; w1; w2` is
+  silent on `a`); a number with a leading zero in a major check
+  (`[ "${BASH_VERSINFO[0]}" -ge 03 ] || exit 1`, which `[` reads as 3) is
+  undecided and silences everything after it; and the word `exit` inside a
+  string or an argument counts as an exit when a check is read
+  (`... || echo "no exit"`).
 - **Tolerated uses.** A feature is not reported when its command is the left
   side of `||` (`shopt -s globstar 2>/dev/null || true`) or sends standard
   error to `/dev/null` (`2>/dev/null`, `2>>/dev/null`, `&>/dev/null`). A test
