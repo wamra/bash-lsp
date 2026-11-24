@@ -222,7 +222,7 @@ func FuzzNestingGuard(f *testing.F) {
 			t.Skip("over the file limit")
 		}
 		if raceBuild {
-			parseAndWalk(src)
+			parseAndWalk(src, fuzzShLimit())
 			return
 		}
 		out, err := runChild("stdin", src)

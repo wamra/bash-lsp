@@ -248,11 +248,20 @@ func FuzzParse(f *testing.F) {
 		f.Add([]byte(seed))
 	}
 	f.Fuzz(func(t *testing.T, src []byte) {
-		// Every input is parsed as bash and as sh (the POSIX grammar first,
-		// the bash grammar after it when that has errors), each within the budget.
+		// Every input is parsed as a bash file and as an sh file. Parse with
+		// POSIX is the entry that chooses the grammar for an sh file: it reads
+		// the POSIX grammar first and reads again with the bash grammar when
+		// that parse has errors or the text holds a bash form (shGrammar), so
+		// the fallback runs for every input that does not parse as sh. The
+		// budget is parseBudget for the bash parse and twice that for the sh
+		// call, which parses up to twice: three budgets for the pair.
 		for _, d := range []Dialect{Bash, POSIX} {
 			var file *tree.File
-			parseWithinBudget(t, len(src), func() { file = Parse("f.sh", src, d) })
+			parses := 1
+			if d == POSIX {
+				parses = 2
+			}
+			parseWithinBudget(t, len(src), parses, func() { file = Parse("f.sh", src, d) })
 			checkInvariants(t, file)
 		}
 	})
@@ -272,18 +281,19 @@ func parseBudget(n int) time.Duration {
 }
 
 // parseWithinBudget runs fn and fails t when the best of three runs takes
-// longer than parseBudget (a fuzz worker shares the machine with the others).
-func parseWithinBudget(t *testing.T, n int, fn func()) {
+// longer than parses times parseBudget (a fuzz worker shares the machine with
+// the others).
+func parseWithinBudget(t *testing.T, n, parses int, fn func()) {
 	t.Helper()
 	best := time.Duration(1<<63 - 1)
 	for range 3 {
 		start := time.Now()
 		fn()
-		if best = min(best, time.Since(start)); best <= parseBudget(n) {
+		if best = min(best, time.Since(start)); best <= time.Duration(parses)*parseBudget(n) {
 			return
 		}
 	}
-	t.Fatalf("Parse took %v on %d bytes, over its budget of %v", best, n, parseBudget(n))
+	t.Fatalf("Parse took %v on %d bytes, over its budget of %v", best, n, time.Duration(parses)*parseBudget(n))
 }
 
 // A declaration value that ends in a recovered quote (found by FuzzParse on

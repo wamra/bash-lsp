@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"runtime/debug"
@@ -168,7 +169,12 @@ func TestCrashHelper(t *testing.T) {
 		t.Skip("child side of TestNoCrashSubprocess and FuzzNestingGuard")
 	}
 	var src []byte
+	shMax := math.MaxInt // the named crash cases run the sh path at full size
+	if raceBuild {
+		shMax = raceCrashShMax
+	}
 	if name == "stdin" {
+		shMax = fuzzShLimit()
 		b, err := io.ReadAll(os.Stdin)
 		if err != nil {
 			t.Fatal(err)
@@ -184,12 +190,36 @@ func TestCrashHelper(t *testing.T) {
 	if os.Getenv(maxStackEnv) == "1" {
 		debug.SetMaxStack(safetyStack)
 	}
-	fmt.Println(parseAndWalk(src))
+	fmt.Println(parseAndWalk(src, shMax))
 }
 
-// walkPOSIX does the same for the sh path: the POSIX grammar first, the bash
-// grammar after it when that has errors. Nothing is printed; it panics where
-// parseAndWalk does.
+// fuzzShMax is the largest input FuzzNestingGuard also takes through the sh
+// path (64 KiB, 16 KiB under the race detector); the bash path keeps the whole 2 MiB range. Go stops a fuzz
+// worker whose input takes over 10 s ("deadlocked!"), and the sh path costs
+// about twice the bash path on top of it (the POSIX parse, the bash parse that
+// follows an error, a second walk and analysis), so a deep input of 2 MiB under
+// load or the race detector went over. TestNoCrashSubprocess runs the sh path
+// at full size, where nothing stops it.
+const fuzzShMax = 64 << 10
+
+// Under the race detector (ten times slower) the bounds are smaller: 16 KiB in
+// the fuzzer, 256 KiB for the named crash cases, which then keep the package
+// inside its default timeout. The unraced gate runs the crash cases whole.
+const (
+	raceFuzzShMax  = 16 << 10
+	raceCrashShMax = 256 << 10
+)
+
+func fuzzShLimit() int {
+	if raceBuild {
+		return raceFuzzShMax
+	}
+	return fuzzShMax
+}
+
+// walkPOSIX does the same for the sh path: Parse with POSIX, which reads the
+// POSIX grammar and then the bash grammar when that has errors or the text holds
+// a bash form (shGrammar). Nothing is printed; it panics where parseAndWalk does.
 func walkPOSIX(src []byte) {
 	f := Parse("x.sh", src, POSIX)
 	f.Root.Walk(func(*tree.Node) bool { return true })
@@ -205,9 +235,12 @@ func walkPOSIX(src []byte) {
 }
 
 // parseAndWalk parses src and walks the tree recursively, the way every
-// consumer does. It panics when the tree breaks the depth the lowerer promises.
-func parseAndWalk(src []byte) string {
-	walkPOSIX(src)
+// consumer does, and the sh path as well for inputs up to shMax bytes. It
+// panics when the tree breaks the depth the lowerer promises.
+func parseAndWalk(src []byte, shMax int) string {
+	if len(src) <= shMax {
+		walkPOSIX(src)
+	}
 	f := Parse("x.sh", src, Bash)
 	nodes := 0
 	f.Root.Walk(func(*tree.Node) bool { nodes++; return true })
