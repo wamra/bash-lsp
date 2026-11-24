@@ -93,7 +93,10 @@ func (s *Snapshot) Diagnostics(path string, opt DiagOptions) []Diagnostic {
 		}
 		out = append(out, d)
 	}
-	out = capFindings(c.f, out, opt.Disabled["WB1007"])
+	out, cut := capFindings(c.f, out, opt.Disabled["WB1007"])
+	if cut > 0 {
+		s.noteCapped(file, cut)
+	}
 	sortDiagnostics(out)
 	return out
 }
@@ -104,9 +107,10 @@ func (s *Snapshot) Diagnostics(path string, opt DiagOptions) []Diagnostic {
 // quarter of a million findings, 30 MB of JSON per edit.
 const maxFindings = 2000
 
-func capFindings(f *tree.File, ds []Diagnostic, quiet bool) []Diagnostic {
+// capFindings returns at most maxFindings of ds and how many it cut.
+func capFindings(f *tree.File, ds []Diagnostic, quiet bool) ([]Diagnostic, int) {
 	if len(ds) <= maxFindings {
-		return ds
+		return ds, 0
 	}
 	slices.SortStableFunc(ds, func(a, b Diagnostic) int {
 		if a.Severity != b.Severity {
@@ -121,7 +125,17 @@ func capFindings(f *tree.File, ds []Diagnostic, quiet bool) []Diagnostic {
 		ds = append(ds, Diagnostic{Rule: "WB1007", Severity: ruleByID["WB1007"].Default, Range: tree.Range{Start: at, End: at},
 			Message: fmt.Sprintf("%d more findings not shown", cut), Origin: OriginNative})
 	}
-	return ds
+	return ds, cut
+}
+
+// noteCapped records that Diagnostics cut cut findings of file (LimitsHit).
+func (s *Snapshot) noteCapped(file, cut int) {
+	s.capMu.Lock()
+	defer s.capMu.Unlock()
+	if s.capped == nil {
+		s.capped = map[int]int{}
+	}
+	s.capped[file] = cut
 }
 
 func sortDiagnostics(ds []Diagnostic) {
@@ -244,6 +258,7 @@ func (c *diagCtx) run() {
 		{[]string{"WB1001", "WB1003", "WB1005"}, c.syntax},
 		{[]string{"WB1008"}, c.directiveIDs},
 		{[]string{"WB1101"}, c.sources},
+		{[]string{"WB1102"}, c.commands},
 		{[]string{"WB1103", "WB1104"}, c.functions},
 		{[]string{"WB1105"}, c.localOutside},
 		{[]string{"WB1106"}, c.lostAssignments},
@@ -301,6 +316,9 @@ type fileMentions struct {
 // shares for every file that did not change: Build carries the entries of
 // those files over (carryDiag), so an edit rescans only the edited file.
 type diagState struct {
+	capMu  sync.Mutex
+	capped map[int]int // file -> findings Diagnostics cut past maxFindings (LimitsHit)
+
 	diagMu   sync.Mutex
 	scans    map[*FileFacts]*fileScan
 	mentions map[*FileFacts]*fileMentions

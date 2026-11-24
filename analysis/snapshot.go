@@ -44,6 +44,11 @@ const (
 	// ReasonSkippedForSize labels an unresolved `source` of an existing file
 	// the caller left out of the build for its size (Options.Oversize).
 	ReasonSkippedForSize = "skipped-for-size"
+	// ReasonPathLookup labels the command edge of a command that matches no
+	// function, alias or builtin and was found in the PATH profile
+	// (Options.Commands): a candidate, since the profile is the machine's, not
+	// the script's.
+	ReasonPathLookup = "path-lookup"
 )
 
 // Binding ties one Use to the symbol it names.
@@ -68,11 +73,17 @@ type Location struct {
 // without Prev. Oversize, when set, reports whether a clean absolute path is
 // an existing file the caller left out of files for its size: a `source` that
 // names one is unresolved with reason skipped-for-size instead of not-found.
+// Commands, when set, looks a command name up in a PATH profile (names only:
+// it must be a plain map lookup, Build asks once per distinct name): a call
+// that matches no function, alias or builtin gets a command edge, found
+// (candidate/path-lookup, with the path) or not (unresolved/not-found). With
+// Commands nil there are no command edges and no WB1102.
 type Options struct {
 	Root        string
 	SearchPaths func(path string) []string
 	Prev        *Snapshot
 	Oversize    func(path string) bool
+	Commands    func(name string) (path string, ok bool)
 }
 
 // maxAliasDepth bounds alias chains.
@@ -160,6 +171,11 @@ type Snapshot struct {
 	bindings [][]Binding // per file, in use-offset order
 	bySym    map[*Symbol][]Binding
 
+	cmds      [][]cmdSite                 // per file, calls that name an external command (commands.go)
+	cmdPaths  []string                    // per distinct command name, its path in the profile, "" when absent
+	cmdNames  map[string]int32            // during Build: command name -> index into cmdPaths
+	cmdLook   func(string) (string, bool) // during Build: Options.Commands
+	lim       buildLimits                 // work bounds Build hit (limits.go)
 	dyn       [][]dynSite                 // per file, dynamic edge sites (dynamic.go)
 	invokes   [][]invokeSite              // per file, resolved invocations
 	extra     []Binding                   // during Build: literal-value bindings to merge
@@ -194,15 +210,8 @@ func Build(files map[string]*FileFacts, opt Options, generation uint64) *Snapsho
 		s.facts = append(s.facts, files[p])
 	}
 	exists := func(p string) bool { _, ok := s.idx[p]; return ok }
-	glob := func(pat string) []string {
-		var out []string
-		for _, p := range s.paths {
-			if ok, _ := filepath.Match(pat, p); ok {
-				out = append(out, p)
-			}
-		}
-		return out
-	}
+	gi := newGlobIndex(s.paths)
+	glob := gi.match
 	s.edges = make([][]SourceEdge, n)
 	s.sourced = make([]bool, n)
 	adj := make([][]int, n)
@@ -214,7 +223,7 @@ func Build(files map[string]*FileFacts, opt Options, generation uint64) *Snapsho
 			search = opt.SearchPaths(p)
 		}
 		searches[i] = search
-		s.edges[i] = ResolveSources(s.facts[i], opt.Root, search, exists, glob)
+		s.edges[i] = resolveSources(s.facts[i], opt.Root, search, exists, glob, func(ref SourceRef) { s.lim.globCap(i, ref.Range.Start.Line) })
 		if opt.Oversize != nil {
 			markOversize(s.edges[i], s.facts[i], opt.Root, search, opt.Oversize)
 		}
@@ -240,6 +249,7 @@ func Build(files map[string]*FileFacts, opt Options, generation uint64) *Snapsho
 	}
 	s.collectSymbols()
 	s.prepareDynamic()
+	s.cmdLook = opt.Commands
 	s.bindAll()
 	s.finishDynamic(func(i int) *resolver {
 		return &resolver{ff: s.facts[i], root: opt.Root, search: searches[i], exists: exists, glob: glob, dir: filepath.Dir(s.paths[i])}
@@ -628,7 +638,11 @@ func (s *Snapshot) bindAll() {
 			}
 			switch u.Kind {
 			case UseCall:
+				before := len(out)
 				out = s.bindCall(out, i, u, ps)
+				if len(out) == before && s.cmdLook != nil {
+					s.noteCommand(i, j, u)
+				}
 			case UseVarRead, UseVarWrite:
 				out = s.bindVar(out, i, u, ps)
 			}
@@ -756,11 +770,18 @@ func (s *Snapshot) bindVar(out []Binding, file int, u *Use, priv *Symbol) []Bind
 // resolveCall finds what name means in file: an alias (followed to its
 // target when that resolves) or every function symbol in view. followed is
 // true when an alias led to a different symbol.
-func (s *Snapshot) resolveCall(file int, name string, depth int) (syms []*Symbol, followed bool) {
+//
+// capped, when not nil, is set when the alias depth bound stopped a chain that
+// would have gone on to a function or another alias.
+func (s *Snapshot) resolveCall(file int, name string, depth int, capped *bool) (syms []*Symbol, followed bool) {
 	if a := s.pick(s.aliasSyms[name], file); a != nil {
-		if to := a.Decls[len(a.Decls)-1].AliasTo; to != "" && depth < maxAliasDepth {
-			if ts, _ := s.resolveCall(file, to, depth+1); len(ts) > 0 && ts[0] != a {
-				return ts, true
+		if to := a.Decls[len(a.Decls)-1].AliasTo; to != "" {
+			if depth < maxAliasDepth {
+				if ts, _ := s.resolveCall(file, to, depth+1, capped); len(ts) > 0 && ts[0] != a {
+					return ts, true
+				}
+			} else if capped != nil && (s.pick(s.aliasSyms[to], file) != nil || len(s.pickAll(s.funcSyms[to], file)) > 0) {
+				*capped = true
 			}
 		}
 		return []*Symbol{a}, false
@@ -782,7 +803,11 @@ func (s *Snapshot) bindCall(out []Binding, file int, u *Use, priv *Symbol) []Bin
 	if u.ViaAlias {
 		depth = 1
 	}
-	syms, followed := s.resolveCall(file, u.Name, depth)
+	var capped bool
+	syms, followed := s.resolveCall(file, u.Name, depth, &capped)
+	if capped {
+		s.lim.aliasDepth(file, u.Range.Start.Line)
+	}
 	if u.noAlias {
 		syms, followed = s.pickAll(s.funcSyms[u.Name], file), false
 	}

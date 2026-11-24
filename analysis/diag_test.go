@@ -264,7 +264,7 @@ func TestRulesRegistry(t *testing.T) {
 	}{
 		"WB1001": {SevError, nil}, "WB1002": {SevInfo, nil}, "WB1003": {SevInfo, nil}, "WB1005": {SevInfo, nil},
 		"WB1007": {SevInfo, nil}, "WB1008": {SevInfo, nil},
-		"WB1101": {SevWarning, []string{"SC1090", "SC1091"}}, "WB1103": {SevInfo, nil}, "WB1104": {SevInfo, nil},
+		"WB1101": {SevWarning, []string{"SC1090", "SC1091"}}, "WB1102": {SevInfo, nil}, "WB1103": {SevInfo, nil}, "WB1104": {SevInfo, nil},
 		"WB1105": {SevError, []string{"SC2168"}}, "WB1106": {SevWarning, []string{"SC2030", "SC2031"}},
 		"WB1201": {SevHint, []string{"SC2329"}}, "WB1202": {SevHint, []string{"SC2034"}},
 		"WB1301": {SevWarning, nil}, "WB1302": {SevWarning, []string{"SC3*", "SC2113"}},
@@ -534,7 +534,8 @@ func TestDiagTestdata(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		ds := diagsIn(map[string]string{"x.sh": string(src)}, "x.sh")
+		// With a PATH profile, so that WB1102 has something to say.
+		ds := diagWorld(map[string]string{"x.sh": string(src)}, Options{Commands: fakeProfile("ls")}).Diagnostics(filepath.Join(diagRoot, "x.sh"), DiagOptions{})
 		if got := ofRule(ds, rule); len(got) != 1 {
 			t.Errorf("%s: %d findings of %s:\n%s", p, len(got), rule, describe(string(src), ds))
 		}

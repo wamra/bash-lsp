@@ -46,10 +46,20 @@ var scriptDirForms = map[string]bool{
 // an absolute path is a known workspace file; glob expands an absolute pattern
 // against known workspace files. searchPaths are extra absolute directories.
 func ResolveSources(ff *FileFacts, root string, searchPaths []string, exists func(string) bool, glob func(string) []string) []SourceEdge {
+	return resolveSources(ff, root, searchPaths, exists, glob, nil)
+}
+
+// maxGlobMatches bounds the files one glob pattern resolves to: the first
+// 1,000 in path order.
+const maxGlobMatches = 1000
+
+// resolveSources is ResolveSources that tells onCap (when set) about each
+// `source` whose pattern matched more than maxGlobMatches files.
+func resolveSources(ff *FileFacts, root string, searchPaths []string, exists func(string) bool, glob func(string) []string, onCap func(SourceRef)) []SourceEdge {
 	if ff == nil {
 		return nil
 	}
-	r := &resolver{ff: ff, root: root, search: searchPaths, exists: exists, glob: glob, dir: filepath.Dir(ff.Path)}
+	r := &resolver{ff: ff, root: root, search: searchPaths, exists: exists, glob: glob, dir: filepath.Dir(ff.Path), onCap: onCap}
 	out := make([]SourceEdge, 0, len(ff.Sources))
 	for _, ref := range ff.Sources {
 		out = append(out, r.resolve(ref))
@@ -81,6 +91,8 @@ type resolver struct {
 	dir    string
 	exists func(string) bool
 	glob   func(string) []string
+	onCap  func(SourceRef) // called when a glob pattern is cut at maxGlobMatches
+	ref    SourceRef       // the `source` being resolved
 
 	// only maps each variable name to its single non-temporary declaration,
 	// nil for a name declared more than once; filled on first use, so that
@@ -90,6 +102,7 @@ type resolver struct {
 }
 
 func (r *resolver) resolve(ref SourceRef) SourceEdge {
+	r.ref = ref
 	e := SourceEdge{Ref: ref, Status: SourceUnresolved}
 	hit := func(how string, targets ...string) SourceEdge {
 		e.Status, e.How, e.Targets = SourceResolved, how, targets
@@ -353,6 +366,12 @@ func (r *resolver) expand(p string) []string {
 		}
 		if len(hits) > 0 {
 			sort.Strings(hits)
+			if len(hits) > maxGlobMatches {
+				hits = hits[:maxGlobMatches]
+				if r.onCap != nil {
+					r.onCap(r.ref)
+				}
+			}
 			return hits
 		}
 	}

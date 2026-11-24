@@ -69,6 +69,13 @@ type Caller struct {
 // of RelSources and RelInvokes (for an unresolved/skipped-for-size source, the
 // existing file that was skipped). Text is the expression text of a dynamic
 // edge and the path word of an unresolved source.
+//
+// A command edge (Edge.IsCommand) is a RelCalls edge of a call that names an
+// external command: To and ToDecl are nil, Text is the command's name and the
+// site is the name word. With the command in the PATH profile
+// (Options.Commands) it is candidate/path-lookup and ToFile is the path
+// there; without, unresolved/not-found and ToFile is empty. No function,
+// alias or builtin of that name is in the workspace.
 type Edge struct {
 	From   Caller
 	To     *Symbol
@@ -92,12 +99,13 @@ type edgeRec struct {
 	rel    Relation
 	res    Resolution
 	reason uint8 // index into reasonNames
+	cmd    bool  // a command edge: at indexes the file's Uses, tgt the snapshot's command path table
 }
 
 // reasonNames are the reasons an edge can carry, by edgeRec.reason.
 var reasonNames = []string{"", ReasonDirect, ReasonAlias, ReasonOutsideClosure, ReasonNotFound, ReasonConditional,
 	ReasonVariableConstant, ReasonStringEval, ReasonStringTrap, ReasonStringShellC, ReasonVariableUnknown, ReasonExpansion, ReasonUnsetInView,
-	ReasonSkippedForSize}
+	ReasonSkippedForSize, ReasonPathLookup}
 
 func reasonCode(r string) uint8 {
 	for i, n := range reasonNames {
@@ -145,6 +153,7 @@ func (s *Snapshot) fileEdges(out []edgeRec, file int) []edgeRec {
 	start := len(out)
 	out = s.appendSourceEdges(out, file) // source lines usually come first
 	out = s.appendCallEdges(out, file)
+	out = s.appendCommandEdges(out, file)
 	out = s.appendDynamicEdges(out, file)
 	recs := out[start:]
 	s.applyUnset(recs, file)
@@ -162,6 +171,8 @@ func (s *Snapshot) fileEdges(out []edgeRec, file int) []edgeRec {
 
 func (s *Snapshot) recOffset(file int, r *edgeRec) int {
 	switch {
+	case r.cmd:
+		return s.facts[file].Uses[r.at].Range.Start.Offset
 	case r.rel == RelSources:
 		return s.edges[file][r.at].Ref.Range.Start.Offset
 	case r.rel == RelInvokes:
@@ -179,6 +190,13 @@ func (s *Snapshot) edgeOf(file int, r *edgeRec) Edge {
 		e.To, e.ToDecl = s.declSym[r.to], r.to
 	}
 	switch {
+	case r.cmd:
+		u := s.facts[file].Uses[r.at]
+		if from := s.callerOfScope(file, u.Scope); from != nil {
+			e.From.Func = s.declSym[from]
+		}
+		e.Site, e.ToFile, e.Text = Location{Path: s.paths[file], Range: u.Range}, s.cmdPaths[r.tgt], u.Name
+		return e
 	case r.rel == RelInvokes:
 		iv := &s.invokes[file][r.at]
 		if from := s.callerOfScope(file, iv.ref.Scope); from != nil {

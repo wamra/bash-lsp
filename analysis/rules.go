@@ -23,6 +23,7 @@ var rules = []RuleInfo{
 	{"WB1007", "findings-cap", SevInfo, nil, "more findings than are shown for one file"},
 	{"WB1008", "unknown-directive-rule", SevInfo, nil, "a `# bash-lsp disable=` directive names a rule id no rule has"},
 	{"WB1101", "unresolved-source", SevWarning, []string{"SC1090", "SC1091"}, "a `source` whose file is not in the workspace or was skipped for its size"},
+	{"WB1102", "missing-command", SevInfo, nil, "a command that is no function, alias or builtin in view and is not in the PATH profile"},
 	{"WB1103", "duplicate-function", SevInfo, nil, "a function defined twice at the top level of one file"},
 	{"WB1104", "builtin-name", SevInfo, nil, "a function named like a builtin replaces it"},
 	{"WB1105", "local-outside-function", SevError, []string{"SC2168"}, "`local` outside a function fails"},
@@ -44,7 +45,7 @@ var ruleByID = func() map[string]RuleInfo {
 
 // reservedRules are the ids of rules the plan names that are not built yet:
 // settings and directives naming them are not mistakes.
-var reservedRules = map[string]bool{"WB1004": true, "WB1006": true, "WB1102": true}
+var reservedRules = map[string]bool{"WB1004": true, "WB1006": true}
 
 // KnownRule reports whether id names a native rule, built or reserved.
 func KnownRule(id string) bool { _, ok := ruleByID[id]; return ok || reservedRules[id] }

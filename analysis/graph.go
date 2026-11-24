@@ -479,6 +479,8 @@ func (s *Snapshot) SourceCycles() [][]string {
 // Unresolved returns the edges no node stands for: dynamic edges and sources
 // whose target could not be resolved, in Edges order, whose site is in one of
 // paths (absolute or root-relative; nil or empty means the whole workspace).
+// Command edges (Edge.IsCommand) are not listed: a command missing from the
+// PATH profile is WB1102's, not part of the graph.
 func (s *Snapshot) Unresolved(paths []string) []Edge {
 	var want map[string]bool
 	if len(paths) > 0 {
@@ -491,7 +493,7 @@ func (s *Snapshot) Unresolved(paths []string) []Edge {
 	}
 	var out []Edge
 	for _, e := range s.Edges() {
-		if e.Res != Dynamic && e.Res != Unresolved {
+		if e.Res != Dynamic && e.Res != Unresolved || e.IsCommand() {
 			continue
 		}
 		if want != nil && !want[e.Site.Path] {
