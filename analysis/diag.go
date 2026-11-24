@@ -47,7 +47,8 @@ type RuleInfo struct {
 }
 
 // DiagOptions are the settings diagnostics depend on: the bash versions the
-// scripts target, the rules turned off and per-rule severities.
+// scripts target, the rules turned off and per-rule severities. A zero
+// Target means DefaultTarget.
 type DiagOptions struct {
 	Target   VersionRange
 	Disabled map[string]bool
