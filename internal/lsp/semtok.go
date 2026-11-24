@@ -72,12 +72,18 @@ type semanticTokensDelta struct {
 // open documents before the client is asked to refresh their tokens.
 const semtokRefreshDelay = 250 * time.Millisecond
 
+// semtokRefreshMaxWait bounds the debounce: under continuous edits the
+// refresh request goes out at most this long after the first pending document.
+const semtokRefreshMaxWait = 2 * time.Second
+
 // semtokState is what the server keeps for semantic tokens.
 type semtokState struct {
 	docSeq  int                // documents numbered so far
 	pending map[*document]bool // documents whose tokens may have changed since the client last asked
 	timer   *time.Timer        // the trailing debounce of the refresh request (loop only)
 	delay   time.Duration      // the debounce; zero means semtokRefreshDelay (tests set it)
+	maxWait time.Duration      // the longest the debounce may be extended; zero means semtokRefreshMaxWait (tests set it)
+	first   time.Time          // when the oldest pending document was queued (loop only)
 }
 
 // semtokDoc is a document's semantic-tokens state: its number in this session
@@ -278,10 +284,18 @@ func (s *server) refreshSemanticTokens(docs ...*document) {
 	if !queued {
 		return
 	}
-	delay := s.semtok.delay
+	delay, maxWait := s.semtok.delay, s.semtok.maxWait
 	if delay <= 0 {
 		delay = semtokRefreshDelay
 	}
+	if maxWait <= 0 {
+		maxWait = semtokRefreshMaxWait
+	}
+	now := time.Now()
+	if s.semtok.first.IsZero() {
+		s.semtok.first = now
+	}
+	delay = max(min(delay, s.semtok.first.Add(maxWait).Sub(now)), 0)
 	if s.semtok.timer != nil {
 		s.semtok.timer.Reset(delay)
 		return
@@ -298,6 +312,7 @@ func (s *server) refreshSemanticTokens(docs ...*document) {
 // flushTokenRefresh sends workspace/semanticTokens/refresh when the tokens of
 // a pending document, as they are now, differ from what the client holds.
 func (s *server) flushTokenRefresh() {
+	s.semtok.first = time.Time{}
 	docs := make([]*document, 0, len(s.semtok.pending))
 	for d := range s.semtok.pending {
 		docs = append(docs, d)

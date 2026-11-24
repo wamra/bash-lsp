@@ -545,3 +545,61 @@ func refreshesAfter(c *testClient, atLeast int) int {
 	time.Sleep(200 * time.Millisecond) // a second, unwanted request would show here
 	return refreshCount(c)
 }
+
+// Continuous edits cannot postpone the refresh for ever: it goes out at most
+// maxWait after the first pending document, while the edits go on.
+func TestSemanticTokensRefreshMaxWait(t *testing.T) {
+	a, _ := nestedTree(t)
+	c := clientWith(t, clientCfg{folders: []string{a}, workspaceCap: refreshCap,
+		onServer: func(s *server) { s.semtok.delay, s.semtok.maxWait = 300*time.Millisecond, 600*time.Millisecond }})
+	c.root = a
+	c.open("m.sh")
+	c.open("nested/n.sh")
+	c.semFull("m.sh")
+	c.symbols("")
+	before := refreshCount(c)
+	deadline := time.Now().Add(1500 * time.Millisecond)
+	for i := 0; time.Now().Before(deadline); i++ {
+		c.change("nested/n.sh", fullText(fmt.Sprintf("ng() { : %d; }\n", i))) // nf stays unresolved
+		c.symbols("")
+		time.Sleep(100 * time.Millisecond) // quieter than the debounce never happens
+		if refreshCount(c) > before {
+			return
+		}
+	}
+	t.Fatal("no refresh while edits went on past maxWait")
+}
+
+// A document closed before the debounce fires is not refreshed.
+func TestSemanticTokensRefreshNotForClosedDocument(t *testing.T) {
+	c := refreshClient(t, refreshCap, 300*time.Millisecond)
+	before := refreshCount(c)
+	c.change("nested/n.sh", fullText(nfMissing)) // m.sh's tokens change
+	c.symbols("")
+	c.closeDoc("m.sh")
+	if got := refreshesAfter(c, 0) - before; got != 0 {
+		t.Errorf("%d refresh requests for a closed document", got)
+	}
+	time.Sleep(400 * time.Millisecond)
+	if got := refreshCount(c) - before; got != 0 {
+		t.Errorf("%d refresh requests for a closed document after the debounce", got)
+	}
+}
+
+// The delay is trailing: edits spread over longer than the debounce send
+// nothing until the edits stop.
+func TestSemanticTokensRefreshDelayIsTrailing(t *testing.T) {
+	c := refreshClient(t, refreshCap, 300*time.Millisecond)
+	before := refreshCount(c)
+	for i := 0; i < 10; i++ { // about 600 ms in all, twice the debounce
+		c.change("nested/n.sh", fullText(fmt.Sprintf("ng() { : %d; }\n", i)))
+		c.symbols("")
+		time.Sleep(50 * time.Millisecond)
+		if got := refreshCount(c) - before; got != 0 {
+			t.Fatalf("refresh after edit %d, before the edits stopped", i)
+		}
+	}
+	if got := refreshesAfter(c, before+1) - before; got != 1 {
+		t.Errorf("%d refresh requests after the burst, want 1", got)
+	}
+}
