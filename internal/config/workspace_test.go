@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/wamra/bash-lsp/internal/workspace"
@@ -92,5 +93,32 @@ func TestWorkspaceKeysFromSettings(t *testing.T) {
 	u := Merge([]byte("[files]\nexclude = [\"docs/\"]\n"), nil, nil)
 	if got := rels(openSettings(t, root, u, nil)); slices.Contains(got, "docs/note.sh") || !slices.Contains(got, "bin/run.sh") {
 		t.Errorf("user exclude: %v", got)
+	}
+}
+
+// The repo file adds to the user's excludes; it cannot take one away, and a
+// negation in it cannot bring back what the user excluded.
+func TestRepoExcludeAddsToUserExclude(t *testing.T) {
+	root := t.TempDir()
+	put(t, root, "vendor/x.sh", "x() { :; }\n")
+	put(t, root, "gen/g.sh", "g() { :; }\n")
+	put(t, root, "src/s.sh", "s() { :; }\n")
+	user := "[files]\nexclude = [\"vendor/**\"]\n"
+	repo := "[files]\nexclude = [\"gen/**\", \"!vendor/x.sh\"]\n"
+	s := Merge([]byte(user), []byte(repo), nil)
+	if got, want := rels(openSettings(t, root, s, nil)), []string{"src/s.sh"}; !slices.Equal(got, want) {
+		t.Errorf("files = %v, want %v", got, want)
+	}
+	found := false
+	for _, w := range s.Warnings {
+		found = found || strings.Contains(w, "negat")
+	}
+	if !found {
+		t.Errorf("no warning for the dropped negation: %q", s.Warnings)
+	}
+	// With no user file the repo's own excludes apply as before.
+	r := Merge(nil, []byte("[files]\nexclude = [\"gen/**\"]\n"), nil)
+	if got := rels(openSettings(t, root, r, nil)); slices.Contains(got, "gen/g.sh") || !slices.Contains(got, "vendor/x.sh") {
+		t.Errorf("repo only: %v", got)
 	}
 }

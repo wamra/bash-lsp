@@ -301,3 +301,29 @@ func TestLimitsArgument(t *testing.T) {
 		t.Errorf("report = %+v", r)
 	}
 }
+
+// A relative source-path of a .shellcheckrc that passes through a symlink out
+// of the root is dropped and reported, like the other entries.
+func TestShellcheckrcRelativeSymlinkEntryNoticed(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	write(t, filepath.Join(outside, "o.sh"), "o() { :; }\n")
+	write(t, filepath.Join(root, "main.sh"), "source o.sh\n")
+	if err := os.Symlink(outside, filepath.Join(root, "lnk")); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(root, ".shellcheckrc"), "source-path=lnk\nsource-path=SCRIPTDIR/lnk\n")
+	w := openWith(t, root, Limits{}, Config{})
+	main := filepath.Join(w.Root(), "main.sh")
+	if got := w.searchPaths(main); len(got) != 0 {
+		t.Errorf("search paths = %v, want none", got)
+	}
+	n := w.Report().Notices
+	if len(n) != 2 || !strings.Contains(n[0], "source-path=") || !strings.HasSuffix(n[0], "resolves outside the workspace root (ignored)") {
+		t.Errorf("notices = %q, want one per entry", n)
+	}
+	w.searchPaths(main)
+	if len(w.Report().Notices) != 2 {
+		t.Errorf("notices repeated: %q", w.Report().Notices)
+	}
+}

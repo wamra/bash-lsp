@@ -238,6 +238,7 @@ type Workspace struct {
 	skips    map[string]skipInfo
 	dirName  map[string]string // key(real dir) -> the walk's logical path for it
 	rcCache  map[string]rcInfo
+	rcReal   map[string]bool    // search directory -> inside the root after links; cleared with rcCache
 	excl     map[string]bool    // keys of directories whose subtrees another workspace owns
 	listings map[string]listing // directory listings for spelling on a folding volume, by key
 	rcNotes  map[string]string  // dropped .shellcheckrc entries, by rc directory and entry; cleared with rcCache
@@ -297,7 +298,7 @@ func OpenWith(root string, lim Limits, exclude []string, cfg Config) (*Workspace
 		return nil, fmt.Errorf("%s is not a directory", root)
 	}
 	w := &Workspace{root: real, lim: lim, fold: windows || detectFold(real), disk: map[string]*entry{}, overlays: map[string]*overlay{},
-		skips: map[string]skipInfo{}, dirName: map[string]string{}, rcCache: map[string]rcInfo{}, rcNotes: map[string]string{}, listings: map[string]listing{},
+		skips: map[string]skipInfo{}, dirName: map[string]string{}, rcCache: map[string]rcInfo{}, rcReal: map[string]bool{}, rcNotes: map[string]string{}, listings: map[string]listing{},
 		commands: cfg.Commands, dialect: cfg.Dialect}
 	if w.dialect == 0 {
 		w.dialect = tree.Bash
@@ -602,6 +603,7 @@ func (w *Workspace) Refresh(paths ...string) {
 	changed := w.rcStale()
 	if changed {
 		w.rcCache = map[string]rcInfo{}
+		w.rcReal = map[string]bool{}
 		w.rcNotes = map[string]string{}
 	}
 	full := len(paths) == 0 || len(paths) > maxRefreshPaths
@@ -1311,7 +1313,7 @@ func (w *Workspace) searchPaths(path string) []string {
 		if info.raw != nil {
 			for _, v := range info.raw {
 				r := resolveSearch(filepath.Dir(path), v)
-				if !w.within(r) {
+				if !w.rcInside(r) {
 					w.noteRC(dir, v)
 					continue
 				}
@@ -1325,6 +1327,20 @@ func (w *Workspace) searchPaths(path string) []string {
 		dir = filepath.Dir(dir)
 	}
 	return append(out, w.srcDirs...)
+}
+
+// rcInside is insideRoot of a search directory, answered once per directory
+// until the rc files are read again.
+func (w *Workspace) rcInside(r string) bool {
+	if !w.within(r) {
+		return false
+	}
+	ok, seen := w.rcReal[r]
+	if !seen {
+		ok = w.insideRoot(r)
+		w.rcReal[r] = ok
+	}
+	return ok
 }
 
 // noteRC records that the source-path= entry v of dir's .shellcheckrc was

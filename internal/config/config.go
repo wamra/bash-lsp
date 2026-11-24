@@ -24,7 +24,8 @@
 // Each ignored repo value is reported in Settings.Warnings with the key and
 // the line. The keys that describe the repository (bash.target, bash.dialect,
 // files.include, files.exclude, sources.paths, the [format] options) are
-// replaced by the repo file: they cannot run code or widen a bound, and the
+// replaced by the repo file, except that its files.exclude is added to the
+// user's and a negated pattern in it is dropped: they cannot run code or widen a bound, and the
 // repo knows its own layout. A sources.paths entry is kept to that: the
 // workspace (workspace.Config) drops, with a notice in Report.Notices, one that
 // is absolute, spelled with ~ or $ (never expanded) or resolves outside the
@@ -452,7 +453,20 @@ func (s *Settings) set(l layer, e entry, name string) {
 	case "files.include":
 		s.Include = append([]string{}, e.val.([]string)...)
 	case "files.exclude":
-		s.Exclude = append([]string{}, e.val.([]string)...)
+		pats := e.val.([]string)
+		if l.src != SrcRepo {
+			s.Exclude = append([]string{}, pats...)
+			break
+		}
+		// The repo file adds to the user's excludes. A negation would bring
+		// back what the user excluded, so it is left out.
+		for _, p := range pats {
+			if strings.HasPrefix(p, "!") {
+				s.warn(l, e, "files.exclude: negated pattern %q is not allowed in a repo file (ignored)", p)
+				continue
+			}
+			s.Exclude = append(s.Exclude, p)
+		}
 	case "sources.paths":
 		s.SourcePaths = append([]string{}, e.val.([]string)...)
 	case "limits.max_files":
