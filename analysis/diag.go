@@ -202,6 +202,7 @@ type fileScan struct {
 // candidate for an unused finding.
 type fileMentions struct {
 	dollar    map[string]bool // `$name` inside strings, `-v name`, `declare -p name`
+	reads     map[string]bool // dollar, plus the name of every read and every `"$name"` call, whatever it binds to
 	allexport bool            // `set -a` or `set -o allexport`: assignments are exported
 }
 
@@ -269,6 +270,17 @@ func (s *Snapshot) mentionsOf(file int) *fileMentions {
 	}
 	m = &fileMentions{dollar: map[string]bool{}}
 	walkMentions(ff, &scanWalker{m: m})
+	m.reads = make(map[string]bool, len(m.dollar))
+	for k := range m.dollar {
+		m.reads[k] = true
+	}
+	if ff != nil {
+		for _, u := range ff.Uses {
+			if u.Kind == UseVarRead || u.Kind == UseCall && u.Via == ViaVariable {
+				m.reads[u.Name] = true
+			}
+		}
+	}
 	s.diagMu.Lock()
 	if s.mentions == nil {
 		s.mentions = map[*FileFacts]*fileMentions{}
@@ -675,8 +687,10 @@ type nameUnion struct {
 	nameref  bool
 	dynamic  bool            // an expansion or an unknown variable used as a command name
 	gap      bool            // code not analysed: an error gap or a skipped file
-	reads    map[string]bool // unbound reads, `"$cmd"` calls, `$name` in strings, `-v name`, `declare -p name`
-	export   bool            // allexport, set with reads
+	reads    map[string]bool // the file's own reads by name (readByName)
+	others   []int           // the other visible files, on first need
+	union    map[string]bool // their reads by name, once many names were looked up
+	lookups  int
 	words    map[string]bool // literal argument words and string tokens
 }
 
@@ -703,37 +717,80 @@ func (c *diagCtx) visible() *nameUnion {
 	return u
 }
 
-// visibleReads returns the names the file's visibility reads by name.
-func (c *diagCtx) visibleReads() *nameUnion {
+// readByName reports whether the file's visibility may read name by name:
+// in the file itself, a read bound to no declaration (or rebound through
+// dynamic scope), a `"$name"` call or a mention (fileMentions); in another
+// visible file, any read, call or mention of the name, whatever it binds to
+// (cached per file, so an edit does not revisit every visible file's
+// bindings). Few names are looked up one by one; many through one union.
+func (c *diagCtx) readByName(name string) bool {
 	u := c.visible()
-	if u.reads != nil {
-		return u
+	if u.reads == nil {
+		c.ownReads(u)
 	}
-	s := c.s
-	u.reads = map[string]bool{}
-	s.visible[c.file].each(func(j int) {
-		ff := s.facts[j]
-		if ff == nil || ff.File == nil || ff.File.Skipped != "" {
-			return
+	if u.reads[name] {
+		return true
+	}
+	if u.others == nil {
+		c.s.visible[c.file].each(func(j int) {
+			if j != c.file {
+				if ff := c.s.facts[j]; ff != nil && ff.File != nil && ff.File.Skipped == "" {
+					u.others = append(u.others, j)
+				}
+			}
+		})
+		if u.others == nil {
+			u.others = []int{}
 		}
-		m := s.mentionsOf(j)
-		for k := range m.dollar {
-			u.reads[k] = true
-		}
-		u.export = u.export || m.allexport
-		for k := range s.bindings[j] {
-			b := &s.bindings[j][k]
-			if b.Use.Kind == UseVarRead && (b.Res == Unresolved || b.Reason == ReasonDynamicScope) {
-				u.reads[b.Use.Name] = true
+	}
+	if u.lookups++; u.lookups > 64 && u.union == nil {
+		u.union = map[string]bool{}
+		for _, j := range u.others {
+			for k := range c.s.mentionsOf(j).reads {
+				u.union[k] = true
 			}
 		}
-		for _, us := range ff.Uses {
-			if us.Kind == UseCall && us.Via == ViaVariable {
-				u.reads[us.Name] = true
-			}
+	}
+	if u.union != nil {
+		return u.union[name]
+	}
+	for _, j := range u.others {
+		if c.s.mentionsOf(j).reads[name] {
+			return true
+		}
+	}
+	return false
+}
+
+// allExport reports whether a visible file turns on allexport.
+func (c *diagCtx) allExport() bool {
+	found := false
+	c.s.visible[c.file].each(func(j int) {
+		if ff := c.s.facts[j]; !found && ff != nil && ff.File != nil && ff.File.Skipped == "" {
+			found = c.s.mentionsOf(j).allexport
 		}
 	})
-	return u
+	return found
+}
+
+// ownReads fills u.reads with what the file itself reads by name.
+func (c *diagCtx) ownReads(u *nameUnion) {
+	s := c.s
+	u.reads = map[string]bool{}
+	for k := range s.mentionsOf(c.file).dollar {
+		u.reads[k] = true
+	}
+	for k := range s.bindings[c.file] {
+		b := &s.bindings[c.file][k]
+		if b.Use.Kind == UseVarRead && (b.Res == Unresolved || b.Reason == ReasonDynamicScope) {
+			u.reads[b.Use.Name] = true
+		}
+	}
+	for _, us := range c.ff.Uses {
+		if us.Kind == UseCall && us.Via == ViaVariable {
+			u.reads[us.Name] = true
+		}
+	}
 }
 
 // visibleWords returns the words of the file's visibility.

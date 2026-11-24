@@ -314,9 +314,9 @@ func (c *diagCtx) unusedFunctions() {
 // scriptConditions and when not exported. Never `_`, a variable the shell
 // itself uses, an upper-case name (an environment variable by convention),
 // a nameref, or one set implicitly (`read`, `for`, `getopts`, ...). A name
-// that any visible file reads unbound (dynamic scope), calls as `"$name"`,
-// or mentions as `$name` inside a string counts as read; so does every name
-// when a visible file uses `${!x}`, a nameref or a dynamic call.
+// the visibility may read by name (readByName: dynamic scope, `"$name"`, a
+// mention inside a string) counts as read; so does every name when a
+// visible file uses `${!x}`, a nameref or a dynamic call.
 func (c *diagCtx) unusedVariables() {
 	s := c.s
 	var seen map[*Symbol]bool // symbols with several declarations, looked at already
@@ -357,7 +357,7 @@ func (c *diagCtx) unusedVariables() {
 		if u.indirect || u.nameref || u.dynamic {
 			continue
 		}
-		if u = c.visibleReads(); u.reads[d.Name] || global && u.export {
+		if c.readByName(d.Name) || global && c.allExport() {
 			continue
 		}
 		what := "variable"
