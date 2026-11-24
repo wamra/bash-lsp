@@ -6,18 +6,39 @@ package extool
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
 	"sync"
+	"time"
 )
 
-// Limits of one profile (maxProfileNames is a variable so a test can lower it).
-const maxProfileDirs = 64
+// Limits of one profile (maxProfileNames and profileDirTimeout are variables
+// so a test can lower them).
+const (
+	maxProfileDirs = 64
+	profileChunk   = 1024 // entries asked of the directory at a time
+)
 
-var maxProfileNames = 50000
+var (
+	maxProfileNames   = 50000
+	profileDirTimeout = 2 * time.Second // wall-clock bound for reading one directory
+)
+
+// dirReader is an open directory: *os.File, or a test's stand-in.
+type dirReader interface {
+	ReadDir(n int) ([]os.DirEntry, error)
+	Close() error
+}
+
+func osOpenDir(dir string) (dirReader, error) { return os.Open(dir) }
+
+// openDir opens a directory for reading; a variable so a test can inject a
+// slow or endless reader.
+var openDir = osOpenDir
 
 // Profile is the set of names in an ordered list of directories, each checked
 // for being a program when it is first looked up (a PATH of Homebrew's size
@@ -33,10 +54,12 @@ type Profile struct {
 	known map[string]string // name -> the path of the program, "" when none; filled by Lookup
 }
 
-// NewProfile reads each directory of dirs once (os.ReadDir), without looking
-// at the files. A relative directory is skipped, and so is one that cannot be
-// listed; beyond 64 directories or 50,000 names the rest is skipped. Each skip
-// is reported by Skipped. Lookup decides, per name and once, whether a file is
+// NewProfile reads each directory of dirs once, in chunks of 1,024 entries
+// and for at most 2 s (a hung mount), without looking at the files. A relative
+// directory is skipped, and so is one that cannot be listed or does not answer
+// in time; beyond 64 directories or 50,000 names the rest is skipped (a
+// directory is not read past twice that many entries). Each skip is reported by
+// Skipped. Lookup decides, per name and once, whether a file is
 // a program: a regular file (after following a link) with an execute bit (any
 // of the three), or on Windows with a PATHEXT extension; a directory, a dangling
 // link or a data file is not.
@@ -58,15 +81,60 @@ func NewProfile(dirs []string) *Profile {
 			p.skip(dir, fmt.Sprintf("more than %d names", maxProfileNames))
 			continue
 		}
-		ents, err := os.ReadDir(dir)
+		res, err := p.readDirBounded(dir, maxProfileNames-count)
 		if err != nil {
 			p.skip(dir, err.Error())
 			continue
 		}
+		for _, n := range res.names {
+			count++
+			p.cands[n.name] = append(p.cands[n.name], n.path)
+		}
+		if res.over {
+			p.skip(dir, fmt.Sprintf("more than %d names", maxProfileNames))
+		}
+	}
+	return p
+}
+
+type profName struct{ name, path string }
+type dirResult struct {
+	names []profName
+	over  bool
+	err   error
+}
+
+// readDirBounded reads dir in chunks, keeping at most budget program-like
+// names (over is set when there were more), within profileDirTimeout. The
+// read runs in its own goroutine that touches only its own values: on a
+// time-out it is left to finish (or hang) on its own.
+func (p *Profile) readDirBounded(dir string, budget int) (dirResult, error) {
+	done := make(chan dirResult, 1)
+	go func() { done <- p.readNames(dir, budget) }()
+	timer := time.NewTimer(profileDirTimeout)
+	defer timer.Stop()
+	select {
+	case r := <-done:
+		return r, r.err
+	case <-timer.C:
+		return dirResult{}, fmt.Errorf("timed out after %v", profileDirTimeout)
+	}
+}
+
+func (p *Profile) readNames(dir string, budget int) (res dirResult) {
+	r, err := openDir(dir)
+	if err != nil {
+		res.err = err
+		return
+	}
+	defer r.Close()
+	read := 0
+	for {
+		ents, err := r.ReadDir(profileChunk)
 		for _, e := range ents {
-			if count >= maxProfileNames {
-				p.skip(dir, fmt.Sprintf("more than %d names", maxProfileNames))
-				break
+			if read++; read > 2*maxProfileNames {
+				res.over = true
+				return
 			}
 			if e.IsDir() { // a directory that is not a link: nothing to run
 				continue
@@ -79,11 +147,23 @@ func NewProfile(dirs []string) *Profile {
 				}
 				name = strings.TrimSuffix(name, filepath.Ext(name))
 			}
-			count++
-			p.cands[name] = append(p.cands[name], filepath.Join(dir, e.Name()))
+			if len(res.names) >= budget {
+				res.over = true
+				return
+			}
+			res.names = append(res.names, profName{name, filepath.Join(dir, e.Name())})
+		}
+		if err == io.EOF {
+			return
+		}
+		if err != nil {
+			res.err = err
+			return
+		}
+		if len(ents) == 0 {
+			return
 		}
 	}
-	return p
 }
 
 // ProfileFromEnv is NewProfile of $PATH split at os.PathListSeparator. An
