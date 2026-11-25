@@ -1,0 +1,201 @@
+[
+ {
+  "id": "S132",
+  "category": "editor features",
+  "file": "defs/vars.sh",
+  "method": "textDocument/documentHighlight",
+  "at": {
+   "needle": "count=0",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "lines": [
+    3,
+    5,
+    6,
+    9
+   ],
+   "file": "defs/vars.sh"
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 textDocument/documentHighlight: every occurrence of the symbol in the document (the text count= inside a string is not one, but shares its line with $count)."
+ },
+ {
+  "id": "S133",
+  "category": "editor features",
+  "file": "refs/inside.sh",
+  "method": "textDocument/documentHighlight",
+  "at": {
+   "needle": "emit() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "lines": [
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "file": "refs/inside.sh"
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 documentHighlight on a function: the definition and every call."
+ },
+ {
+  "id": "S134",
+  "category": "editor features",
+  "file": "editor/fold.sh",
+  "method": "textDocument/foldingRange",
+  "at": {
+   "needle": "multi() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "fold_start_lines_include": [
+    3,
+    7,
+    12,
+    15
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 textDocument/foldingRange: a multi-line function body, if, for and case each fold from their first line."
+ },
+ {
+  "id": "S135",
+  "category": "editor features",
+  "file": "editor/fold.sh",
+  "method": "textDocument/foldingRange",
+  "at": {
+   "needle": "one() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "fold_start_lines_exclude": [
+    2
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 FoldingRange: a construct that sits on one line spans no lines, so there is nothing to fold."
+ },
+ {
+  "id": "S136",
+  "category": "editor features",
+  "file": "editor/links.sh",
+  "method": "textDocument/documentLink",
+  "at": {
+   "needle": "./helper.sh",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "links_include": [
+    {
+     "line": 2,
+     "target_suffix": "editor/helper.sh"
+    },
+    {
+     "line": 3,
+     "target_suffix": "editor/helper.sh"
+    }
+   ],
+   "link_lines_exclude": [
+    4
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 documentLink: source and dot name files; the argument of echo on line 4 is plain text."
+ },
+ {
+  "id": "S137",
+  "category": "editor features",
+  "file": "editor/sel.sh",
+  "method": "textDocument/selectionRange",
+  "at": {
+   "needle": "date",
+   "occ": 0,
+   "delta": 1
+  },
+  "params": {},
+  "expect": {
+   "min_levels": 3,
+   "all_contain_position": true,
+   "strictly_widening": true
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 textDocument/selectionRange: a chain of ranges, innermost first, each one containing the position and its child (word, command substitution, string, outer substitution, assignment, and so on)."
+ },
+ {
+  "id": "S138",
+  "category": "editor features",
+  "file": "editor/comp.sh",
+  "method": "textDocument/completion",
+  "at": {
+   "needle": "  gre",
+   "occ": 0,
+   "delta": 5
+  },
+  "params": {},
+  "expect": {
+   "labels_include": [
+    "greet_all",
+    "greet_one"
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 textDocument/completion: at a command position the functions of the file whose names start with the typed prefix are offered."
+ },
+ {
+  "id": "S139",
+  "category": "editor features",
+  "file": "editor/comp.sh",
+  "method": "textDocument/completion",
+  "at": {
+   "needle": "\"$cou",
+   "occ": 0,
+   "delta": 5
+  },
+  "params": {},
+  "expect": {
+   "labels_include": [
+    "counter"
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 textDocument/completion after $: variables set in the file whose names start with the prefix; counter is a global."
+ },
+ {
+  "id": "S140",
+  "category": "editor features",
+  "file": "editor/messy.sh",
+  "method": "textDocument/formatting",
+  "at": {
+   "needle": "f() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "options": {
+    "tabSize": 2,
+    "insertSpaces": true
+   }
+  },
+  "expect": {
+   "preserves_tokens": true,
+   "result_bash_n_exit": 0,
+   "changes_text": true
+  },
+  "oracle": "bash-n",
+  "why": "LSP 3.17 textDocument/formatting: the file is mis-indented, so edits are returned; they must not change the commands (same words in the same order) and the result must pass /bin/bash -n."
+ }
+]

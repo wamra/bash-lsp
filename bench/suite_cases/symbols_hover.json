@@ -1,0 +1,198 @@
+[
+ {
+  "id": "S090",
+  "category": "symbols and hover",
+  "file": "symbols/s.sh",
+  "method": "textDocument/documentSymbol",
+  "at": {
+   "needle": "sum() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "names_include": [
+    "sum",
+    "helper"
+   ],
+   "kinds": {
+    "sum": 12,
+    "helper": 12
+   }
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 textDocument/documentSymbol and SymbolKind: Function is 12. bash manual, Shell Function Definitions: sum() and 'function helper' both define functions."
+ },
+ {
+  "id": "S091",
+  "category": "symbols and hover",
+  "file": "symbols/s.sh",
+  "method": "textDocument/documentSymbol",
+  "at": {
+   "needle": "sum() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "children_include": {
+    "sum": [
+     "total",
+     "n"
+    ]
+   }
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 DocumentSymbol.children: with hierarchical support the locals declared by 'local' in the body are children of the function."
+ },
+ {
+  "id": "S092",
+  "category": "symbols and hover",
+  "file": "symbols/s.sh",
+  "method": "textDocument/documentSymbol",
+  "at": {
+   "needle": "sum() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "selection_within_range": true
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 DocumentSymbol.selectionRange: 'must be contained by the range'."
+ },
+ {
+  "id": "S093",
+  "category": "symbols and hover",
+  "file": "symbols/empty.sh",
+  "method": "textDocument/documentSymbol",
+  "at": {
+   "needle": "only a comment",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "names_exact": []
+  },
+  "oracle": "manual",
+  "why": "A file with only a comment defines nothing; the result is an empty list."
+ },
+ {
+  "id": "S094",
+  "category": "symbols and hover",
+  "file": "symbols/ws.sh",
+  "method": "workspace/symbol",
+  "at": {
+   "needle": "needle_in_ws",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "query": "needle_in_ws"
+  },
+  "expect": {
+   "names_include": [
+    "needle_in_ws"
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 workspace/symbol: an exact function name matches, in a file the client never opened."
+ },
+ {
+  "id": "S095",
+  "category": "symbols and hover",
+  "file": "symbols/ws.sh",
+  "method": "workspace/symbol",
+  "at": {
+   "needle": "needle_in_ws",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "query": "zzz_no_such_symbol_zzz"
+  },
+  "expect": {
+   "names_exact": []
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 workspace/symbol: a query that matches nothing returns an empty list."
+ },
+ {
+  "id": "S096",
+  "category": "symbols and hover",
+  "file": "symbols/s.sh",
+  "method": "textDocument/hover",
+  "at": {
+   "needle": "sum() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "contains": [
+    "Compute the sum of the arguments."
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 textDocument/hover: the comment directly above a function is its documentation (bash manual, COMMENTS, defines the comment)."
+ },
+ {
+  "id": "S097",
+  "category": "symbols and hover",
+  "file": "symbols/s.sh",
+  "method": "textDocument/hover",
+  "at": {
+   "needle": "sum 1 2",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "contains": [
+    "Compute the sum of the arguments."
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 textDocument/hover at a call shows the same documentation."
+ },
+ {
+  "id": "S098",
+  "category": "symbols and hover",
+  "file": "symbols/s.sh",
+  "method": "textDocument/hover",
+  "at": {
+   "needle": "alias sm=sum",
+   "occ": 0,
+   "delta": 6
+  },
+  "params": {},
+  "expect": {
+   "contains": [
+    "sum"
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, ALIASES: hover on an alias name tells what it expands to."
+ },
+ {
+  "id": "S099",
+  "category": "symbols and hover",
+  "file": "symbols/s.sh",
+  "method": "textDocument/hover",
+  "at": {
+   "needle": "local total=0",
+   "occ": 0,
+   "delta": 6
+  },
+  "params": {},
+  "expect": {
+   "contains": [
+    "total"
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 textDocument/hover on a local variable is non-empty and names it."
+ }
+]

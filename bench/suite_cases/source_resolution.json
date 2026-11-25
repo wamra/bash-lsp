@@ -1,0 +1,437 @@
+[
+ {
+  "id": "S045",
+  "category": "source resolution",
+  "file": "source/s_static.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "lib_a",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/lib/a.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, SHELL BUILTIN COMMANDS, source: 'Read and execute commands from filename in the current shell environment'. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+ },
+ {
+  "id": "S046",
+  "category": "source resolution",
+  "file": "source/s_static.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "lib_b",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/lib/b.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, source: '.' is a synonym of source. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+ },
+ {
+  "id": "S047",
+  "category": "source resolution",
+  "file": "source/s_static.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "lib_c",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/lib/deep/c.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, source: arguments after filename become positional parameters of the sourced file and do not change which file is read. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+ },
+ {
+  "id": "S048",
+  "category": "source resolution",
+  "file": "source/s_static.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "./lib/a.sh",
+   "occ": 0,
+   "delta": 2
+  },
+  "params": {},
+  "expect": {
+   "files": [
+    "source/lib/a.sh"
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 textDocument/definition on the path word of a source command goes to the file named. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+ },
+ {
+  "id": "S049",
+  "category": "source resolution",
+  "file": "source/s_static.sh",
+  "method": "textDocument/documentLink",
+  "at": {
+   "needle": "./lib/a.sh",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "links_include": [
+    {
+     "line": 3,
+     "target_suffix": "source/lib/a.sh"
+    },
+    {
+     "line": 4,
+     "target_suffix": "source/lib/b.sh"
+    },
+    {
+     "line": 5,
+     "target_suffix": "source/lib/deep/c.sh"
+    }
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 textDocument/documentLink: a link per file named by a source or dot command. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+ },
+ {
+  "id": "S050",
+  "category": "source resolution",
+  "file": "source/up/inner/user.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "sibling_fn",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/sibling.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, source: a path with '..' is read as written relative to the current directory. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+ },
+ {
+  "id": "S051",
+  "category": "source resolution",
+  "file": "source/s_dyn.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "lib_a",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/lib/a.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "bash-trace",
+  "why": "bash manual, PARAMETERS, Shell Variables, BASH_SOURCE: ${BASH_SOURCE[0]} is the script's own path, so HERE is the script directory and $HERE/lib/a.sh is lib/a.sh."
+ },
+ {
+  "id": "S052",
+  "category": "source resolution",
+  "file": "source/s_dollar0.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "lib_b",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/lib/b.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "bash-trace",
+  "why": "bash manual, Special Parameters, 0 and Parameter Expansion, ${parameter%word}: for a script run as ./s_dollar0.sh, ${0%/*} is '.'."
+ },
+ {
+  "id": "S053",
+  "category": "source resolution",
+  "file": "source/s_var.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "lib_a",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/lib/a.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "bash-trace",
+  "why": "bash manual, PARAMETERS: LIB has the literal value ./lib/a.sh at the source command, so the expansion names lib/a.sh. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+ },
+ {
+  "id": "S054",
+  "category": "source resolution",
+  "file": "source/s_func.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "lib_a",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/lib/a.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "bash-trace",
+  "why": "bash manual, FUNCTIONS: the source inside load runs when load is called, which happens before the call of lib_a. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+ },
+ {
+  "id": "S055",
+  "category": "source resolution",
+  "file": "source/s_cond.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "lib_b",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/lib/b.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "bash-trace",
+  "why": "bash manual, SHELL GRAMMAR, Lists: 'command1 && command2' runs command2 when command1 succeeds; lib/b.sh exists, so it is sourced. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+ },
+ {
+  "id": "S056",
+  "category": "source resolution",
+  "file": "source/s_missing.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "missing_fn",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "empty": true
+  },
+  "oracle": "manual",
+  "why": "bash manual, source: the file lib/missing.sh does not exist in the workspace, so nothing defines missing_fn."
+ },
+ {
+  "id": "S057",
+  "category": "source resolution",
+  "file": "source/s_order.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "early_fn",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "empty": true
+  },
+  "oracle": "bash-trace",
+  "why": "bash manual, FUNCTIONS: definitions take effect when executed; the first call runs before the source command, so early_fn is not defined yet."
+ },
+ {
+  "id": "S058",
+  "category": "source resolution",
+  "file": "source/s_order.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "early_fn",
+   "occ": 1,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/lib/early.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "bash-trace",
+  "why": "bash manual, source: after the source command ran, the function exists. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+ },
+ {
+  "id": "S059",
+  "category": "source resolution",
+  "file": "source/s_glob.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "plug_one",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/plug/one.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "bash-trace",
+  "why": "bash manual, Compound Commands, for, and Pathname Expansion: ./plug/*.sh matches one.sh and two.sh, and each is sourced by the loop. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+ },
+ {
+  "id": "S060",
+  "category": "source resolution",
+  "file": "source/s_glob.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "plug_two",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/plug/two.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "bash-trace",
+  "why": "Same loop: the second matching file. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+ },
+ {
+  "id": "S061",
+  "category": "source resolution",
+  "file": "source/chain/main.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "chain_two",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/chain/two.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, source: one.sh runs in the current shell, so what it sources is defined for main.sh too. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+ },
+ {
+  "id": "S062",
+  "category": "source resolution",
+  "file": "source/lib/needs.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "  host_hook",
+   "occ": 0,
+   "delta": 2
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/host.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, source: the library runs in the sourcing shell, where host.sh defined host_hook before the source command. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+ },
+ {
+  "id": "S063",
+  "category": "source resolution",
+  "file": "source/cyc_b.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "cyc_a;",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/cyc_a.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, source: with a cycle of source commands every function of both files is still defined in the one shell. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+ },
+ {
+  "id": "S064",
+  "category": "source resolution",
+  "file": "source/cyc_a.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "cyc_b",
+   "occ": 1,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/cyc_b.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "Same cycle seen from the other file. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+ }
+]

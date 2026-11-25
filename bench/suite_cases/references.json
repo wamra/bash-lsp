@@ -1,0 +1,435 @@
+[
+ {
+  "id": "S016",
+  "category": "references",
+  "file": "defs/basic.sh",
+  "method": "textDocument/references",
+  "at": {
+   "needle": "greet() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "context": {
+    "includeDeclaration": true
+   }
+  },
+  "expect": {
+   "locations": [
+    [
+     "defs/basic.sh",
+     4
+    ],
+    [
+     "defs/basic.sh",
+     13
+    ],
+    [
+     "defs/basic.sh",
+     17
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 textDocument/references with includeDeclaration true: the declaration and every call. bash manual, SIMPLE COMMAND EXPANSION: "
+ },
+ {
+  "id": "S017",
+  "category": "references",
+  "file": "defs/basic.sh",
+  "method": "textDocument/references",
+  "at": {
+   "needle": "greet() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "context": {
+    "includeDeclaration": false
+   }
+  },
+  "expect": {
+   "locations": [
+    [
+     "defs/basic.sh",
+     13
+    ],
+    [
+     "defs/basic.sh",
+     17
+    ]
+   ],
+   "excludes": [
+    [
+     "defs/basic.sh",
+     4
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 ReferenceContext.includeDeclaration false: the declaration is left out."
+ },
+ {
+  "id": "S018",
+  "category": "references",
+  "file": "defs/basic.sh",
+  "method": "textDocument/references",
+  "at": {
+   "needle": "function farewell {",
+   "occ": 0,
+   "delta": 9
+  },
+  "params": {
+   "context": {
+    "includeDeclaration": true
+   }
+  },
+  "expect": {
+   "locations": [
+    [
+     "defs/basic.sh",
+     8
+    ],
+    [
+     "defs/basic.sh",
+     14
+    ],
+    [
+     "defs/basic.sh",
+     19
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 textDocument/references; bash manual, Shell Function Definitions."
+ },
+ {
+  "id": "S019",
+  "category": "references",
+  "file": "refs/mentions.sh",
+  "method": "textDocument/references",
+  "at": {
+   "needle": "hello() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "context": {
+    "includeDeclaration": true
+   }
+  },
+  "expect": {
+   "locations": [
+    [
+     "refs/mentions.sh",
+     2
+    ],
+    [
+     "refs/mentions.sh",
+     3
+    ],
+    [
+     "refs/mentions.sh",
+     8
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, SIMPLE COMMAND EXPANSION: only the first word of a simple command is a command name; 'echo hello', the comment, the quoted string and the printf argument are plain words."
+ },
+ {
+  "id": "S020",
+  "category": "references",
+  "file": "refs/mentions.sh",
+  "method": "textDocument/references",
+  "at": {
+   "needle": "hello",
+   "occ": 1,
+   "delta": 0
+  },
+  "params": {
+   "context": {
+    "includeDeclaration": true
+   }
+  },
+  "expect": {
+   "locations": [
+    [
+     "refs/mentions.sh",
+     2
+    ],
+    [
+     "refs/mentions.sh",
+     3
+    ],
+    [
+     "refs/mentions.sh",
+     8
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "Same set when asked from a call site. bash manual, SIMPLE COMMAND EXPANSION: "
+ },
+ {
+  "id": "S021",
+  "category": "references",
+  "file": "refs/varforms.sh",
+  "method": "textDocument/references",
+  "at": {
+   "needle": "name=a",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "context": {
+    "includeDeclaration": true
+   }
+  },
+  "expect": {
+   "lines": [
+    2,
+    3,
+    4,
+    6
+   ],
+   "excludes_lines": [
+    5
+   ],
+   "file": "refs/varforms.sh"
+  },
+  "oracle": "manual",
+  "why": "bash manual, PARAMETERS and EXPANSION, Parameter Expansion: $name, ${name}, ${#name}, ${name:-w} and name+= all name the same parameter; name_x is a different name."
+ },
+ {
+  "id": "S022",
+  "category": "references",
+  "file": "refs/inside.sh",
+  "method": "textDocument/references",
+  "at": {
+   "needle": "emit() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "context": {
+    "includeDeclaration": true
+   }
+  },
+  "expect": {
+   "locations": [
+    [
+     "refs/inside.sh",
+     2
+    ],
+    [
+     "refs/inside.sh",
+     3
+    ],
+    [
+     "refs/inside.sh",
+     4
+    ],
+    [
+     "refs/inside.sh",
+     5
+    ],
+    [
+     "refs/inside.sh",
+     6
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, EXPANSION, Command Substitution; SHELL GRAMMAR, Pipelines, Compound Commands: a function is called from a command substitution, a pipeline, a subshell and an if condition."
+ },
+ {
+  "id": "S023",
+  "category": "references",
+  "file": "refs/recur.sh",
+  "method": "textDocument/references",
+  "at": {
+   "needle": "fact() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "context": {
+    "includeDeclaration": true
+   }
+  },
+  "expect": {
+   "locations": [
+    [
+     "refs/recur.sh",
+     2
+    ],
+    [
+     "refs/recur.sh",
+     5
+    ],
+    [
+     "refs/recur.sh",
+     7
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, FUNCTIONS: a function can call itself; the recursive call inside a command substitution is a reference."
+ },
+ {
+  "id": "S024",
+  "category": "references",
+  "file": "refs/loopvar.sh",
+  "method": "textDocument/references",
+  "at": {
+   "needle": "for item",
+   "occ": 0,
+   "delta": 4
+  },
+  "params": {
+   "context": {
+    "includeDeclaration": true
+   }
+  },
+  "expect": {
+   "lines": [
+    2,
+    3,
+    4,
+    6
+   ],
+   "file": "refs/loopvar.sh"
+  },
+  "oracle": "manual",
+  "why": "bash manual, SHELL GRAMMAR, Compound Commands, for: the variable is set in the current shell and keeps its last value after done, so the later read is a reference."
+ },
+ {
+  "id": "S025",
+  "category": "references",
+  "file": "defs/vars.sh",
+  "method": "textDocument/references",
+  "at": {
+   "needle": "LIMIT=10",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "context": {
+    "includeDeclaration": true
+   }
+  },
+  "expect": {
+   "locations": [
+    [
+     "defs/vars.sh",
+     2
+    ],
+    [
+     "defs/vars.sh",
+     6
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 textDocument/references on a variable."
+ },
+ {
+  "id": "S026",
+  "category": "references",
+  "file": "refs/lib.sh",
+  "method": "textDocument/references",
+  "at": {
+   "needle": "util_x() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "context": {
+    "includeDeclaration": true
+   }
+  },
+  "expect": {
+   "locations": [
+    [
+     "refs/lib.sh",
+     2
+    ],
+    [
+     "refs/main.sh",
+     3
+    ],
+    [
+     "refs/main.sh",
+     4
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, SHELL BUILTIN COMMANDS, source: main.sh executes lib.sh in the current shell; other.sh neither sources nor is sourced, so its util_x is another function."
+ },
+ {
+  "id": "S027",
+  "category": "references",
+  "file": "refs/main.sh",
+  "method": "textDocument/references",
+  "at": {
+   "needle": "util_x",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "context": {
+    "includeDeclaration": true
+   }
+  },
+  "expect": {
+   "locations": [
+    [
+     "refs/lib.sh",
+     2
+    ],
+    [
+     "refs/main.sh",
+     3
+    ],
+    [
+     "refs/main.sh",
+     4
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "Same set when asked from a call in the sourcing script."
+ },
+ {
+  "id": "S028",
+  "category": "references",
+  "file": "defs/dup_a.sh",
+  "method": "textDocument/references",
+  "at": {
+   "needle": "twin() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "context": {
+    "includeDeclaration": true
+   }
+  },
+  "expect": {
+   "locations": [
+    [
+     "defs/dup_a.sh",
+     2
+    ],
+    [
+     "defs/dup_a.sh",
+     3
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "A same-named function in dup_b.sh is in a different, unrelated shell; it is not a reference."
+ }
+]

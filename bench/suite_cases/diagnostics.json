@@ -1,0 +1,275 @@
+[
+ {
+  "id": "S110",
+  "category": "diagnostics",
+  "file": "diag/clean_misc.sh",
+  "method": "textDocument/publishDiagnostics",
+  "at": {
+   "needle": "#!/bin/bash",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "bash_n_exit": 0,
+   "max_errors": 0
+  },
+  "oracle": "bash-n",
+  "why": "arrays, case, [[ ]], process substitution and keywords as plain arguments; truth is the exit status of /bin/bash -n: 0, so no error-severity diagnostic (DiagnosticSeverity.Error is 1, LSP 3.17)."
+ },
+ {
+  "id": "S111",
+  "category": "diagnostics",
+  "file": "diag/clean_heredoc.sh",
+  "method": "textDocument/publishDiagnostics",
+  "at": {
+   "needle": "#!/bin/bash",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "bash_n_exit": 0,
+   "max_errors": 0
+  },
+  "oracle": "bash-n",
+  "why": "quoted, unquoted and <<- here-documents; bash manual, REDIRECTION, Here Documents; truth is the exit status of /bin/bash -n: 0, so no error-severity diagnostic (DiagnosticSeverity.Error is 1, LSP 3.17)."
+ },
+ {
+  "id": "S112",
+  "category": "diagnostics",
+  "file": "diag/heredoc_unterminated.sh",
+  "method": "textDocument/publishDiagnostics",
+  "at": {
+   "needle": "#!/bin/bash",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "bash_n_exit": 0,
+   "max_errors": 0
+  },
+  "oracle": "bash-n",
+  "why": "bash only warns about a here-document ended by end of file; truth is the exit status of /bin/bash -n: 0, so no error-severity diagnostic (DiagnosticSeverity.Error is 1, LSP 3.17)."
+ },
+ {
+  "id": "S113",
+  "category": "diagnostics",
+  "file": "diag/stray_fi.sh",
+  "method": "textDocument/publishDiagnostics",
+  "at": {
+   "needle": "#!/bin/bash",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "bash_n_exit": 2,
+   "min_errors": 1,
+   "error_lines_include": [
+    3
+   ]
+  },
+  "oracle": "bash-n",
+  "why": "stray fi on line 3; truth is the exit status of /bin/bash -n: 2, so at least one error-severity diagnostic (LSP 3.17 DiagnosticSeverity.Error is 1)."
+ },
+ {
+  "id": "S114",
+  "category": "diagnostics",
+  "file": "diag/missing_done.sh",
+  "method": "textDocument/publishDiagnostics",
+  "at": {
+   "needle": "#!/bin/bash",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "bash_n_exit": 2,
+   "min_errors": 1
+  },
+  "oracle": "bash-n",
+  "why": "for without done; truth is the exit status of /bin/bash -n: 2, so at least one error-severity diagnostic (LSP 3.17 DiagnosticSeverity.Error is 1)."
+ },
+ {
+  "id": "S115",
+  "category": "diagnostics",
+  "file": "diag/bad_paren.sh",
+  "method": "textDocument/publishDiagnostics",
+  "at": {
+   "needle": "#!/bin/bash",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "bash_n_exit": 2,
+   "min_errors": 1,
+   "error_lines_include": [
+    3
+   ]
+  },
+  "oracle": "bash-n",
+  "why": "'echo (' on line 3; truth is the exit status of /bin/bash -n: 2, so at least one error-severity diagnostic (LSP 3.17 DiagnosticSeverity.Error is 1)."
+ },
+ {
+  "id": "S116",
+  "category": "diagnostics",
+  "file": "diag/unmatched_quote.sh",
+  "method": "textDocument/publishDiagnostics",
+  "at": {
+   "needle": "#!/bin/bash",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "bash_n_exit": 2,
+   "min_errors": 1
+  },
+  "oracle": "bash-n",
+  "why": "unterminated single quote; truth is the exit status of /bin/bash -n: 2, so at least one error-severity diagnostic (LSP 3.17 DiagnosticSeverity.Error is 1)."
+ },
+ {
+  "id": "S117",
+  "category": "diagnostics",
+  "file": "diag/double_semi.sh",
+  "method": "textDocument/publishDiagnostics",
+  "at": {
+   "needle": "#!/bin/bash",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "bash_n_exit": 2,
+   "min_errors": 1,
+   "error_lines_include": [
+    2
+   ]
+  },
+  "oracle": "bash-n",
+  "why": ";; outside case on line 2; truth is the exit status of /bin/bash -n: 2, so at least one error-severity diagnostic (LSP 3.17 DiagnosticSeverity.Error is 1)."
+ },
+ {
+  "id": "S118",
+  "category": "diagnostics",
+  "file": "diag/bad_redirect.sh",
+  "method": "textDocument/publishDiagnostics",
+  "at": {
+   "needle": "#!/bin/bash",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "bash_n_exit": 2,
+   "min_errors": 1,
+   "error_lines_include": [
+    2
+   ]
+  },
+  "oracle": "bash-n",
+  "why": "redirect with no target on line 2; truth is the exit status of /bin/bash -n: 2, so at least one error-severity diagnostic (LSP 3.17 DiagnosticSeverity.Error is 1)."
+ },
+ {
+  "id": "S119",
+  "category": "diagnostics",
+  "file": "diag/empty_then.sh",
+  "method": "textDocument/publishDiagnostics",
+  "at": {
+   "needle": "#!/bin/bash",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "bash_n_exit": 2,
+   "min_errors": 1,
+   "error_lines_include": [
+    3
+   ]
+  },
+  "oracle": "bash-n",
+  "why": "bash manual, Compound Commands, if: then needs a list, so fi on line 3 is unexpected; truth is the exit status of /bin/bash -n: 2, so at least one error-severity diagnostic (LSP 3.17 DiagnosticSeverity.Error is 1)."
+ },
+ {
+  "id": "S120",
+  "category": "diagnostics",
+  "file": "diag/else_alone.sh",
+  "method": "textDocument/publishDiagnostics",
+  "at": {
+   "needle": "#!/bin/bash",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "bash_n_exit": 2,
+   "min_errors": 1,
+   "error_lines_include": [
+    3
+   ]
+  },
+  "oracle": "bash-n",
+  "why": "else without if on line 3; truth is the exit status of /bin/bash -n: 2, so at least one error-severity diagnostic (LSP 3.17 DiagnosticSeverity.Error is 1)."
+ },
+ {
+  "id": "S121",
+  "category": "diagnostics",
+  "file": "err/missing_fi.sh",
+  "method": "textDocument/publishDiagnostics",
+  "at": {
+   "needle": "#!/bin/bash",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "bash_n_exit": 2,
+   "min_errors": 1
+  },
+  "oracle": "bash-n",
+  "why": "if without fi; truth is the exit status of /bin/bash -n: 2, so at least one error-severity diagnostic (LSP 3.17 DiagnosticSeverity.Error is 1)."
+ },
+ {
+  "id": "S122",
+  "category": "diagnostics",
+  "file": "err/lib_broken.sh",
+  "method": "textDocument/publishDiagnostics",
+  "at": {
+   "needle": "#!/bin/bash",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "bash_n_exit": 2,
+   "min_errors": 1,
+   "error_lines_include": [
+    4
+   ]
+  },
+  "oracle": "bash-n",
+  "why": "'[[ -f \"$1\" ]' without the closing ]] reported at line 4; truth is the exit status of /bin/bash -n: 2, so at least one error-severity diagnostic (LSP 3.17 DiagnosticSeverity.Error is 1)."
+ },
+ {
+  "id": "S123",
+  "category": "diagnostics",
+  "file": "err/use.sh",
+  "method": "textDocument/publishDiagnostics",
+  "at": {
+   "needle": "#!/bin/bash",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "bash_n_exit": 0,
+   "max_errors": 0
+  },
+  "oracle": "bash-n",
+  "why": "the script itself parses; the error is in the file it sources and belongs to that file; truth is the exit status of /bin/bash -n: 0, so no error-severity diagnostic (DiagnosticSeverity.Error is 1, LSP 3.17)."
+ }
+]

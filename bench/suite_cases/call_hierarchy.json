@@ -1,0 +1,211 @@
+[
+ {
+  "id": "S079",
+  "category": "call hierarchy",
+  "file": "call/h.sh",
+  "method": "textDocument/prepareCallHierarchy",
+  "at": {
+   "needle": "leaf() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "names": [
+    "leaf"
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 textDocument/prepareCallHierarchy at a function definition returns an item for that function."
+ },
+ {
+  "id": "S080",
+  "category": "call hierarchy",
+  "file": "call/h.sh",
+  "method": "textDocument/prepareCallHierarchy",
+  "at": {
+   "needle": "{ leaf; leaf; }",
+   "occ": 0,
+   "delta": 2
+  },
+  "params": {},
+  "expect": {
+   "names": [
+    "leaf"
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 prepareCallHierarchy at a call returns the called function."
+ },
+ {
+  "id": "S081",
+  "category": "call hierarchy",
+  "file": "call/h.sh",
+  "method": "callHierarchy/incomingCalls",
+  "at": {
+   "needle": "leaf() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "names_exact": [
+    "mid",
+    "top"
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 callHierarchy/incomingCalls: callers are mid and top (one entry per caller even for two calls); no other function calls leaf."
+ },
+ {
+  "id": "S082",
+  "category": "call hierarchy",
+  "file": "call/h.sh",
+  "method": "callHierarchy/incomingCalls",
+  "at": {
+   "needle": "mid() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "names_exact": [
+    "top"
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 callHierarchy/incomingCalls: only top calls mid."
+ },
+ {
+  "id": "S083",
+  "category": "call hierarchy",
+  "file": "call/h.sh",
+  "method": "callHierarchy/outgoingCalls",
+  "at": {
+   "needle": "top() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "names_exact": [
+    "mid",
+    "leaf"
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 callHierarchy/outgoingCalls: top calls mid and leaf."
+ },
+ {
+  "id": "S084",
+  "category": "call hierarchy",
+  "file": "call/h.sh",
+  "method": "callHierarchy/outgoingCalls",
+  "at": {
+   "needle": "mid() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "names_exact": [
+    "leaf"
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 callHierarchy/outgoingCalls: mid calls leaf twice, one entry."
+ },
+ {
+  "id": "S085",
+  "category": "call hierarchy",
+  "file": "call/h.sh",
+  "method": "callHierarchy/incomingCalls",
+  "at": {
+   "needle": "recur() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "names_exact": [
+    "recur"
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, FUNCTIONS: a function can call itself, so it is its own caller."
+ },
+ {
+  "id": "S086",
+  "category": "call hierarchy",
+  "file": "call/h.sh",
+  "method": "callHierarchy/incomingCalls",
+  "at": {
+   "needle": "mutual_a() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "names_exact": [
+    "mutual_b"
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 incomingCalls in a mutual recursion: only mutual_b calls mutual_a."
+ },
+ {
+  "id": "S087",
+  "category": "call hierarchy",
+  "file": "call/h.sh",
+  "method": "callHierarchy/outgoingCalls",
+  "at": {
+   "needle": "mutual_b() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "names_exact": [
+    "mutual_a"
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 outgoingCalls in a mutual recursion: mutual_b calls mutual_a."
+ },
+ {
+  "id": "S088",
+  "category": "call hierarchy",
+  "file": "call/h.sh",
+  "method": "callHierarchy/incomingCalls",
+  "at": {
+   "needle": "orphan_fn() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "names_exact": []
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 incomingCalls of a function nothing calls is empty."
+ },
+ {
+  "id": "S089",
+  "category": "call hierarchy",
+  "file": "call/xa.sh",
+  "method": "callHierarchy/incomingCalls",
+  "at": {
+   "needle": "xa_leaf() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "names_include": [
+    "xb_top"
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, source: xb.sh sources xa.sh, and xb_top calls xa_leaf, so the call crosses a file."
+ }
+]

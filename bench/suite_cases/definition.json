@@ -1,0 +1,331 @@
+[
+ {
+  "id": "S001",
+  "category": "definition",
+  "file": "defs/basic.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "greet world",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "defs/basic.sh",
+     4
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 textDocument/definition: a call resolves to the function defined with name() syntax. bash manual, SIMPLE COMMAND EXPANSION: the first word is the command name, looked up as a function first."
+ },
+ {
+  "id": "S002",
+  "category": "definition",
+  "file": "defs/basic.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "  farewell \"$1\"",
+   "occ": 0,
+   "delta": 2
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "defs/basic.sh",
+     8
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 textDocument/definition: call inside another function resolves to the definition made with the function keyword and no parentheses. bash manual, SHELL GRAMMAR, Shell Function Definitions: both forms define a function."
+ },
+ {
+  "id": "S003",
+  "category": "definition",
+  "file": "defs/basic.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "shout world",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "defs/basic.sh",
+     12
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, SHELL GRAMMAR, Shell Function Definitions: 'function name ()' is the combined form."
+ },
+ {
+  "id": "S004",
+  "category": "definition",
+  "file": "defs/redef.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "pick",
+   "occ": 1,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "defs/redef.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, FUNCTIONS: a definition takes effect when the command that defines it is executed, so the first call (line 3) runs the first definition and only that one."
+ },
+ {
+  "id": "S005",
+  "category": "definition",
+  "file": "defs/redef.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "pick",
+   "occ": 3,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "defs/redef.sh",
+     4
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, FUNCTIONS: the later definition replaces the earlier one; the second call runs only the second definition."
+ },
+ {
+  "id": "S006",
+  "category": "definition",
+  "file": "defs/nested.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "  inner",
+   "occ": 1,
+   "delta": 2
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "defs/nested.sh",
+     3
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, FUNCTIONS: a function defined inside a function body is defined when that body runs; the call after it resolves to it."
+ },
+ {
+  "id": "S007",
+  "category": "definition",
+  "file": "defs/nested.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "inner",
+   "occ": 3,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "defs/nested.sh",
+     3
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, FUNCTIONS: function names are global: after outer has run, inner is callable at top level."
+ },
+ {
+  "id": "S008",
+  "category": "definition",
+  "file": "defs/unset.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "tmp",
+   "occ": 3,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "empty": true
+  },
+  "oracle": "manual",
+  "why": "bash manual, SHELL BUILTIN COMMANDS, unset: 'unset -f' removes the function, so the last call has no definition."
+ },
+ {
+  "id": "S009",
+  "category": "definition",
+  "file": "defs/shadow.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "cd /tmp",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "defs/shadow.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, SIMPLE COMMAND EXPANSION: 'If the name does not contain slashes, the shell attempts to locate it. If there exists a shell function by that name, that function is invoked' before the builtin lookup."
+ },
+ {
+  "id": "S010",
+  "category": "definition",
+  "file": "defs/shadow.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "builtin cd /",
+   "occ": 0,
+   "delta": 8
+  },
+  "params": {},
+  "expect": {
+   "excludes": [
+    [
+     "defs/shadow.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, SHELL BUILTIN COMMANDS, builtin: runs the shell builtin and so bypasses a function of the same name."
+ },
+ {
+  "id": "S011",
+  "category": "definition",
+  "file": "defs/shadow.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "command cd /",
+   "occ": 0,
+   "delta": 8
+  },
+  "params": {},
+  "expect": {
+   "excludes": [
+    [
+     "defs/shadow.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, SHELL BUILTIN COMMANDS, command: runs the command 'suppressing the normal shell function lookup'."
+ },
+ {
+  "id": "S012",
+  "category": "definition",
+  "file": "defs/branches.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "impl",
+   "occ": 2,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "defs/branches.sh",
+     3
+    ],
+    [
+     "defs/branches.sh",
+     5
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, SHELL GRAMMAR, Compound Commands, if: only one branch runs, and which one depends on $FAST, so both definitions can be the one in effect."
+ },
+ {
+  "id": "S013",
+  "category": "definition",
+  "file": "defs/dup_a.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "twin",
+   "occ": 1,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "defs/dup_a.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, FUNCTIONS: a script that does not source another one cannot see its functions; the call resolves to the definition in the same file only."
+ },
+ {
+  "id": "S014",
+  "category": "definition",
+  "file": "defs/dup_b.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "twin",
+   "occ": 1,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "defs/dup_b.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, FUNCTIONS: same as the sibling file: the function of the same name in dup_a.sh is not in this shell."
+ },
+ {
+  "id": "S015",
+  "category": "definition",
+  "file": "defs/vars.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "\"$LIMIT\"",
+   "occ": 0,
+   "delta": 2
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "defs/vars.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, PARAMETERS: a variable is set by assignment; LIMIT has one assignment, so the read inside a function binds to it."
+ }
+]
