@@ -269,3 +269,90 @@ func TestCheckFileBytes(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckFileMetaGroup(t *testing.T) {
+	_, root := world(t, map[string]string{"a.sh": "f() { :; }\n"})
+	p := root + "/a.sh"
+	fi, err := os.Lstat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, gid, ok := fileIdentity(fi)
+	if !ok {
+		t.Skip("no group on this system")
+	}
+	oldG, oldS, oldU := effectiveGID, supplementaryGroups, effectiveUID
+	defer func() { effectiveGID, supplementaryGroups, effectiveUID = oldG, oldS, oldU }()
+	effectiveUID = func() int { return int(fileUID(fi)) } // the owner
+	effectiveGID = func() int { return int(gid) + 1 }     // not in the file's group
+	supplementaryGroups = func() ([]int, error) { return nil, nil }
+	// a path whose directory is not readable has no group to inherit
+	gone := root + "/nodir/a.sh"
+	if canSetGroup(gid, gone) {
+		t.Errorf("a group the user is not in, no directory to inherit it from")
+	}
+	supplementaryGroups = func() ([]int, error) { return []int{int(gid)}, nil }
+	if !canSetGroup(gid, gone) {
+		t.Errorf("a supplementary group")
+	}
+	supplementaryGroups = func() ([]int, error) { return nil, nil }
+	effectiveGID = func() int { return int(gid) }
+	if !canSetGroup(gid, gone) {
+		t.Errorf("the user's own group")
+	}
+	// the directory's group is the file's: new files there get it
+	effectiveGID = func() int { return int(gid) + 1 }
+	if !canSetGroup(gid, p) {
+		t.Errorf("the group of the directory")
+	}
+}
+
+func fileUID(fi os.FileInfo) uint32 { _, uid, _, _ := fileIdentity(fi); return uid }
+
+// A preview opens nothing for writing: a read-only file is found by the
+// permission check.
+func TestCheckFileMetaReadOnlyWithoutOpening(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can write a read-only file")
+	}
+	_, root := world(t, map[string]string{"a.sh": "f() { :; }\n"})
+	p := root + "/a.sh"
+	os.Chmod(p, 0o444)
+	if _, issue := CheckFileMeta(root, p, "a.sh"); issue == nil || issue.Code != IssueReadOnly {
+		t.Errorf("%+v", issue)
+	}
+}
+
+// A file whose group is neither the user's, nor a group the user is in, nor
+// the group of its directory is refused as not-owner.
+func TestCheckFileMetaRefusesAGroupItCannotKeep(t *testing.T) {
+	_, root := world(t, map[string]string{"a.sh": "f() { :; }\n"})
+	p := root + "/a.sh"
+	di, _ := os.Lstat(root)
+	_, _, dirGid, ok := fileIdentity(di)
+	groups, _ := os.Getgroups()
+	if !ok || os.Geteuid() == 0 {
+		t.Skip("needs a unix user")
+	}
+	other := -1
+	for _, g := range groups {
+		if uint32(g) != dirGid {
+			other = g
+			break
+		}
+	}
+	if other < 0 || os.Chown(p, -1, other) != nil {
+		t.Skip("no second group to give the file")
+	}
+	oldG, oldS := effectiveGID, supplementaryGroups
+	defer func() { effectiveGID, supplementaryGroups = oldG, oldS }()
+	effectiveGID = func() int { return other + 1 }
+	supplementaryGroups = func() ([]int, error) { return nil, nil }
+	if _, issue := CheckFileMeta(root, p, "a.sh"); issue == nil || issue.Code != IssueNotOwner || !strings.Contains(issue.Reason, "group") {
+		t.Errorf("%+v", issue)
+	}
+	supplementaryGroups = func() ([]int, error) { return []int{other}, nil }
+	if _, issue := CheckFileMeta(root, p, "a.sh"); issue != nil {
+		t.Errorf("with the group: %+v", issue)
+	}
+}

@@ -30,3 +30,7 @@ func preserveOwner(path string, orig os.FileInfo) error {
 	}
 	return os.Chown(path, int(uid), int(gid))
 }
+
+// writableFile reports whether this user may write the file: the system's
+// access check, which opens nothing.
+func writableFile(path string, fi os.FileInfo) error { return syscall.Access(path, 2) }

@@ -16,7 +16,7 @@ import (
 
 const renameUsage = "usage: bash-lsp rename SYMBOL|FILE:LINE:COL NEW [--preview|--apply] [--json] [--root DIR] [--]\n" +
 	"  SYMBOL is a function name; preview (the default) writes nothing; --apply rewrites the files.\n" +
-	"  exit 0 done, 1 failure (a partial apply included), 2 usage, 4 refused"
+	"  exit 0 done, 1 failure (a failed write is rolled back), 2 usage, 4 refused"
 
 // Exit codes of rename beyond the common ones.
 const exitRefused = 4
@@ -104,6 +104,7 @@ type renameResult struct {
 	RolledBack []string                  `json:"rolled_back,omitempty"`
 	NotWritten []string                  `json:"not_written,omitempty"`
 	Refused    *query.RenameRefusedError `json:"refused,omitempty"`
+	Kept       []keptBackup              `json:"kept_backups,omitempty"`
 	Error      string                    `json:"error,omitempty"`
 }
 
@@ -171,7 +172,7 @@ func cmdRename(args []string, stdout, stderr io.Writer) int {
 		var part *applyFailure
 		switch {
 		case errors.As(err, &part):
-			res.Written, res.RolledBack, res.NotWritten = part.written, part.rolledBack, part.notWritten
+			res.Written, res.RolledBack, res.NotWritten, res.Kept = part.written, part.rolledBack, part.notWritten, part.kept
 			res.Error = redact.String(part.err.Error())
 		case errors.As(err, &ref):
 			res.Refused = ref
@@ -223,7 +224,10 @@ func failRename(stderr io.Writer, err error) int {
 		}
 		if len(part.written) > 0 {
 			say(stderr, "written: %s\n", strings.Join(part.written, ", "))
-			say(stderr, "the roll back did not finish: these files still hold the new name. To undo it: %s\n", part.reverse)
+			say(stderr, "the roll back did not finish: these files still hold the new name; their original text is kept. To restore each one:\n")
+			for _, k := range part.kept {
+				say(stderr, "mv -- %s %s\n", shellQuote(k.Backup), shellQuote(k.File))
+			}
 		}
 		say(stderr, "not written: %s\n", strings.Join(part.notWritten, ", "))
 		return 1
@@ -272,11 +276,19 @@ func cutBytes(s string, n int) string {
 // applyFailure is an apply that stopped after the checks. written are the
 // files that still hold the new name (empty once the roll back finished),
 // rolledBack the files put back, notWritten the files that hold their old
-// text. reverse is the command that undoes a roll back that did not finish.
+// text. kept are the staged originals of the files that could not be put
+// back; they are never deleted.
 type applyFailure struct {
 	err                             error
 	written, rolledBack, notWritten []string
-	reverse                         string
+	kept                            []keptBackup
+}
+
+// keptBackup is the staged original of a file the roll back could not restore:
+// moving Backup over File restores it.
+type keptBackup struct {
+	Backup string `json:"backup"`
+	File   string `json:"file"`
 }
 
 func (e *applyFailure) Error() string { return e.err.Error() }
@@ -294,6 +306,7 @@ type renameFile struct {
 	fi        os.FileInfo
 	tmp, dest string // the new text, staged beside dest
 	back      string // the original text, staged beside dest, for the roll back
+	keep      bool   // back is the only copy of the original: not removed
 }
 
 func refusedIssue(i *query.ApplyIssue) error {
@@ -407,7 +420,7 @@ func applyRename(snap *analysis.Snapshot, root string, plan *analysis.RenamePlan
 				os.Remove(f.tmp)
 				f.tmp = ""
 			}
-			if f.back != "" {
+			if f.back != "" && !f.keep {
 				os.Remove(f.back)
 				f.back = ""
 			}
@@ -455,24 +468,18 @@ func rollBack(root string, plan *analysis.RenamePlan, files []*renameFile, done 
 	for j := done - 1; j >= 0; j-- {
 		f := files[j]
 		if err := applyHooks.move(f.back, f.dest); err != nil {
+			f.keep = true // the staged original is all that is left of the old text
 			fail.written = append([]string{f.rel}, fail.written...)
+			fail.kept = append([]keptBackup{{Backup: f.back, File: f.dest}}, fail.kept...)
 			continue
 		}
 		f.back = ""
 		fail.rolledBack = append([]string{f.rel}, fail.rolledBack...)
 	}
 	dropTemps()
-	still := map[string]bool{}
-	for _, w := range fail.written {
-		still[w] = true
-	}
-	for _, f := range files {
-		if !still[f.rel] {
-			fail.notWritten = append(fail.notWritten, f.rel)
-		}
-	}
-	if len(fail.written) > 0 {
-		fail.reverse = fmt.Sprintf("bash-lsp rename %s %s --apply --root %s (by path:line:col of each definition if the name is shared)", plan.New, plan.Old, shellQuote(root))
+	syncDirs(files[:done])
+	for _, f := range files[done:] {
+		fail.notWritten = append(fail.notWritten, f.rel)
 	}
 	return fail
 }

@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
-	"syscall"
+	"path/filepath"
 	"unicode/utf8"
 )
 
@@ -27,8 +27,13 @@ const (
 	warnApplyWouldFail = "apply-would-refuse"
 )
 
-// effectiveUID is the user the files are written as; a variable for tests.
-var effectiveUID = os.Geteuid
+// effectiveUID, effectiveGID and supplementaryGroups say who writes the
+// files; variables for tests.
+var (
+	effectiveUID        = os.Geteuid
+	effectiveGID        = os.Getegid
+	supplementaryGroups = os.Getgroups
+)
 
 // CheckFileMeta checks the file at path (root-relative name rel) for
 // everything an apply needs except its bytes: inside the root once links are
@@ -49,15 +54,18 @@ func CheckFileMeta(root, path, rel string) (os.FileInfo, *ApplyIssue) {
 	if fi.Mode()&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 {
 		return fi, &ApplyIssue{IssueSpecialMode, fmt.Sprintf("%s has a setuid, setgid or sticky bit, which a rewrite would drop", rel)}
 	}
-	if nlink, uid, _, ok := fileIdentity(fi); ok {
+	if nlink, uid, gid, ok := fileIdentity(fi); ok {
 		if nlink > 1 {
 			return fi, &ApplyIssue{IssueHardLink, fmt.Sprintf("%s has %d hard links; a rewrite would split them", rel, nlink)}
 		}
 		if me := effectiveUID(); me != 0 && int(uid) != me {
 			return fi, &ApplyIssue{IssueNotOwner, fmt.Sprintf("%s is owned by another user; a rewrite would change its owner", rel)}
 		}
+		if me := effectiveUID(); me != 0 && !canSetGroup(gid, path) {
+			return fi, &ApplyIssue{IssueNotOwner, fmt.Sprintf("%s belongs to a group this user is not in; a rewrite would change its group", rel)}
+		}
 	}
-	if err := writableFile(path); err != nil {
+	if err := writableFile(path, fi); err != nil {
 		return fi, &ApplyIssue{IssueReadOnly, fmt.Sprintf("%s cannot be written: %v", rel, err)}
 	}
 	return fi, nil
@@ -77,17 +85,32 @@ func CheckFileBytes(rel string, b, want []byte) *ApplyIssue {
 	return nil
 }
 
-// writableFile reports whether the file at path can be opened for writing by
-// this user. Nothing is written.
-func writableFile(path string) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return err
-	}
-	return f.Close()
-}
-
 // PreserveOwner gives the file at path the owner and group of orig when they
 // differ, on systems that have them; an error means the ownership could not
 // be kept.
 func PreserveOwner(path string, orig os.FileInfo) error { return preserveOwner(path, orig) }
+
+// canSetGroup reports whether a rewrite of the file at path can give the new
+// file the group gid: it is the user's own group, one of the supplementary
+// groups, or the group of the directory (where new files take the group of
+// their directory, as on macOS and in setgid directories).
+func canSetGroup(gid uint32, path string) bool {
+	if int(gid) == effectiveGID() {
+		return true
+	}
+	if di, err := os.Lstat(filepath.Dir(path)); err == nil {
+		if _, _, dgid, ok := fileIdentity(di); ok && dgid == gid {
+			return true
+		}
+	}
+	gs, err := supplementaryGroups()
+	if err != nil {
+		return false
+	}
+	for _, g := range gs {
+		if int(gid) == g {
+			return true
+		}
+	}
+	return false
+}

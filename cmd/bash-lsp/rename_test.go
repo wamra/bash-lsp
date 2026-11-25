@@ -327,6 +327,7 @@ func TestCLIRenameApplyRefusesDirectoryLinkOutsideRoot(t *testing.T) {
 	if b, _ := os.ReadFile(filepath.Join(outside, "lib", "util.sh")); strings.Contains(string(b), "ship") {
 		t.Error("a file outside the root was written")
 	}
+	noTemps(t, outside)
 }
 
 func TestCLIRenameApplyRefusesNUL(t *testing.T) {
@@ -436,7 +437,7 @@ func TestCLIRenamePartialFailureRollsBack(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("exit %d err %q", code, errs)
 	}
-	wantLines(t, errs, "rolled back: dyn.sh, lib/util.sh", "not written: dyn.sh, lib/util.sh, main.sh")
+	wantLines(t, errs, "rolled back: dyn.sh, lib/util.sh", "not written: main.sh")
 	if strings.Contains(errs, "\nwritten:") {
 		t.Errorf("files reported as still written: %s", errs)
 	}
@@ -472,35 +473,74 @@ func TestCLIRenameNthRenameFailsRestoresEverything(t *testing.T) {
 }
 
 // A roll back step that fails: the files still holding the new name are
-// listed with the command that undoes them.
-func TestCLIRenameRollBackFailureIsReported(t *testing.T) {
-	root := corpusCopy(t)
-	h := hooks(t)
-	calls := 0
-	h.rename = func(from, to string) error {
-		calls++
-		switch {
-		case calls == 3: // the third file cannot be replaced
-			return errors.New("refused by the test")
-		case strings.HasSuffix(to, "dyn.sh") && calls > 3: // dyn.sh cannot be put back
-			return errors.New("cannot restore")
+// listed with an mv line for each staged original, which is kept; running
+// those restores the tree byte for byte.
+func TestCLIRenameRollBackFailureKeepsTheOriginal(t *testing.T) {
+	for _, asJSON := range []bool{false, true} {
+		root := corpusCopy(t)
+		before := treeBytes(t, root)
+		h := hooks(t)
+		calls := 0
+		h.rename = func(from, to string) error {
+			calls++
+			switch {
+			case calls == 3: // the third file cannot be replaced
+				return errors.New("refused by the test")
+			case strings.HasSuffix(to, "dyn.sh") && calls > 3: // dyn.sh cannot be put back
+				return errors.New("cannot restore")
+			}
+			return os.Rename(from, to)
 		}
-		return os.Rename(from, to)
+		args := []string{"rename", corpusDef, "ship", "--apply", "--root", root}
+		if asJSON {
+			args = append(args, "--json")
+		}
+		code, out, errs := runCode(t, args...)
+		if code != 1 {
+			t.Fatalf("exit %d", code)
+		}
+		wantLines(t, errs, "rolled back: lib/util.sh", "written: dyn.sh", "not written: main.sh")
+		if strings.Contains(errs, "not written: lib/util.sh") || strings.Contains(errs, "bash-lsp rename ship") {
+			t.Errorf("stderr:\n%s", errs)
+		}
+		if b, _ := os.ReadFile(filepath.Join(root, "dyn.sh")); !strings.Contains(string(b), "ship dyn") {
+			t.Errorf("dyn.sh was expected to keep the new name: %q", b)
+		}
+		if b, _ := os.ReadFile(filepath.Join(root, "lib", "util.sh")); strings.Contains(string(b), "ship") {
+			t.Errorf("lib/util.sh was not put back")
+		}
+		// one mv line, for the one file that stayed changed; the staged
+		// original is still there and holds the original text
+		var mvs [][2]string
+		for _, l := range strings.Split(errs, "\n") {
+			if strings.HasPrefix(l, "mv -- '") {
+				parts := strings.Split(strings.TrimSuffix(strings.TrimPrefix(l, "mv -- '"), "'"), "' '")
+				mvs = append(mvs, [2]string{parts[0], parts[1]})
+			}
+		}
+		if len(mvs) != 1 || mvs[0][1] != filepath.Join(root, "dyn.sh") {
+			t.Fatalf("mv lines %v in\n%s", mvs, errs)
+		}
+		if b, err := os.ReadFile(mvs[0][0]); err != nil || string(b) != before["dyn.sh"] {
+			t.Fatalf("the kept original: %v %q", err, b)
+		}
+		if asJSON {
+			var doc struct {
+				Kept []struct{ Backup, File string } `json:"kept_backups"`
+			}
+			mustJSON(t, out, &doc)
+			if len(doc.Kept) != 1 || doc.Kept[0].Backup != mvs[0][0] || doc.Kept[0].File != mvs[0][1] {
+				t.Errorf("JSON %s", out)
+			}
+		} else {
+			wantLines(t, out, "edit  dyn.sh:4:1")
+		}
+		if err := os.Rename(mvs[0][0], mvs[0][1]); err != nil {
+			t.Fatal(err)
+		}
+		sameTree(t, treeBytes(t, root), before)
+		noTemps(t, root)
 	}
-	code, out, errs := runCode(t, "rename", corpusDef, "ship", "--apply", "--root", root)
-	if code != 1 {
-		t.Fatalf("exit %d", code)
-	}
-	wantLines(t, errs, "rolled back: lib/util.sh", "written: dyn.sh", "not written: lib/util.sh, main.sh",
-		"bash-lsp rename ship build_release --apply --root '"+root+"'")
-	if b, _ := os.ReadFile(filepath.Join(root, "dyn.sh")); !strings.Contains(string(b), "ship dyn") {
-		t.Errorf("dyn.sh was expected to keep the new name: %q", b)
-	}
-	if b, _ := os.ReadFile(filepath.Join(root, "lib", "util.sh")); strings.Contains(string(b), "ship") {
-		t.Errorf("lib/util.sh was not put back")
-	}
-	wantLines(t, out, "edit  dyn.sh:4:1")
-	noTemps(t, root)
 }
 
 // A file edited after the others were replaced is caught by the check before
@@ -820,6 +860,53 @@ func TestCLIRenameRedactsExcludedText(t *testing.T) {
 		}
 		if !strings.Contains(out, "inexact-name") {
 			t.Errorf("%v: no excluded site:\n%s", args, out)
+		}
+	}
+}
+
+// Every line of a rename, success or failure, is redacted: here the files
+// themselves are named like a credential.
+func TestCLIRenameRedactsFileNamesInEveryLine(t *testing.T) {
+	const tok = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+	mk := func() string {
+		root := t.TempDir()
+		if r, err := filepath.EvalSymlinks(root); err == nil {
+			root = r
+		}
+		os.WriteFile(filepath.Join(root, tok+"1.sh"), []byte("f() { :; }\n"), 0o644)
+		os.WriteFile(filepath.Join(root, tok+"2.sh"), []byte("source ./"+tok+"1.sh\nf\n"), 0o644)
+		return root
+	}
+	clean := func(what, out, errs string) {
+		t.Helper()
+		if strings.Contains(out+errs, "ghp_") || strings.Contains(out+errs, tok[:20]) {
+			t.Errorf("%s: secret printed\n%s%s", what, out, errs)
+		}
+	}
+	root := mk()
+	_, out, errs := runCode(t, "rename", "f", "h", "--apply", "--root", root)
+	clean("wrote", out, errs)
+	if !strings.Contains(out, "wrote  ") {
+		t.Errorf("no wrote line:\n%s", out)
+	}
+	for _, mode := range []string{"fail", "failrollback"} {
+		root = mk()
+		h := hooks(t)
+		calls := 0
+		h.rename = func(from, to string) error {
+			calls++
+			if calls == 2 || (mode == "failrollback" && calls == 3) {
+				return errors.New("refused by the test")
+			}
+			return os.Rename(from, to)
+		}
+		_, out, errs = runCode(t, "rename", "f", "h", "--apply", "--root", root)
+		clean(mode, out, errs)
+		wantLines(t, errs, "not written: ")
+		if mode == "fail" {
+			wantLines(t, errs, "rolled back: ")
+		} else {
+			wantLines(t, errs, "written: ", "mv -- ")
 		}
 	}
 }

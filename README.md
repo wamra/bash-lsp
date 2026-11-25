@@ -204,7 +204,7 @@ and refuses the whole rename, writing nothing, when any file of the plan:
 - is not a regular file, a symbolic link included (`not-regular-file`);
 - has a setuid, setgid or sticky bit (`special-mode`), which a rewrite would drop;
 - has more than one hard link (`hard-link`), which a rewrite would split; this and the owner check need a Unix system and are skipped on Windows;
-- is owned by another user than the one running the command, unless that is root (`not-owner`): ownership is never changed silently;
+- is owned by another user than the one running the command, unless that is root, or has a group the rewrite cannot keep (`not-owner`): ownership is never changed silently;
 - cannot be written, or lies in a directory that takes no new file (`read-only`);
 - holds a NUL byte (`nul-byte`) or text that is not valid UTF-8 (`invalid-utf8`);
 - differs from the text the plan was built from (`stale-file`; the comparison is of bytes, not of modification times: a file rewritten with the same bytes is not stale).
@@ -215,11 +215,17 @@ and in `preview_rename`); a change made after the preview shows only when the
 apply runs.
 
 What a rewrite keeps and what it does not: the permission bits (rwx, nothing
-else) are kept; the owner and group are put back when they differ, or the
-rename is refused (`not-owner`); line endings are kept (only the bytes of the
-name change). Extended attributes, ACLs, the birth time and hard links are not
-kept or cannot be detected, so a file with several hard links is refused; an
-ACL or attribute set on a file is lost with the replaced inode.
+else) are kept; the owner and group are put back when they differ; line
+endings are kept (only the bytes of the name change). The rename is refused
+(`not-owner`, and a preview warns) when the file belongs to another user, or
+to a group that is not the user's own, not one of the user's groups and not the
+group of its directory (where new files take the group of their directory); if
+the group still cannot be set, the apply stops while writing the temporary
+files, before any file is replaced. A rewrite replaces the file by a new one:
+extended attributes, ACLs, the modification time and the birth time are not
+kept (a rolled-back file is a new file as well, with the original text and
+permission bits but none of those), and a file with several hard links is
+refused.
 
 The write: each new text is written to a temporary file beside its target and
 synced, and so is the original text of every file (for the roll back); every
@@ -227,19 +233,23 @@ file is checked once more, and again right before its own rename; the
 temporary files are then renamed over their targets in path order and the
 directories are synced. If a temporary file cannot be written nothing is
 replaced. If a rename fails, the files already replaced are put back from the
-saved originals and every temporary file is removed; the error prints `rolled
-back:` and `not written:` (exit 1) and the plan is printed on standard output
-all the same. If a roll back step fails too, `written:` lists the files that
-still hold the new name and the command that undoes them is printed. What is
-not covered: a file changed by another program after its last check and before
-its rename is replaced by the new text, and the roll back then restores the
-text of the snapshot, not that change; a definition added in a file the plan
-does not edit after the snapshot was read is not seen. The sites in `skip` are
-printed after an apply as well, because they may still need a hand edit.
+saved originals, the directories are synced again, and every temporary file is
+removed; the error prints `rolled back:` (the files put back) and `not
+written:` (the files that were never replaced), exit 1, and the plan is
+printed on standard output all the same. If a roll back step fails too,
+`written:` lists the files that still hold the new name and, for each, a line
+`mv -- 'BACKUP' 'FILE'` that restores it from the staged original: that backup
+is kept, never deleted, and `--json` lists the pairs as `kept_backups`. What
+is not covered: a change another program makes to a file after its last check
+and before its rename is lost, with or without a roll back (the new text
+replaces it, and a roll back restores the text of the snapshot, not that
+change); a definition added in a file the plan does not edit after the
+snapshot was read is not seen. The sites in `skip` are printed after an apply
+as well, because they may still need a hand edit.
 
 With `--json`, an apply prints the plan plus `"applied"` and `"written"`; a
 failed apply or a refusal prints the same with `"applied": false`, `"refused"`
-(`code`, `reason`, `sites`), and `"rolled_back"`, `"not_written"` and `"error"`
+(`code`, `reason`, `sites`), and `"rolled_back"`, `"not_written"`, `"kept_backups"` and `"error"`
 for a failed write, while standard error keeps the text.
 
 ### Refusals
