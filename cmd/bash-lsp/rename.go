@@ -139,7 +139,7 @@ func cmdRename(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		var ref *query.RenameRefusedError
 		if o.json && errors.As(err, &ref) {
-			printJSON(stdout, renameResult{Refused: ref})
+			printJSON(stdout, renameResult{Refused: ref, Written: []string{}})
 		}
 		return failRename(stderr, err)
 	}

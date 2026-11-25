@@ -1041,3 +1041,15 @@ func TestCLIRenameLastCheckLooksAtTheDestination(t *testing.T) {
 	noTemps(t, root)
 	noTemps(t, outside)
 }
+
+// A refusal under --json lists no written files as [], like every other path,
+// not as null.
+func TestCLIRenameRefusalJSONWrittenIsAnEmptyList(t *testing.T) {
+	code, out, _ := runCode(t, "rename", "build_release", "log", "--json", "--root", corpus)
+	var doc map[string]any
+	mustJSON(t, out, &doc)
+	w, ok := doc["written"].([]any)
+	if code != 4 || !ok || len(w) != 0 {
+		t.Fatalf("exit %d, written = %#v in\n%s", code, doc["written"], out)
+	}
+}
