@@ -1,0 +1,1570 @@
+{
+ "name": "bls-includeall",
+ "caps": {
+  "definitionProvider": true,
+  "referencesProvider": true,
+  "hoverProvider": true,
+  "documentSymbolProvider": true,
+  "workspaceSymbolProvider": true,
+  "implementationProvider": false,
+  "callHierarchyProvider": false,
+  "renameProvider": true,
+  "documentFormattingProvider": true,
+  "documentRangeFormattingProvider": false,
+  "completionProvider": true,
+  "signatureHelpProvider": false,
+  "codeActionProvider": true,
+  "semanticTokensProvider": false,
+  "foldingRangeProvider": false,
+  "selectionRangeProvider": false,
+  "inlayHintProvider": false,
+  "documentLinkProvider": false,
+  "documentHighlightProvider": true,
+  "diagnosticProvider": false,
+  "codeLensProvider": false,
+  "colorProvider": false
+ },
+ "sync": 1,
+ "timings": {
+  "initialize_ms": 161,
+  "definition_ms_median": 0.5,
+  "rss_mb": 199
+ },
+ "results": {
+  "C13": [
+   false,
+   "first documentSymbol right after didOpen is non-empty",
+   "0 symbols"
+  ],
+  "C01": [
+   false,
+   "definition across a static `source ./lib/util.sh`",
+   "[('lib/util.sh', 4), ('orphan.sh', 2)]"
+  ],
+  "C01d": [
+   false,
+   "definition across `source \"$HERE/lib/util.sh\"` (HERE=$(dirname $0))",
+   "[('lib/util.sh', 4), ('orphan.sh', 2)]"
+  ],
+  "C02": [
+   false,
+   "definition through alias reaches the function",
+   "[] (alias def line 3 also acceptable alongside)"
+  ],
+  "C03": [
+   false,
+   "definition of function named in trap string",
+   "[]"
+  ],
+  "C04": [
+   false,
+   "references exclude same-named function in unrelated orphan.sh",
+   "[('dyn.sh', 4), ('lib/util.sh', 4), ('main.sh', 6), ('orphan.sh', 2), ('orphan.sh', 3)]"
+  ],
+  "C04b": [
+   true,
+   "references include the definition and the direct call",
+   "[('dyn.sh', 4), ('lib/util.sh', 4), ('main.sh', 6), ('orphan.sh', 2), ('orphan.sh', 3)]"
+  ],
+  "C05": [
+   false,
+   "references include the call through alias br",
+   "[('dyn.sh', 4), ('lib/util.sh', 4), ('main.sh', 6), ('orphan.sh', 2), ('orphan.sh', 3)]"
+  ],
+  "C06": [
+   false,
+   "references include cmd=build_release / \"$cmd\"",
+   "[('dyn.sh', 4), ('lib/util.sh', 4), ('main.sh', 6), ('orphan.sh', 2), ('orphan.sh', 3)]"
+  ],
+  "C07": [
+   false,
+   "references include eval \"build_release y\"",
+   "[('dyn.sh', 4), ('lib/util.sh', 4), ('main.sh', 6), ('orphan.sh', 2), ('orphan.sh', 3)]"
+  ],
+  "C08": [
+   false,
+   "references of a local variable stay inside its function",
+   "[('lib/util.sh', 5), ('lib/util.sh', 6), ('main.sh', 5), ('main.sh', 6), ('main.sh', 7), ('main.sh', 14), ('main.sh', 15)]"
+  ],
+  "C09": [
+   false,
+   "prepareCallHierarchy returns an item",
+   "{'__error__': {'code': -32601, 'message': 'Unhandled method textDocument/prepareCallHierarchy'}}"
+  ],
+  "C10": [
+   false,
+   "incoming calls of build_release include deploy",
+   "no item"
+  ],
+  "C11": [
+   false,
+   "outgoing calls of deploy include build_release",
+   "{'__error__': {'code': -32601, 'message': 'Unhandled method textDocument/prepareCallHierarchy'}}"
+  ],
+  "C12": [
+   false,
+   "document symbols are hierarchical (locals nested in function)",
+   "hierarchical=False top=['deploy', 'name', 'cmd', 'other', 'name', 'unquoted', 'f']"
+  ],
+  "C14": [
+   false,
+   "hover at a function definition is non-empty",
+   "null"
+  ],
+  "C14b": [
+   false,
+   "hover shows the doc comment above the function",
+   "null"
+  ],
+  "C24": [
+   true,
+   "rename of a local variable edits only its function",
+   "[('main.sh', 5), ('main.sh', 6), ('main.sh', 7)]"
+  ],
+  "C28": [
+   true,
+   "diagnostic on unquoted `rm $f`",
+   "[(19, 'SC2086', 'Double quote to prevent globbing and word splittin')]"
+  ],
+  "C29": [
+   true,
+   "source path resolves to lib/util.sh (definition or document link)",
+   "[('lib/util.sh', 1)]"
+  ],
+  "C25": [
+   false,
+   "call inside orphan.sh resolves to its own definition only",
+   "[('lib/util.sh', 4), ('orphan.sh', 2)]"
+  ],
+  "C15": [
+   true,
+   "library call resolves to a function defined by the sourcing script",
+   "[('app.sh', 3)]"
+  ],
+  "C16": [
+   true,
+   "references from the script find the call inside the library",
+   "[('app.sh', 3), ('lib/hooks.sh', 4)]"
+  ],
+  "C17": [
+   true,
+   "definition through a glob loader (for f in plugins/*.sh; . \"$f\")",
+   "[('plugins/a.sh', 2)]"
+  ],
+  "C22": [
+   true,
+   "workspace symbol finds a function in an unopened file",
+   "['plugin_a']"
+  ],
+  "C18": [
+   true,
+   "missing `fi`: functions before and after are still in symbols",
+   "['before_break', 'after_fi']"
+  ],
+  "C19": [
+   true,
+   "unterminated `${x`: functions before and after are still in symbols",
+   "['before_exp', 'after_exp']"
+  ],
+  "C20": [
+   true,
+   "syntax errors are reported as diagnostics in both broken files",
+   "broken_fi=4 broken_exp=2"
+  ],
+  "S079": {
+   "pass": false,
+   "tier": "gating",
+   "category": "call hierarchy",
+   "method": "textDocument/prepareCallHierarchy",
+   "file": "call/h.sh",
+   "detail": "unconsumed expect keys ['names'] (runner bug)",
+   "ms": 2763
+  },
+  "S080": {
+   "pass": false,
+   "tier": "gating",
+   "category": "call hierarchy",
+   "method": "textDocument/prepareCallHierarchy",
+   "file": "call/h.sh",
+   "detail": "unconsumed expect keys ['names'] (runner bug)",
+   "ms": 2782
+  },
+  "S081": {
+   "pass": false,
+   "tier": "gating",
+   "category": "call hierarchy",
+   "method": "callHierarchy/incomingCalls",
+   "file": "call/h.sh",
+   "detail": "unconsumed expect keys ['names_exact'] (runner bug)",
+   "ms": 2792
+  },
+  "S082": {
+   "pass": false,
+   "tier": "gating",
+   "category": "call hierarchy",
+   "method": "callHierarchy/incomingCalls",
+   "file": "call/h.sh",
+   "detail": "unconsumed expect keys ['names_exact'] (runner bug)",
+   "ms": 2769
+  },
+  "S083": {
+   "pass": false,
+   "tier": "gating",
+   "category": "call hierarchy",
+   "method": "callHierarchy/outgoingCalls",
+   "file": "call/h.sh",
+   "detail": "unconsumed expect keys ['names_exact'] (runner bug)",
+   "ms": 2730
+  },
+  "S084": {
+   "pass": false,
+   "tier": "gating",
+   "category": "call hierarchy",
+   "method": "callHierarchy/outgoingCalls",
+   "file": "call/h.sh",
+   "detail": "unconsumed expect keys ['names_exact'] (runner bug)",
+   "ms": 2776
+  },
+  "S085": {
+   "pass": false,
+   "tier": "gating",
+   "category": "call hierarchy",
+   "method": "callHierarchy/incomingCalls",
+   "file": "call/h.sh",
+   "detail": "unconsumed expect keys ['names_exact'] (runner bug)",
+   "ms": 2747
+  },
+  "S086": {
+   "pass": false,
+   "tier": "gating",
+   "category": "call hierarchy",
+   "method": "callHierarchy/incomingCalls",
+   "file": "call/h.sh",
+   "detail": "unconsumed expect keys ['names_exact'] (runner bug)",
+   "ms": 2779
+  },
+  "S087": {
+   "pass": false,
+   "tier": "gating",
+   "category": "call hierarchy",
+   "method": "callHierarchy/outgoingCalls",
+   "file": "call/h.sh",
+   "detail": "unconsumed expect keys ['names_exact'] (runner bug)",
+   "ms": 2760
+  },
+  "S088": {
+   "pass": false,
+   "tier": "gating",
+   "category": "call hierarchy",
+   "method": "callHierarchy/incomingCalls",
+   "file": "call/h.sh",
+   "detail": "unconsumed expect keys ['names_exact'] (runner bug)",
+   "ms": 2785
+  },
+  "S089": {
+   "pass": false,
+   "tier": "gating",
+   "category": "call hierarchy",
+   "method": "callHierarchy/incomingCalls",
+   "file": "call/xa.sh",
+   "detail": "unconsumed expect keys ['names_include'] (runner bug)",
+   "ms": 2780
+  },
+  "S001": {
+   "pass": true,
+   "tier": "gating",
+   "category": "definition",
+   "method": "textDocument/definition",
+   "file": "defs/basic.sh",
+   "detail": " got=[('defs/basic.sh', 4)]",
+   "ms": 2743
+  },
+  "S002": {
+   "pass": true,
+   "tier": "gating",
+   "category": "definition",
+   "method": "textDocument/definition",
+   "file": "defs/basic.sh",
+   "detail": " got=[('defs/basic.sh', 8)]",
+   "ms": 2771
+  },
+  "S003": {
+   "pass": true,
+   "tier": "gating",
+   "category": "definition",
+   "method": "textDocument/definition",
+   "file": "defs/basic.sh",
+   "detail": " got=[('defs/basic.sh', 12)]",
+   "ms": 2772
+  },
+  "S004": {
+   "pass": true,
+   "tier": "gating",
+   "category": "definition",
+   "method": "textDocument/definition",
+   "file": "defs/redef.sh",
+   "detail": " got=[('defs/redef.sh', 2)]",
+   "ms": 2785
+  },
+  "S005": {
+   "pass": true,
+   "tier": "gating",
+   "category": "definition",
+   "method": "textDocument/definition",
+   "file": "defs/redef.sh",
+   "detail": " got=[('defs/redef.sh', 4)]",
+   "ms": 2789
+  },
+  "S006": {
+   "pass": false,
+   "tier": "gating",
+   "category": "definition",
+   "method": "textDocument/definition",
+   "file": "defs/nested.sh",
+   "detail": "locations differ from the exact set got=[('defs/nested.sh', 3), ('scope/escape.sh', 2)]",
+   "ms": 2778
+  },
+  "S007": {
+   "pass": false,
+   "tier": "gating",
+   "category": "definition",
+   "method": "textDocument/definition",
+   "file": "defs/nested.sh",
+   "detail": "locations differ from the exact set got=[('scope/escape.sh', 2)]",
+   "ms": 2816
+  },
+  "S008": {
+   "pass": false,
+   "tier": "gating",
+   "category": "definition",
+   "method": "textDocument/definition",
+   "file": "defs/unset.sh",
+   "detail": "expected no locations got=[('defs/unset.sh', 2)]",
+   "ms": 2790
+  },
+  "S009": {
+   "pass": true,
+   "tier": "gating",
+   "category": "definition",
+   "method": "textDocument/definition",
+   "file": "defs/shadow.sh",
+   "detail": " got=[('defs/shadow.sh', 2)]",
+   "ms": 2746
+  },
+  "S010": {
+   "pass": true,
+   "tier": "gating",
+   "category": "definition",
+   "method": "textDocument/references",
+   "file": "defs/shadow.sh",
+   "detail": " got=[('defs/shadow.sh', 2), ('defs/shadow.sh', 3), ('source/s_dyn.sh', 3)]",
+   "ms": 2756
+  },
+  "S011": {
+   "pass": true,
+   "tier": "gating",
+   "category": "definition",
+   "method": "textDocument/references",
+   "file": "defs/shadow.sh",
+   "detail": " got=[('defs/shadow.sh', 2), ('defs/shadow.sh', 3), ('source/s_dyn.sh', 3)]",
+   "ms": 2758
+  },
+  "S012": {
+   "pass": false,
+   "tier": "gating",
+   "category": "definition",
+   "method": "textDocument/definition",
+   "file": "defs/branches.sh",
+   "detail": "none of includes_any got=[]",
+   "ms": 2776
+  },
+  "S013": {
+   "pass": false,
+   "tier": "gating",
+   "category": "definition",
+   "method": "textDocument/definition",
+   "file": "defs/dup_a.sh",
+   "detail": "locations differ from the exact set got=[('defs/dup_a.sh', 2), ('defs/dup_b.sh', 2)]",
+   "ms": 2773
+  },
+  "S014": {
+   "pass": false,
+   "tier": "gating",
+   "category": "definition",
+   "method": "textDocument/definition",
+   "file": "defs/dup_b.sh",
+   "detail": "locations differ from the exact set got=[('defs/dup_a.sh', 2), ('defs/dup_b.sh', 2)]",
+   "ms": 2765
+  },
+  "S015": {
+   "pass": false,
+   "tier": "gating",
+   "category": "definition",
+   "method": "textDocument/definition",
+   "file": "defs/vars.sh",
+   "detail": "locations differ from the exact set got=[('defs/vars.sh', 2), ('symbols/s.sh', 11)]",
+   "ms": 2754
+  },
+  "S110": {
+   "pass": true,
+   "tier": "gating",
+   "category": "diagnostics",
+   "method": "textDocument/publishDiagnostics",
+   "file": "diag/clean_misc.sh",
+   "detail": " diags=[(12, 2, 'SC1010', \"Use semicolon or linefeed before 'done' (or quote to make it\"), (12, 2, 'SC1010', \"Use semicolon or linefeed before 'fi' (or quote to make it l\"), (12, 2, 'SC1010', \"Use semicolon or linefeed before 'esac' (or quote to make it\"), (12, 2, 'SC1010', \"Use semicolon or linefeed before 'then' (or quote to make it\")]",
+   "ms": 2849
+  },
+  "S111": {
+   "pass": true,
+   "tier": "gating",
+   "category": "diagnostics",
+   "method": "textDocument/publishDiagnostics",
+   "file": "diag/clean_heredoc.sh",
+   "detail": " diags=[(3, 4, 'SC2006', 'Use $(...) notation instead of legacy backticks `...`.')]",
+   "ms": 2754
+  },
+  "S112": {
+   "pass": false,
+   "tier": "gating",
+   "category": "diagnostics",
+   "method": "textDocument/publishDiagnostics",
+   "file": "diag/heredoc_unterminated.sh",
+   "detail": "3 errors, at most 0 allowed diags=[(2, 3, 'SC1009', 'The mentioned syntax error was in this simple command.'), (2, 1, 'SC1073', \"Couldn't parse this here document. Fix to allow more checks.\"), (2, 1, 'SC1044', \"Couldn't find end token `EOT' in the here document.\"), (4, 1, 'SC1072', 'Here document was not correctly terminated. Fix any mentione')]",
+   "ms": 2763
+  },
+  "S113": {
+   "pass": true,
+   "tier": "gating",
+   "category": "diagnostics",
+   "method": "textDocument/publishDiagnostics",
+   "file": "diag/stray_fi.sh",
+   "detail": " diags=[(3, 1, 'SC1089', 'Parsing stopped here. Is this keyword correctly matched up?')]",
+   "ms": 2742
+  },
+  "S114": {
+   "pass": true,
+   "tier": "gating",
+   "category": "diagnostics",
+   "method": "textDocument/publishDiagnostics",
+   "file": "diag/missing_done.sh",
+   "detail": " diags=[(2, 1, 'SC1073', \"Couldn't parse this for loop. Fix to allow more checks.\"), (2, 1, 'SC1061', \"Couldn't find 'done' for this 'do'.\"), (4, 1, 'SC1062', \"Expected 'done' matching previously mentioned 'do'.\"), (4, 1, 'SC1072', \"Expected 'done'. Fix any mentioned problems and try again.\")]",
+   "ms": 2775
+  },
+  "S115": {
+   "pass": true,
+   "tier": "gating",
+   "category": "diagnostics",
+   "method": "textDocument/publishDiagnostics",
+   "file": "diag/bad_paren.sh",
+   "detail": " diags=[(3, 1, 'SC1036', \"'(' is invalid here. Did you forget to escape it?\"), (3, 1, 'SC1088', 'Parsing stopped here. Invalid use of parentheses?'), (3, 1, 'SC1065', \"Trying to declare parameters? Don't. Use () and refer to par\")]",
+   "ms": 2759
+  },
+  "S116": {
+   "pass": true,
+   "tier": "gating",
+   "category": "diagnostics",
+   "method": "textDocument/publishDiagnostics",
+   "file": "diag/unmatched_quote.sh",
+   "detail": " diags=[(3, 3, 'SC1009', 'The mentioned syntax error was in this simple command.'), (3, 1, 'SC1073', \"Couldn't parse this single quoted string. Fix to allow more \"), (4, 1, 'SC1072', 'Expected end of single quoted string. Fix any mentioned prob')]",
+   "ms": 2763
+  },
+  "S117": {
+   "pass": true,
+   "tier": "gating",
+   "category": "diagnostics",
+   "method": "textDocument/publishDiagnostics",
+   "file": "diag/double_semi.sh",
+   "detail": " diags=[(2, 1, 'SC1089', 'Parsing stopped here. Is this keyword correctly matched up?')]",
+   "ms": 2794
+  },
+  "S118": {
+   "pass": true,
+   "tier": "gating",
+   "category": "diagnostics",
+   "method": "textDocument/publishDiagnostics",
+   "file": "diag/bad_redirect.sh",
+   "detail": " diags=[(2, 3, 'SC1009', 'The mentioned syntax error was in this simple command.'), (2, 1, 'SC1073', \"Couldn't parse this redirection. Fix to allow more checks.\"), (2, 1, 'SC1072', ' Fix any mentioned problems and try again.')]",
+   "ms": 2744
+  },
+  "S119": {
+   "pass": true,
+   "tier": "gating",
+   "category": "diagnostics",
+   "method": "textDocument/publishDiagnostics",
+   "file": "diag/empty_then.sh",
+   "detail": " diags=[(2, 3, 'SC1009', 'The mentioned syntax error was in this if expression.'), (2, 1, 'SC1073', \"Couldn't parse this then clause. Fix to allow more checks.\"), (3, 1, 'SC1048', \"Can't have empty then clauses (use 'true' as a no-op).\"), (3, 1, 'SC1072', 'Unexpected keyword/token. Fix any mentioned problems and try')]",
+   "ms": 2785
+  },
+  "S120": {
+   "pass": true,
+   "tier": "gating",
+   "category": "diagnostics",
+   "method": "textDocument/publishDiagnostics",
+   "file": "diag/else_alone.sh",
+   "detail": " diags=[(3, 1, 'SC1089', 'Parsing stopped here. Is this keyword correctly matched up?')]",
+   "ms": 2756
+  },
+  "S121": {
+   "pass": true,
+   "tier": "gating",
+   "category": "diagnostics",
+   "method": "textDocument/publishDiagnostics",
+   "file": "err/missing_fi.sh",
+   "detail": " diags=[(3, 1, 'SC1046', \"Couldn't find 'fi' for this 'if'.\"), (3, 1, 'SC1073', \"Couldn't parse this if expression. Fix to allow more checks.\"), (6, 1, 'SC1047', \"Expected 'fi' matching previously mentioned 'if'.\"), (6, 1, 'SC1072', \"Expected 'fi'. Fix any mentioned problems and try again.\")]",
+   "ms": 2788
+  },
+  "S122": {
+   "pass": true,
+   "tier": "gating",
+   "category": "diagnostics",
+   "method": "textDocument/publishDiagnostics",
+   "file": "err/lib_broken.sh",
+   "detail": " diags=[(4, 1, 'SC1033', 'Test expression was opened with double [[ but closed with si')]",
+   "ms": 2757
+  },
+  "S123": {
+   "pass": true,
+   "tier": "gating",
+   "category": "diagnostics",
+   "method": "textDocument/publishDiagnostics",
+   "file": "err/use.sh",
+   "detail": " diags=[]",
+   "ms": 2745
+  },
+  "S065": {
+   "pass": false,
+   "tier": "gating",
+   "category": "dynamic edges",
+   "method": "textDocument/definition",
+   "file": "dyn/trap.sh",
+   "detail": "locations differ from the exact set got=[]",
+   "ms": 2746
+  },
+  "S066": {
+   "pass": true,
+   "tier": "gating",
+   "category": "dynamic edges",
+   "method": "textDocument/definition",
+   "file": "dyn/trap.sh",
+   "detail": " got=[('dyn/trap.sh', 3)]",
+   "ms": 2764
+  },
+  "S067": {
+   "pass": false,
+   "tier": "gating",
+   "category": "dynamic edges",
+   "method": "textDocument/references",
+   "file": "dyn/trap.sh",
+   "detail": "locations differ from the exact set got=[('dyn/trap.sh', 2)]",
+   "ms": 2755
+  },
+  "S068": {
+   "pass": false,
+   "tier": "gating",
+   "category": "dynamic edges",
+   "method": "textDocument/definition",
+   "file": "dyn/eval.sh",
+   "detail": "locations differ from the exact set got=[]",
+   "ms": 2799
+  },
+  "S069": {
+   "pass": false,
+   "tier": "gating",
+   "category": "dynamic edges",
+   "method": "textDocument/references",
+   "file": "dyn/eval.sh",
+   "detail": "locations differ from the exact set got=[('dyn/eval.sh', 2)]",
+   "ms": 2758
+  },
+  "S070": {
+   "pass": false,
+   "tier": "gating",
+   "category": "dynamic edges",
+   "method": "textDocument/definition",
+   "file": "dyn/eval.sh",
+   "detail": "missing [('dyn/eval.sh', 5)] got=[]",
+   "ms": 2784
+  },
+  "S071": {
+   "pass": false,
+   "tier": "gating",
+   "category": "dynamic edges",
+   "method": "textDocument/references",
+   "file": "dyn/cmdvar.sh",
+   "detail": "none of includes_any got=[('dyn/cmdvar.sh', 2), ('dyn/command.sh', 2), ('dyn/command.sh', 5)]",
+   "ms": 2763
+  },
+  "S072": {
+   "pass": false,
+   "tier": "design",
+   "category": "dynamic edges",
+   "method": "textDocument/definition",
+   "file": "dyn/alias.sh",
+   "detail": "missing [('dyn/alias.sh', 3)] got=[]",
+   "ms": 2730
+  },
+  "S073": {
+   "pass": false,
+   "tier": "design",
+   "category": "dynamic edges",
+   "method": "textDocument/references",
+   "file": "dyn/alias.sh",
+   "detail": "missing [('dyn/alias.sh', 6)] got=[('dyn/alias.sh', 3)]",
+   "ms": 2783
+  },
+  "S074": {
+   "pass": true,
+   "tier": "gating",
+   "category": "dynamic edges",
+   "method": "textDocument/definition",
+   "file": "dyn/alias.sh",
+   "detail": " got=[('dyn/alias.sh', 4)]",
+   "ms": 2798
+  },
+  "S075": {
+   "pass": true,
+   "tier": "gating",
+   "category": "dynamic edges",
+   "method": "textDocument/definition",
+   "file": "dyn/alias.sh",
+   "detail": " got=[('dyn/alias.sh', 5)]",
+   "ms": 2738
+  },
+  "S076": {
+   "pass": true,
+   "tier": "gating",
+   "category": "dynamic edges",
+   "method": "textDocument/references",
+   "file": "dyn/command.sh",
+   "detail": " got=[('dyn/cmdvar.sh', 2), ('dyn/command.sh', 2), ('dyn/command.sh', 5)]",
+   "ms": 2841
+  },
+  "S077": {
+   "pass": true,
+   "tier": "gating",
+   "category": "dynamic edges",
+   "method": "textDocument/references",
+   "file": "dyn/command.sh",
+   "detail": " got=[('dyn/cmdvar.sh', 2), ('dyn/command.sh', 2), ('dyn/command.sh', 5)]",
+   "ms": 2776
+  },
+  "S078": {
+   "pass": false,
+   "tier": "gating",
+   "category": "dynamic edges",
+   "method": "textDocument/definition",
+   "file": "dyn/command.sh",
+   "detail": "locations differ from the exact set got=[('dyn/cmdvar.sh', 2), ('dyn/command.sh', 2)]",
+   "ms": 2747
+  },
+  "S132": {
+   "pass": true,
+   "tier": "gating",
+   "category": "editor features",
+   "method": "textDocument/documentHighlight",
+   "file": "defs/vars.sh",
+   "detail": " file=defs/vars.sh got=[3, 5, 6, 9]",
+   "ms": 2758
+  },
+  "S133": {
+   "pass": true,
+   "tier": "gating",
+   "category": "editor features",
+   "method": "textDocument/documentHighlight",
+   "file": "refs/inside.sh",
+   "detail": " file=refs/inside.sh got=[2, 3, 4, 5, 6]",
+   "ms": 2752
+  },
+  "S134": {
+   "pass": false,
+   "tier": "design",
+   "category": "editor features",
+   "method": "textDocument/foldingRange",
+   "file": "editor/fold.sh",
+   "detail": "unconsumed expect keys ['fold_start_lines_include'] (runner bug)",
+   "ms": 2778
+  },
+  "S135": {
+   "pass": false,
+   "tier": "gating",
+   "category": "editor features",
+   "method": "textDocument/foldingRange",
+   "file": "editor/fold.sh",
+   "detail": "unconsumed expect keys ['fold_start_lines_exclude'] (runner bug)",
+   "ms": 2758
+  },
+  "S136": {
+   "pass": false,
+   "tier": "design",
+   "category": "editor features",
+   "method": "textDocument/documentLink",
+   "file": "editor/links.sh",
+   "detail": "unconsumed expect keys ['link_lines_exclude', 'links_include'] (runner bug)",
+   "ms": 2747
+  },
+  "S137": {
+   "pass": false,
+   "tier": "gating",
+   "category": "editor features",
+   "method": "textDocument/selectionRange",
+   "file": "editor/sel.sh",
+   "detail": "unconsumed expect keys ['all_contain_position', 'parent_contains_child'] (runner bug)",
+   "ms": 2769
+  },
+  "S138": {
+   "pass": true,
+   "tier": "gating",
+   "category": "editor features",
+   "method": "textDocument/completion",
+   "file": "editor/comp.sh",
+   "detail": "missing []; 4 labels",
+   "ms": 2756
+  },
+  "S139": {
+   "pass": true,
+   "tier": "gating",
+   "category": "editor features",
+   "method": "textDocument/completion",
+   "file": "editor/comp.sh",
+   "detail": "missing []; 2 labels",
+   "ms": 2785
+  },
+  "S140": {
+   "pass": true,
+   "tier": "gating",
+   "category": "editor features",
+   "method": "textDocument/formatting",
+   "file": "editor/messy.sh",
+   "detail": " edits=0",
+   "ms": 2787
+  },
+  "S151": {
+   "pass": true,
+   "tier": "gating",
+   "category": "editor features",
+   "method": "textDocument/prepareRename",
+   "file": "rename/fn.sh",
+   "detail": "range text 'compute'",
+   "ms": 2792
+  },
+  "S152": {
+   "pass": false,
+   "tier": "gating",
+   "category": "editor features",
+   "method": "textDocument/documentHighlight",
+   "file": "rename/scoped.sh",
+   "detail": "lines differ from the exact set file=rename/scoped.sh got=[2, 4, 5, 8, 12]",
+   "ms": 2790
+  },
+  "S153": {
+   "pass": true,
+   "tier": "gating",
+   "category": "editor features",
+   "method": "textDocument/documentHighlight",
+   "file": "refs/varforms.sh",
+   "detail": " file=refs/varforms.sh got=[2, 3, 4, 6]",
+   "ms": 2760
+  },
+  "S154": {
+   "pass": false,
+   "tier": "gating",
+   "category": "editor features",
+   "method": "textDocument/selectionRange",
+   "file": "editor/sel.sh",
+   "detail": "unconsumed expect keys ['all_contain_position', 'parent_contains_child'] (runner bug)",
+   "ms": 2765
+  },
+  "S155": {
+   "pass": true,
+   "tier": "gating",
+   "category": "editor features",
+   "method": "textDocument/formatting",
+   "file": "defs/basic.sh",
+   "detail": " edits=0",
+   "ms": 2772
+  },
+  "S100": {
+   "pass": true,
+   "tier": "design",
+   "category": "error recovery",
+   "method": "textDocument/documentSymbol",
+   "file": "err/missing_fi.sh",
+   "detail": " names=['after_fi', 'before_fi']",
+   "ms": 2765
+  },
+  "S101": {
+   "pass": true,
+   "tier": "gating",
+   "category": "error recovery",
+   "method": "textDocument/documentSymbol",
+   "file": "err/unterminated_quote.sh",
+   "detail": " names=['before_q']",
+   "ms": 2732
+  },
+  "S102": {
+   "pass": false,
+   "tier": "design",
+   "category": "error recovery",
+   "method": "textDocument/documentSymbol",
+   "file": "err/missing_brace.sh",
+   "detail": "missing ['broken_fn'] got=['before_b'] names=['before_b']",
+   "ms": 2747
+  },
+  "S103": {
+   "pass": true,
+   "tier": "design",
+   "category": "error recovery",
+   "method": "textDocument/documentSymbol",
+   "file": "err/stray_fi.sh",
+   "detail": " names=['after_s', 'before_s']",
+   "ms": 2757
+  },
+  "S104": {
+   "pass": true,
+   "tier": "design",
+   "category": "error recovery",
+   "method": "textDocument/documentSymbol",
+   "file": "err/bad_expansion.sh",
+   "detail": " names=['before_e']",
+   "ms": 2747
+  },
+  "S105": {
+   "pass": true,
+   "tier": "design",
+   "category": "error recovery",
+   "method": "textDocument/documentSymbol",
+   "file": "err/unclosed_paren.sh",
+   "detail": " names=['before_p', 'now']",
+   "ms": 2809
+  },
+  "S106": {
+   "pass": true,
+   "tier": "design",
+   "category": "error recovery",
+   "method": "textDocument/documentSymbol",
+   "file": "err/no_esac.sh",
+   "detail": " names=['before_c']",
+   "ms": 2780
+  },
+  "S107": {
+   "pass": true,
+   "tier": "gating",
+   "category": "error recovery",
+   "method": "textDocument/definition",
+   "file": "err/use.sh",
+   "detail": " got=[('err/lib_broken.sh', 2)]",
+   "ms": 2839
+  },
+  "S108": {
+   "pass": true,
+   "tier": "gating",
+   "category": "error recovery",
+   "method": "textDocument/references",
+   "file": "err/lib_broken.sh",
+   "detail": " got=[('err/lib_broken.sh', 2), ('err/lib_broken.sh', 3), ('err/use.sh', 4)]",
+   "ms": 2759
+  },
+  "S109": {
+   "pass": true,
+   "tier": "gating",
+   "category": "error recovery",
+   "method": "textDocument/documentSymbol",
+   "file": "err/garbage.sh",
+   "detail": " names=[]",
+   "ms": 2742
+  },
+  "S146": {
+   "pass": true,
+   "tier": "gating",
+   "category": "error recovery",
+   "method": "textDocument/definition",
+   "file": "err/call_before_quote.sh",
+   "detail": " got=[('err/call_before_quote.sh', 2)]",
+   "ms": 2775
+  },
+  "S147": {
+   "pass": true,
+   "tier": "gating",
+   "category": "error recovery",
+   "method": "textDocument/definition",
+   "file": "err/call_before_fi.sh",
+   "detail": " got=[('err/call_before_fi.sh', 2)]",
+   "ms": 2744
+  },
+  "S148": {
+   "pass": false,
+   "tier": "gating",
+   "category": "error recovery",
+   "method": "textDocument/definition",
+   "file": "err/var_before.sh",
+   "detail": "locations differ from the exact set got=[('err/var_before.sh', 2), ('rename/fn.sh', 4), ('scope/local.sh', 2)]",
+   "ms": 2830
+  },
+  "S149": {
+   "pass": true,
+   "tier": "gating",
+   "category": "error recovery",
+   "method": "textDocument/references",
+   "file": "err/var_before.sh",
+   "detail": " got=[('err/bad_expansion.sh', 3), ('err/var_before.sh', 2), ('err/var_before.sh', 3), ('rename/fn.sh', 4), ('scope/local.sh', 2), ('scope/local.sh', 4), ('scope/local.sh', 5), ('scope/local.sh', 8), ('scope/pipeline.sh', 2)]",
+   "ms": 2749
+  },
+  "S150": {
+   "pass": true,
+   "tier": "gating",
+   "category": "error recovery",
+   "method": "textDocument/references",
+   "file": "err/ref_swallow.sh",
+   "detail": " got=[('diag/clean_heredoc.sh', 8), ('diag/clean_heredoc.sh', 13), ('editor/messy.sh', 2), ('editor/messy.sh', 8), ('editor/sel.sh', 2), ('err/ref_swallow.sh', 2), ('err/ref_swallow.sh', 3), ('rename/scoped.sh', 3), ('rename/scoped.sh', 10), ('scope/fnlocal_subshell.sh', 2), ('scope/fnlocal_subshell.sh', 7), ('scope/local.sh', 3), ('scope/local.sh', 10), ('source/s_glob.sh', 3), ('source/s_glob.sh', 4)]",
+   "ms": 2735
+  },
+  "S016": {
+   "pass": true,
+   "tier": "gating",
+   "category": "references",
+   "method": "textDocument/references",
+   "file": "defs/basic.sh",
+   "detail": " got=[('defs/basic.sh', 4), ('defs/basic.sh', 13), ('defs/basic.sh', 17)]",
+   "ms": 2837
+  },
+  "S017": {
+   "pass": true,
+   "tier": "gating",
+   "category": "references",
+   "method": "textDocument/references",
+   "file": "defs/basic.sh",
+   "detail": " got=[('defs/basic.sh', 13), ('defs/basic.sh', 17)]",
+   "ms": 2738
+  },
+  "S018": {
+   "pass": true,
+   "tier": "gating",
+   "category": "references",
+   "method": "textDocument/references",
+   "file": "defs/basic.sh",
+   "detail": " got=[('defs/basic.sh', 8), ('defs/basic.sh', 14), ('defs/basic.sh', 19)]",
+   "ms": 2822
+  },
+  "S019": {
+   "pass": true,
+   "tier": "gating",
+   "category": "references",
+   "method": "textDocument/references",
+   "file": "refs/mentions.sh",
+   "detail": " got=[('refs/mentions.sh', 2), ('refs/mentions.sh', 3), ('refs/mentions.sh', 8)]",
+   "ms": 2814
+  },
+  "S020": {
+   "pass": true,
+   "tier": "gating",
+   "category": "references",
+   "method": "textDocument/references",
+   "file": "refs/mentions.sh",
+   "detail": " got=[('refs/mentions.sh', 2), ('refs/mentions.sh', 3), ('refs/mentions.sh', 8)]",
+   "ms": 2763
+  },
+  "S021": {
+   "pass": true,
+   "tier": "gating",
+   "category": "references",
+   "method": "textDocument/references",
+   "file": "refs/varforms.sh",
+   "detail": " got=[('refs/varforms.sh', 2), ('refs/varforms.sh', 3), ('refs/varforms.sh', 4), ('refs/varforms.sh', 6)]",
+   "ms": 2806
+  },
+  "S022": {
+   "pass": true,
+   "tier": "gating",
+   "category": "references",
+   "method": "textDocument/references",
+   "file": "refs/inside.sh",
+   "detail": " got=[('refs/inside.sh', 2), ('refs/inside.sh', 3), ('refs/inside.sh', 4), ('refs/inside.sh', 5), ('refs/inside.sh', 6)]",
+   "ms": 2808
+  },
+  "S023": {
+   "pass": true,
+   "tier": "gating",
+   "category": "references",
+   "method": "textDocument/references",
+   "file": "refs/recur.sh",
+   "detail": " got=[('refs/recur.sh', 2), ('refs/recur.sh', 5), ('refs/recur.sh', 7)]",
+   "ms": 2825
+  },
+  "S024": {
+   "pass": true,
+   "tier": "gating",
+   "category": "references",
+   "method": "textDocument/references",
+   "file": "refs/loopvar.sh",
+   "detail": " got=[('refs/loopvar.sh', 2), ('refs/loopvar.sh', 3), ('refs/loopvar.sh', 4), ('refs/loopvar.sh', 6)]",
+   "ms": 2747
+  },
+  "S025": {
+   "pass": false,
+   "tier": "gating",
+   "category": "references",
+   "method": "textDocument/references",
+   "file": "defs/vars.sh",
+   "detail": "locations differ from the exact set got=[('defs/vars.sh', 2), ('defs/vars.sh', 6), ('symbols/s.sh', 11)]",
+   "ms": 2766
+  },
+  "S026": {
+   "pass": false,
+   "tier": "gating",
+   "category": "references",
+   "method": "textDocument/references",
+   "file": "refs/lib.sh",
+   "detail": "locations differ from the exact set got=[('refs/lib.sh', 2), ('refs/main.sh', 4), ('refs/main.sh', 5), ('refs/other.sh', 2), ('refs/other.sh', 3)]",
+   "ms": 2769
+  },
+  "S027": {
+   "pass": false,
+   "tier": "gating",
+   "category": "references",
+   "method": "textDocument/references",
+   "file": "refs/main.sh",
+   "detail": "locations differ from the exact set got=[('refs/lib.sh', 2), ('refs/main.sh', 4), ('refs/main.sh', 5), ('refs/other.sh', 2), ('refs/other.sh', 3)]",
+   "ms": 2827
+  },
+  "S028": {
+   "pass": false,
+   "tier": "gating",
+   "category": "references",
+   "method": "textDocument/references",
+   "file": "defs/dup_a.sh",
+   "detail": "locations differ from the exact set got=[('defs/dup_a.sh', 2), ('defs/dup_a.sh', 3), ('defs/dup_b.sh', 2), ('defs/dup_b.sh', 3)]",
+   "ms": 2770
+  },
+  "S124": {
+   "pass": true,
+   "tier": "gating",
+   "category": "rename",
+   "method": "textDocument/rename",
+   "file": "rename/fn.sh",
+   "detail": " got=[('rename/fn.sh', 2), ('rename/fn.sh', 3), ('rename/fn.sh', 4), ('rename/fn.sh', 5)]",
+   "ms": 2764
+  },
+  "S125": {
+   "pass": true,
+   "tier": "gating",
+   "category": "rename",
+   "method": "textDocument/rename",
+   "file": "rename/scoped.sh",
+   "detail": " got=[('rename/scoped.sh', 4), ('rename/scoped.sh', 5)]",
+   "ms": 2757
+  },
+  "S126": {
+   "pass": false,
+   "tier": "gating",
+   "category": "rename",
+   "method": "textDocument/rename",
+   "file": "rename/scoped.sh",
+   "detail": "edits differ from the exact set [('rename/scoped.sh', 2), ('rename/scoped.sh', 8), ('rename/scoped.sh', 12)] got=[('rename/scoped.sh', 2), ('rename/scoped.sh', 8), ('rename/scoped.sh', 12), ('scope/escape.sh', 4)]",
+   "ms": 2771
+  },
+  "S127": {
+   "pass": true,
+   "tier": "gating",
+   "category": "rename",
+   "method": "textDocument/rename",
+   "file": "rename/lib.sh",
+   "detail": " got=[('rename/lib.sh', 2), ('rename/user.sh', 4), ('rename/user.sh', 6)]",
+   "ms": 2748
+  },
+  "S128": {
+   "pass": true,
+   "tier": "gating",
+   "category": "rename",
+   "method": "textDocument/rename",
+   "file": "refs/mentions.sh",
+   "detail": " got=[('refs/mentions.sh', 2), ('refs/mentions.sh', 3), ('refs/mentions.sh', 8)]",
+   "ms": 2747
+  },
+  "S129": {
+   "pass": true,
+   "tier": "gating",
+   "category": "rename",
+   "method": "textDocument/rename",
+   "file": "refs/varforms.sh",
+   "detail": " got=[('refs/varforms.sh', 2), ('refs/varforms.sh', 3), ('refs/varforms.sh', 4), ('refs/varforms.sh', 6)]",
+   "ms": 2799
+  },
+  "S130": {
+   "pass": false,
+   "tier": "gating",
+   "category": "rename",
+   "method": "textDocument/prepareRename",
+   "file": "rename/fn.sh",
+   "detail": "response={\"start\": {\"line\": 1, \"character\": 12}, \"end\": {\"line\": 1, \"character\": 16}}",
+   "ms": 2814
+  },
+  "S131": {
+   "pass": true,
+   "tier": "gating",
+   "category": "rename",
+   "method": "textDocument/rename",
+   "file": "rename/scoped.sh",
+   "detail": "response={\"__error__\": {\"code\": -32803, \"message\": \"Invalid variable name given.\"}}",
+   "ms": 2816
+  },
+  "S029": {
+   "pass": false,
+   "tier": "gating",
+   "category": "scope",
+   "method": "textDocument/definition",
+   "file": "scope/local.sh",
+   "detail": "locations differ from the exact set got=[('err/var_before.sh', 2), ('rename/fn.sh', 4), ('scope/local.sh', 4)]",
+   "ms": 2742
+  },
+  "S030": {
+   "pass": false,
+   "tier": "gating",
+   "category": "scope",
+   "method": "textDocument/definition",
+   "file": "scope/local.sh",
+   "detail": "locations differ from the exact set got=[('err/var_before.sh', 2), ('rename/fn.sh', 4), ('scope/local.sh', 2)]",
+   "ms": 2837
+  },
+  "S031": {
+   "pass": false,
+   "tier": "gating",
+   "category": "scope",
+   "method": "textDocument/definition",
+   "file": "scope/dynamic.sh",
+   "detail": "locations differ from the exact set got=[]",
+   "ms": 2775
+  },
+  "S032": {
+   "pass": false,
+   "tier": "gating",
+   "category": "scope",
+   "method": "textDocument/definition",
+   "file": "scope/dynamic_only.sh",
+   "detail": "locations differ from the exact set got=[]",
+   "ms": 2810
+  },
+  "S033": {
+   "pass": true,
+   "tier": "gating",
+   "category": "scope",
+   "method": "textDocument/definition",
+   "file": "scope/subshell.sh",
+   "detail": " got=[('scope/subshell.sh', 3)]",
+   "ms": 2752
+  },
+  "S034": {
+   "pass": true,
+   "tier": "gating",
+   "category": "scope",
+   "method": "textDocument/definition",
+   "file": "scope/subshell.sh",
+   "detail": " got=[('scope/subshell.sh', 2)]",
+   "ms": 2777
+  },
+  "S035": {
+   "pass": false,
+   "tier": "gating",
+   "category": "scope",
+   "method": "textDocument/definition",
+   "file": "scope/escape.sh",
+   "detail": "expected no locations got=[('scope/escape.sh', 2)]",
+   "ms": 2734
+  },
+  "S036": {
+   "pass": false,
+   "tier": "gating",
+   "category": "scope",
+   "method": "textDocument/definition",
+   "file": "scope/escape.sh",
+   "detail": "expected no locations got=[('scope/escape.sh', 4)]",
+   "ms": 2822
+  },
+  "S037": {
+   "pass": false,
+   "tier": "gating",
+   "category": "scope",
+   "method": "textDocument/definition",
+   "file": "scope/fnlocal_subshell.sh",
+   "detail": "locations differ from the exact set got=[('scope/fnlocal_subshell.sh', 3), ('scope/subshell.sh', 3)]",
+   "ms": 2749
+  },
+  "S038": {
+   "pass": false,
+   "tier": "gating",
+   "category": "scope",
+   "method": "textDocument/definition",
+   "file": "scope/pipeline.sh",
+   "detail": "locations differ from the exact set got=[('err/var_before.sh', 2), ('rename/fn.sh', 4), ('scope/local.sh', 2)]",
+   "ms": 2809
+  },
+  "S039": {
+   "pass": true,
+   "tier": "gating",
+   "category": "scope",
+   "method": "textDocument/definition",
+   "file": "scope/pipeline.sh",
+   "detail": " got=[]",
+   "ms": 2780
+  },
+  "S040": {
+   "pass": true,
+   "tier": "gating",
+   "category": "scope",
+   "method": "textDocument/definition",
+   "file": "scope/pipeline.sh",
+   "detail": " got=[('scope/pipeline.sh', 5)]",
+   "ms": 2778
+  },
+  "S041": {
+   "pass": false,
+   "tier": "gating",
+   "category": "scope",
+   "method": "textDocument/definition",
+   "file": "scope/procsub.sh",
+   "detail": "expected no locations got=[('scope/procsub.sh', 2)]",
+   "ms": 2790
+  },
+  "S042": {
+   "pass": true,
+   "tier": "gating",
+   "category": "scope",
+   "method": "textDocument/definition",
+   "file": "scope/procsub.sh",
+   "detail": " got=[('scope/procsub.sh', 4)]",
+   "ms": 2761
+  },
+  "S043": {
+   "pass": true,
+   "tier": "gating",
+   "category": "scope",
+   "method": "textDocument/definition",
+   "file": "scope/procsub.sh",
+   "detail": " got=[('scope/procsub.sh', 6)]",
+   "ms": 2789
+  },
+  "S044": {
+   "pass": false,
+   "tier": "gating",
+   "category": "scope",
+   "method": "textDocument/definition",
+   "file": "scope/s5.sh",
+   "detail": "expected no locations got=[('symbols/s.sh', 13)]",
+   "ms": 2741
+  },
+  "S045": {
+   "pass": true,
+   "tier": "gating",
+   "category": "source resolution",
+   "method": "textDocument/definition",
+   "file": "source/s_static.sh",
+   "detail": " got=[('source/lib/a.sh', 2)]",
+   "ms": 2773
+  },
+  "S046": {
+   "pass": true,
+   "tier": "gating",
+   "category": "source resolution",
+   "method": "textDocument/definition",
+   "file": "source/s_static.sh",
+   "detail": " got=[('source/lib/b.sh', 2)]",
+   "ms": 2778
+  },
+  "S047": {
+   "pass": true,
+   "tier": "gating",
+   "category": "source resolution",
+   "method": "textDocument/definition",
+   "file": "source/s_static.sh",
+   "detail": " got=[('source/lib/deep/c.sh', 2)]",
+   "ms": 2760
+  },
+  "S048": {
+   "pass": true,
+   "tier": "design",
+   "category": "source resolution",
+   "method": "textDocument/definition",
+   "file": "source/s_static.sh",
+   "detail": " got=[('source/lib/a.sh', 1)]",
+   "ms": 2776
+  },
+  "S049": {
+   "pass": false,
+   "tier": "design",
+   "category": "source resolution",
+   "method": "textDocument/documentLink",
+   "file": "source/s_static.sh",
+   "detail": "unconsumed expect keys ['links_include'] (runner bug)",
+   "ms": 2759
+  },
+  "S050": {
+   "pass": true,
+   "tier": "gating",
+   "category": "source resolution",
+   "method": "textDocument/definition",
+   "file": "source/up/inner/user.sh",
+   "detail": " got=[('source/sibling.sh', 2)]",
+   "ms": 2771
+  },
+  "S051": {
+   "pass": true,
+   "tier": "gating",
+   "category": "source resolution",
+   "method": "textDocument/definition",
+   "file": "source/s_dyn.sh",
+   "detail": " got=[('source/lib/a.sh', 2)]",
+   "ms": 2734
+  },
+  "S052": {
+   "pass": true,
+   "tier": "gating",
+   "category": "source resolution",
+   "method": "textDocument/definition",
+   "file": "source/s_dollar0.sh",
+   "detail": " got=[('source/lib/b.sh', 2)]",
+   "ms": 2754
+  },
+  "S053": {
+   "pass": true,
+   "tier": "gating",
+   "category": "source resolution",
+   "method": "textDocument/definition",
+   "file": "source/s_var.sh",
+   "detail": " got=[('source/lib/a.sh', 2)]",
+   "ms": 2765
+  },
+  "S054": {
+   "pass": true,
+   "tier": "gating",
+   "category": "source resolution",
+   "method": "textDocument/definition",
+   "file": "source/s_func.sh",
+   "detail": " got=[('source/lib/a.sh', 2)]",
+   "ms": 2738
+  },
+  "S055": {
+   "pass": true,
+   "tier": "gating",
+   "category": "source resolution",
+   "method": "textDocument/definition",
+   "file": "source/s_cond.sh",
+   "detail": " got=[('source/lib/b.sh', 2)]",
+   "ms": 2753
+  },
+  "S056": {
+   "pass": true,
+   "tier": "gating",
+   "category": "source resolution",
+   "method": "textDocument/definition",
+   "file": "source/s_missing.sh",
+   "detail": " got=[]",
+   "ms": 2759
+  },
+  "S057": {
+   "pass": false,
+   "tier": "gating",
+   "category": "source resolution",
+   "method": "textDocument/definition",
+   "file": "source/s_order.sh",
+   "detail": "expected no locations got=[('source/lib/early.sh', 2)]",
+   "ms": 2751
+  },
+  "S058": {
+   "pass": true,
+   "tier": "gating",
+   "category": "source resolution",
+   "method": "textDocument/definition",
+   "file": "source/s_order.sh",
+   "detail": " got=[('source/lib/early.sh', 2)]",
+   "ms": 2761
+  },
+  "S059": {
+   "pass": true,
+   "tier": "gating",
+   "category": "source resolution",
+   "method": "textDocument/definition",
+   "file": "source/s_glob.sh",
+   "detail": " got=[('source/plug/one.sh', 2)]",
+   "ms": 2736
+  },
+  "S060": {
+   "pass": true,
+   "tier": "gating",
+   "category": "source resolution",
+   "method": "textDocument/definition",
+   "file": "source/s_glob.sh",
+   "detail": " got=[('source/plug/two.sh', 2)]",
+   "ms": 2766
+  },
+  "S061": {
+   "pass": true,
+   "tier": "gating",
+   "category": "source resolution",
+   "method": "textDocument/definition",
+   "file": "source/chain/main.sh",
+   "detail": " got=[('source/chain/two.sh', 2)]",
+   "ms": 2767
+  },
+  "S062": {
+   "pass": true,
+   "tier": "gating",
+   "category": "source resolution",
+   "method": "textDocument/definition",
+   "file": "source/lib/needs.sh",
+   "detail": " got=[('source/host.sh', 3)]",
+   "ms": 2736
+  },
+  "S063": {
+   "pass": true,
+   "tier": "gating",
+   "category": "source resolution",
+   "method": "textDocument/definition",
+   "file": "source/cyc_b.sh",
+   "detail": " got=[('source/cyc_a.sh', 3)]",
+   "ms": 2825
+  },
+  "S064": {
+   "pass": true,
+   "tier": "gating",
+   "category": "source resolution",
+   "method": "textDocument/definition",
+   "file": "source/cyc_a.sh",
+   "detail": " got=[('source/cyc_b.sh', 3)]",
+   "ms": 2797
+  },
+  "S090": {
+   "pass": true,
+   "tier": "gating",
+   "category": "symbols and hover",
+   "method": "textDocument/documentSymbol",
+   "file": "symbols/s.sh",
+   "detail": " names=['LIMIT', 'VERSION', 'helper', 'sum', 'total']",
+   "ms": 2748
+  },
+  "S091": {
+   "pass": false,
+   "tier": "design",
+   "category": "symbols and hover",
+   "method": "textDocument/documentSymbol",
+   "file": "symbols/s.sh",
+   "detail": "children of sum: ['total'], missing ['n'] names=['LIMIT', 'VERSION', 'helper', 'sum', 'total']",
+   "ms": 2736
+  },
+  "S092": {
+   "pass": false,
+   "tier": "gating",
+   "category": "symbols and hover",
+   "method": "textDocument/documentSymbol",
+   "file": "symbols/s.sh",
+   "detail": "flat SymbolInformation has no selectionRange names=['LIMIT', 'VERSION', 'helper', 'sum', 'total']",
+   "ms": 2752
+  },
+  "S093": {
+   "pass": true,
+   "tier": "gating",
+   "category": "symbols and hover",
+   "method": "textDocument/documentSymbol",
+   "file": "symbols/empty.sh",
+   "detail": " names=[]",
+   "ms": 2779
+  },
+  "S094": {
+   "pass": true,
+   "tier": "gating",
+   "category": "symbols and hover",
+   "method": "workspace/symbol",
+   "file": "symbols/ws.sh",
+   "detail": " names=['needle_in_ws']",
+   "ms": 3790
+  },
+  "S095": {
+   "pass": true,
+   "tier": "gating",
+   "category": "symbols and hover",
+   "method": "workspace/symbol",
+   "file": "symbols/ws.sh",
+   "detail": " names=[]",
+   "ms": 3809
+  },
+  "S096": {
+   "pass": false,
+   "tier": "design",
+   "category": "symbols and hover",
+   "method": "textDocument/hover",
+   "file": "symbols/s.sh",
+   "detail": "unconsumed expect keys ['contains'] (runner bug)",
+   "ms": 2742
+  },
+  "S097": {
+   "pass": true,
+   "tier": "design",
+   "category": "symbols and hover",
+   "method": "textDocument/hover",
+   "file": "symbols/s.sh",
+   "detail": "missing [] hover='Function: **sum** - *defined on line 3*\\n\\n```txt\\n!/bin/bash\\nCompute the sum of the arguments.\\n```'",
+   "ms": 2736
+  },
+  "S098": {
+   "pass": false,
+   "tier": "design",
+   "category": "symbols and hover",
+   "method": "textDocument/hover",
+   "file": "symbols/s.sh",
+   "detail": "unconsumed expect keys ['contains'] (runner bug)",
+   "ms": 2746
+  },
+  "S099": {
+   "pass": false,
+   "tier": "design",
+   "category": "symbols and hover",
+   "method": "textDocument/hover",
+   "file": "symbols/s.sh",
+   "detail": "unconsumed expect keys ['contains'] (runner bug)",
+   "ms": 2746
+  },
+  "S141": {
+   "pass": true,
+   "tier": "gating",
+   "category": "symbols and hover",
+   "method": "workspace/symbol",
+   "file": "symbols/ws.sh",
+   "detail": " names=['needle_in_ws']",
+   "ms": 3793
+  },
+  "S142": {
+   "pass": true,
+   "tier": "gating",
+   "category": "symbols and hover",
+   "method": "textDocument/documentSymbol",
+   "file": "symbols/s.sh",
+   "detail": " names=['LIMIT', 'VERSION', 'helper', 'sum', 'total']",
+   "ms": 2725
+  },
+  "S143": {
+   "pass": true,
+   "tier": "gating",
+   "category": "symbols and hover",
+   "method": "textDocument/documentSymbol",
+   "file": "defs/redef.sh",
+   "detail": " names=['pick']",
+   "ms": 2770
+  },
+  "S144": {
+   "pass": true,
+   "tier": "gating",
+   "category": "symbols and hover",
+   "method": "textDocument/documentSymbol",
+   "file": "editor/fold.sh",
+   "detail": " names=['multi', 'one']",
+   "ms": 2775
+  },
+  "S145": {
+   "pass": true,
+   "tier": "gating",
+   "category": "symbols and hover",
+   "method": "textDocument/documentSymbol",
+   "file": "call/h.sh",
+   "detail": " names=['leaf', 'mid', 'mutual_a', 'mutual_b', 'orphan_fn', 'recur', 'top']",
+   "ms": 2787
+  }
+ }
+}
