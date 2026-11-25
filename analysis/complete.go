@@ -548,7 +548,8 @@ func (s *Snapshot) variableItems(st site, minLen int) []ranked {
 
 // around reports whether the cursor is inside n: after its first byte and
 // before its end. At its end it is inside only for a node the parser closed
-// itself, or one that runs to the end of the file (blanks may follow) with no
+// itself, or one that runs to the end of the file (blanks and comment lines
+// may follow) with no
 // closing brace or parenthesis (a function or subshell still being typed).
 func around(n *tree.Node, src []byte, offset int) bool {
 	if n == nil || n.Range.Start.Offset >= offset {
@@ -558,7 +559,24 @@ func around(n *tree.Node, src []byte, offset int) bool {
 	if offset < end {
 		return true
 	}
-	return offset == end && (n.Recovered || end > 0 && src[end-1] != '}' && src[end-1] != ')' && len(bytes.TrimSpace(src[end:])) == 0)
+	return offset == end && (n.Recovered || end > 0 && src[end-1] != '}' && src[end-1] != ')' && onlyBlankOrComments(src[end:]))
+}
+
+// onlyBlankOrComments reports whether b holds nothing but white space and
+// comments: every line is blank or its first non-blank byte starts a comment.
+func onlyBlankOrComments(b []byte) bool {
+	for len(b) > 0 {
+		line := b
+		if i := bytes.IndexByte(b, '\n'); i >= 0 {
+			line, b = b[:i], b[i+1:]
+		} else {
+			b = nil
+		}
+		if t := bytes.TrimSpace(line); len(t) > 0 && t[0] != '#' {
+			return false
+		}
+	}
+	return true
 }
 
 // commandItems are the functions and aliases in view, the builtins and the

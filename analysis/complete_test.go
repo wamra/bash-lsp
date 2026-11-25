@@ -400,3 +400,34 @@ func TestCompleteNeverPanics(t *testing.T) {
 		}
 	}
 }
+
+// A function still being typed keeps its locals in view at the cursor, also
+// when only blank lines and comment lines follow.
+func TestCompleteLocalsOfUnterminatedFunction(t *testing.T) {
+	for name, src := range map[string]string{
+		"blank":          "f() {\n local aa\n echo $a▮\n\n",
+		"comment":        "f() {\n local aa\n echo $a▮\n\n# comment\n",
+		"comment spaced": "f() {\n local aa\n echo $a▮  \n  # one\n\n\t# two",
+		"same line":      "f() {\n local aa\n echo $a▮ # note\n",
+	} {
+		_, _, items, _ := compAt(t, map[string]string{"a.sh": src}, "a.sh")
+		if _, ok := has(items, "aa"); !ok {
+			t.Errorf("%s: aa missing from %v", name, labels(items))
+		}
+	}
+	// code after the cursor is not a blank tail: the function is not simply cut off
+	_, _, items, _ := compAt(t, map[string]string{"a.sh": "h() {\n echo $a▮\n}\nf() { local aa; }\n"}, "a.sh")
+	if _, ok := has(items, "aa"); ok {
+		t.Errorf("aa of another function offered: %v", labels(items))
+	}
+}
+
+// `f() local aa=1 b=$a▮ ; echo x`: a function body that is no compound command
+// is a parse error, and code follows the cursor, so the cursor is not at the
+// end of a function still being typed: the local is not in view.
+func TestCompleteLocalsAfterMalformedFunctionHead(t *testing.T) {
+	_, _, items, _ := compAt(t, map[string]string{"a.sh": "f() local aa=1 b=$a▮ ; echo x\n"}, "a.sh")
+	if _, ok := has(items, "aa"); ok {
+		t.Errorf("aa offered: %v", labels(items))
+	}
+}
