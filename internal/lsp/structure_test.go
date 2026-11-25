@@ -385,3 +385,27 @@ func TestSelectionRangeStopsWhenCancelled(t *testing.T) {
 		t.Fatalf("answer %v, error %+v, want RequestCancelled", o.res, o.rerr)
 	}
 }
+
+// A chain cut at the depth cap says so once per session.
+func TestSelectionDepthCapSaysOnce(t *testing.T) {
+	ws := t.TempDir()
+	src := strings.Repeat("( ", 300) + "echo hi" + strings.Repeat(" )", 300) + "\n"
+	writeFile(t, ws, "a.sh", src)
+	c := client(t, ws)
+	c.open("a.sh")
+	at := Position{0, strings.Index(src, "hi")}
+	for i := 0; i < 2; i++ {
+		got := c.selection("a.sh", at)
+		depth := 0
+		for n := &got[0]; n != nil; n = n.Parent {
+			depth++
+		}
+		if depth != 128 {
+			t.Fatalf("chain of %d levels, want 128", depth)
+		}
+	}
+	c.waitLog("selectionRange")
+	if l := c.logsContaining("nested deeper"); len(l) != 1 {
+		t.Fatalf("%d notices, want one: %q", len(l), l)
+	}
+}

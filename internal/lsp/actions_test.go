@@ -363,3 +363,30 @@ func TestFixAllAction(t *testing.T) {
 		t.Error("offered with nothing safe")
 	}
 }
+
+// An inlay-hint answer cut at the cap says so once per session; one that is
+// not cut says nothing.
+func TestInlayHintCapSaysOnce(t *testing.T) {
+	root := t.TempDir()
+	put(t, filepath.Join(root, "big.sh"), "f() { local x=\"$1\"; }\n"+strings.Repeat("f a\n", 5500))
+	put(t, filepath.Join(root, "small.sh"), "f() { local x=\"$1\"; }\nf a\n")
+	userConfig(t, "[inlay_hints]\nparameter_names = true\n")
+	c := client(t, root)
+	c.open("small.sh")
+	c.open("big.sh")
+	if got := c.inlay("small.sh", wholeRange()); len(got) != 1 {
+		t.Fatalf("%d hints in the small file", len(got))
+	}
+	if l := c.logsContaining("inlayHint"); len(l) != 0 {
+		t.Fatalf("notice without a cut: %q", l)
+	}
+	for i := 0; i < 2; i++ {
+		if got := c.inlay("big.sh", wholeRange()); len(got) != 5000 {
+			t.Fatalf("%d hints, want 5000", len(got))
+		}
+	}
+	c.waitLog("inlayHint")
+	if l := c.logsContaining("inlayHint"); len(l) != 1 {
+		t.Fatalf("%d notices, want one: %q", len(l), l)
+	}
+}

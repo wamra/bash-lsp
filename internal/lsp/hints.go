@@ -55,7 +55,11 @@ func (s *server) inlayHint(raw json.RawMessage) (any, *rpcError) {
 	r := tree.Range{Start: f.FromUTF16(p.Range.Start.Line, p.Range.Start.Character),
 		End: f.FromUTF16(p.Range.End.Line, p.Range.End.Character)}
 	conv := f.NewConverter()
-	for _, h := range snap.Hints(path, r, st.SourceTargets, st.ParameterNames) {
+	hints, cut := snap.Hints(path, r, st.SourceTargets, st.ParameterNames)
+	if cut {
+		s.cutNotice("inlayHint: more hints in the range than one answer holds; the rest are left out")
+	}
+	for _, h := range hints {
 		line, col := conv.ToUTF16(h.Pos)
 		x := inlayHint{Position: Position{Line: line, Character: col}, Label: redact.String(h.Label)}
 		if h.Param {

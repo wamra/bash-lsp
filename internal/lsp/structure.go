@@ -205,7 +205,10 @@ func (s *server) selectionRange(raw json.RawMessage) (any, *rpcError) {
 			out = append(out, &selectionRange{Range: Range{Start: pos, End: pos}})
 			continue
 		}
-		chain := snap.SelectionChain(path, f.FromUTF16(pos.Line, pos.Character).Offset)
+		chain, cut := snap.SelectionChain(path, f.FromUTF16(pos.Line, pos.Character).Offset)
+		if cut {
+			s.cutNotice("selectionRange: the code is nested deeper than one chain holds; the outermost levels are left out")
+		}
 		if len(chain) == 0 {
 			out = append(out, &selectionRange{Range: Range{Start: pos, End: pos}})
 			continue

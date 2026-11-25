@@ -169,15 +169,15 @@ const (
 // first, each strictly containing the one before: the name or word part, the
 // word, the command, the statement, the enclosing blocks, the function and the
 // file. Equal ranges collapse. When the nesting is deeper than
-// maxSelectionDepth the outermost levels are dropped.
-func (s *Snapshot) SelectionChain(path string, offset int) []tree.Range {
+// maxSelectionDepth the outermost levels are dropped, and cut is true.
+func (s *Snapshot) SelectionChain(path string, offset int) (chain []tree.Range, cut bool) {
 	file, ok := s.idx[path]
 	if !ok {
-		return nil
+		return nil, false
 	}
 	f := s.facts[file].File
 	if f == nil || f.Root == nil || offset < 0 || offset > len(f.Src) {
-		return nil
+		return nil, false
 	}
 	var out []tree.Range
 	add := func(r tree.Range) {
@@ -193,7 +193,8 @@ func (s *Snapshot) SelectionChain(path string, offset int) []tree.Range {
 		}
 		out = append(out, r)
 	}
-	for n := f.NodeAt(offset); n != nil && len(out) < maxSelectionDepth; n = n.Parent {
+	n := f.NodeAt(offset)
+	for ; n != nil && len(out) < maxSelectionDepth; n = n.Parent {
 		if n.Name != "" && n.NameRange.End.Offset > n.NameRange.Start.Offset && n.NameRange.Contains(offset) {
 			add(n.NameRange)
 		}
@@ -203,10 +204,11 @@ func (s *Snapshot) SelectionChain(path string, offset int) []tree.Range {
 		}
 		add(r)
 	}
+	cut = n != nil
 	if len(out) > maxSelectionDepth {
-		out = out[:maxSelectionDepth]
+		out, cut = out[:maxSelectionDepth], true
 	}
-	return out
+	return out, cut
 }
 
 // trimTerminator cuts the `;` and blanks a statement's range ends with, so a

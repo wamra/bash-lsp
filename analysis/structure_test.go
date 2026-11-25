@@ -69,7 +69,7 @@ func TestFoldsOnLoneCRText(t *testing.T) {
 
 func TestFoldsUnknownPath(t *testing.T) {
 	q := buildMem(t, map[string]string{"a.sh": "x=1\n"})
-	if q.s.Folds("/nope") != nil || q.s.SelectionChain("/nope", 0) != nil || hlOf(q.s, "/nope", 0) != nil || lkOf(q.s, "/nope") != nil {
+	if q.s.Folds("/nope") != nil || chainOf(q.s, "/nope", 0) != nil || hlOf(q.s, "/nope", 0) != nil || lkOf(q.s, "/nope") != nil {
 		t.Fatal("unknown path must answer nothing")
 	}
 }
@@ -80,7 +80,7 @@ func TestSelectionChain(t *testing.T) {
 	src := "f() { echo \"$x\"; }\n"
 	q := buildMem(t, map[string]string{"a.sh": src})
 	p := q.abs("a.sh")
-	chain := q.s.SelectionChain(p, strings.Index(src, "$x")+1)
+	chain := chainOf(q.s, p, strings.Index(src, "$x")+1)
 	var got []string
 	for _, r := range chain {
 		got = append(got, text([]byte(src), r))
@@ -103,7 +103,7 @@ func TestSelectionDepthCapped(t *testing.T) {
 	mk := func(n int) string { return strings.Repeat("( ", n) + "echo hi" + strings.Repeat(" )", n) + "\n" }
 	src := mk(2000)
 	q := buildMem(t, map[string]string{"a.sh": src})
-	chain := q.s.SelectionChain(q.abs("a.sh"), strings.Index(src, "hi"))
+	chain := chainOf(q.s, q.abs("a.sh"), strings.Index(src, "hi"))
 	if len(chain) != maxSelectionDepth {
 		t.Fatalf("%d levels, want %d", len(chain), maxSelectionDepth)
 	}
@@ -391,5 +391,25 @@ func TestShebangRefusesNetworkForms(t *testing.T) {
 		if l, ok := q.s.Shebang(q.abs("a.sh")); ok {
 			t.Errorf("#!%s: link candidate %+v", first, l)
 		}
+	}
+}
+
+func chainOf(s *Snapshot, path string, off int) []tree.Range {
+	c, _ := s.SelectionChain(path, off)
+	return c
+}
+
+// The cut is reported when the nesting is deeper than maxSelectionDepth.
+func TestSelectionDepthReportsTheCut(t *testing.T) {
+	mk := func(n int) string { return strings.Repeat("( ", n) + "echo hi" + strings.Repeat(" )", n) + "\n" }
+	deep := mk(300)
+	q := buildMem(t, map[string]string{"a.sh": deep})
+	if chain, cut := q.s.SelectionChain(q.abs("a.sh"), strings.Index(deep, "hi")); len(chain) != maxSelectionDepth || !cut {
+		t.Fatalf("%d levels, cut %v, want %d and a cut", len(chain), cut, maxSelectionDepth)
+	}
+	shallow := mk(10)
+	q = buildMem(t, map[string]string{"a.sh": shallow})
+	if chain, cut := q.s.SelectionChain(q.abs("a.sh"), strings.Index(shallow, "hi")); len(chain) == 0 || cut {
+		t.Fatalf("%d levels, cut %v for a shallow file", len(chain), cut)
 	}
 }
