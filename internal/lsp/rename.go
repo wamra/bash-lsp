@@ -279,7 +279,7 @@ func (s *server) buildRenameEdit(snap *analysis.Snapshot, plan *analysis.RenameP
 	caps := s.caps()
 	annotate := caps.DocumentChanges && caps.ChangeAnnotations && (len(plan.Excluded) > 0 || len(plan.Others) > 0)
 	note, label := s.renameNote(snap, plan)
-	if !annotate && (len(plan.Excluded) > 0 || len(plan.Warnings) > 0) {
+	if !annotate && (len(plan.Excluded) > 0 || len(plan.Warnings) > 0 || len(plan.Others) > 0) {
 		s.c.notify("window/showMessage", showMessageParams{Type: messageTypeWarning, Message: note})
 	}
 	cs := converters{}

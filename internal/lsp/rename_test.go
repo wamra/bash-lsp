@@ -639,3 +639,29 @@ func TestRenameWarningsAloneAreAMessage(t *testing.T) {
 		})
 	}
 }
+
+// A client without annotation support still hears of another symbol of the
+// same name that the rename leaves alone, even when nothing else is unsure.
+func TestRenameShowMessageNamesOtherSymbolsWithoutAnnotations(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "a.sh", "f() { :; }\nf\n")
+	writeFile(t, root, "b.sh", "f() { :; }\nf\n")
+	cfg := renameCaps(true, true, false)
+	cfg.root = root
+	c := clientWith(t, cfg)
+	c.open("a.sh")
+	res := c.renameAt("a.sh", Position{0, 0}, "g")
+	if got := c.editLines(res); strings.Join(got, " ") != "a.sh:1 a.sh:2" {
+		t.Fatalf("edits %v", got)
+	}
+	if len(c.shown) != 1 {
+		t.Fatalf("%d messages: %s", len(c.shown), c.shown)
+	}
+	var m struct {
+		Type    int    `json:"type"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(c.shown[0], &m); err != nil || m.Type != 2 || !strings.Contains(m.Message, "b.sh:1") || !strings.Contains(m.Message, "other symbol") {
+		t.Fatalf("%v %s", err, c.shown[0])
+	}
+}
