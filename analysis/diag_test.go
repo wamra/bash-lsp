@@ -637,3 +637,18 @@ func numbered(size int, pre, unit string) string {
 	}
 	return sb.String()
 }
+
+// bash -n exits 0 for a here-document that runs to the end of the file (bash
+// warns when it runs it), so the finding is a warning, not an error.
+func TestUnclosedHeredocIsAWarning(t *testing.T) {
+	src := "cat <<EOT\nnever closed\n"
+	ds := ofRule(diagsIn(map[string]string{"x.sh": src}, "x.sh"), "WB1001")
+	if len(ds) != 1 || ds[0].Severity != SevWarning || !strings.Contains(ds[0].Message, "unclosed here-document") {
+		t.Fatalf("%s", describe(src, ds))
+	}
+	// another syntax error in the same file stays an error
+	src = "echo \"abc\nf() { :; }\n"
+	if ds := ofRule(diagsIn(map[string]string{"y.sh": src}, "y.sh"), "WB1001"); len(ds) != 1 || ds[0].Severity != SevError {
+		t.Fatalf("%s", describe(src, ds))
+	}
+}

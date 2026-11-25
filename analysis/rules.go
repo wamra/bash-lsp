@@ -92,6 +92,10 @@ func lineEnd(f *tree.File, p tree.Pos) tree.Pos {
 	return f.PosAt(e)
 }
 
+// unclosedHeredoc starts the parser's message for a here-document with no
+// end word.
+const unclosedHeredoc = "unclosed here-document"
+
 // syntax reports the file's syntax errors (WB1001), recovered internal
 // errors (WB1003), error gaps that hold no error (WB1001) and resync limits
 // (WB1005). An error inside a gap is ranged from the gap's start to the end
@@ -133,7 +137,10 @@ func (c *diagCtx) syntax() {
 		if e.Internal { // the panic text is for the log (the server writes it), not the user
 			msg = fmt.Sprintf("internal parser error; this file is analysed up to line %d", e.Range.Start.Line)
 		}
-		c.add(rule, r, msg)
+		d := c.add(rule, r, msg)
+		if !e.Internal && strings.HasPrefix(msg, unclosedHeredoc) {
+			d.Severity = SevWarning // bash -n accepts a here-document that runs to the end of the file
+		}
 	}
 	for i, g := range gaps {
 		if !covered[i] {
