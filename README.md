@@ -181,32 +181,66 @@ name, which are not touched. `warn` lines say what the analysis could not see
 with 1-based lines and UTF-16 columns, the bytes `preview_rename` returns over
 MCP. Each list is cut at 10,000 records with `"truncated": true`.
 
-Exit codes of `rename`: 0 done, 1 failure (a partial apply included), 2 usage,
-4 refused. A refusal prints `refused: CODE: reason` on standard error, then one
-`site  path:line:col` line for each place the reason is about, and changes
-nothing. With `--json` standard output stays empty on a refusal.
+Exit codes of `rename`: 0 done, 1 failure (a failed write, rolled back or not),
+2 usage, 4 refused (every refusal, an outside-root argument included). A
+refusal prints `refused: CODE: reason` on standard error, then one
+`site  path:line:col` line for each place the reason is about (at most about
+4,000 bytes of text, whole lines), and changes nothing. With `--json`
+standard output carries the refusal as `{"applied": false, "refused": {...}}`.
 
 ### Apply
 
-`--apply` writes only when every file still holds the bytes the plan was built
-from, and it refuses the whole rename, writing nothing, when any file of the
-plan:
+`--apply` renames by name only when no other symbol has that name: if the plan
+has `other` lines it refuses with `ambiguous-apply` (exit 4, nothing written,
+the plan printed) and asks for the `path:line:col` of the one to rename.
+Preview by name still works and shows them. (Without this, running the same
+command twice could rename the second symbol of the name.)
 
-- lies outside the root once links are resolved (`outside-root`);
+It writes only when every file still holds the bytes the plan was built from,
+and refuses the whole rename, writing nothing, when any file of the plan:
+
+- lies outside the root once links are resolved (`outside-root`; so does a
+  `path:line:col` argument that names a file outside it);
 - is not a regular file, a symbolic link included (`not-regular-file`);
-- cannot be written by this user (`read-only`);
+- has a setuid, setgid or sticky bit (`special-mode`), which a rewrite would drop;
+- has more than one hard link (`hard-link`), which a rewrite would split; this and the owner check need a Unix system and are skipped on Windows;
+- is owned by another user than the one running the command, unless that is root (`not-owner`): ownership is never changed silently;
+- cannot be written, or lies in a directory that takes no new file (`read-only`);
 - holds a NUL byte (`nul-byte`) or text that is not valid UTF-8 (`invalid-utf8`);
-- differs from the text the plan was built from, because it was edited since the workspace was read (`stale-file`).
+- differs from the text the plan was built from (`stale-file`; the comparison is of bytes, not of modification times: a file rewritten with the same bytes is not stale).
 
-Then it writes each new text to a temporary file beside its target (same mode),
-syncs it, checks every file once more, and renames the temporary files over
-their targets in path order. If a temporary file cannot be written, nothing is
-replaced. If a rename fails, the files before it stay replaced, and the error
-prints `written:` and `not written:` with the files of each kind (exit 1);
-temporary files are removed. A change made to a file between the last check and
-its rename is lost, as with `fmt -w`. Line endings are kept: only the bytes of
-the name change. The sites in `skip` are printed after an apply as well, because
-they may still need a hand edit.
+A preview flags the files an apply would refuse for a local reason with a
+`warn  apply-would-refuse: CODE: file` line (and the same warning in `--json`
+and in `preview_rename`); a change made after the preview shows only when the
+apply runs.
+
+What a rewrite keeps and what it does not: the permission bits (rwx, nothing
+else) are kept; the owner and group are put back when they differ, or the
+rename is refused (`not-owner`); line endings are kept (only the bytes of the
+name change). Extended attributes, ACLs, the birth time and hard links are not
+kept or cannot be detected, so a file with several hard links is refused; an
+ACL or attribute set on a file is lost with the replaced inode.
+
+The write: each new text is written to a temporary file beside its target and
+synced, and so is the original text of every file (for the roll back); every
+file is checked once more, and again right before its own rename; the
+temporary files are then renamed over their targets in path order and the
+directories are synced. If a temporary file cannot be written nothing is
+replaced. If a rename fails, the files already replaced are put back from the
+saved originals and every temporary file is removed; the error prints `rolled
+back:` and `not written:` (exit 1) and the plan is printed on standard output
+all the same. If a roll back step fails too, `written:` lists the files that
+still hold the new name and the command that undoes them is printed. What is
+not covered: a file changed by another program after its last check and before
+its rename is replaced by the new text, and the roll back then restores the
+text of the snapshot, not that change; a definition added in a file the plan
+does not edit after the snapshot was read is not seen. The sites in `skip` are
+printed after an apply as well, because they may still need a hand edit.
+
+With `--json`, an apply prints the plan plus `"applied"` and `"written"`; a
+failed apply or a refusal prints the same with `"applied": false`, `"refused"`
+(`code`, `reason`, `sites`), and `"rolled_back"`, `"not_written"` and `"error"`
+for a failed write, while standard error keeps the text.
 
 ### Refusals
 
@@ -220,7 +254,7 @@ the `isError` result of `preview_rename`.
 | `candidate-site` | the position is a site that may or may not name the symbol (a `"$cmd"` call, an `eval` string); it is not renamed, so it cannot be the start of a rename | `rename a.sh:2:5 other` on `cmd=greet`, line 2 |
 | `ambiguous-symbol` | the name or position is bound to several symbols, or several functions of the name are equally widely visible, or more than 256 are; rename one by its `path:line:col` | `rename f g` with `f` defined in `a.sh` and `b.sh` |
 | `invalid-name` | the new name is not `[A-Za-z_][A-Za-z0-9_]*` | `rename f 'a b'` |
-| `reserved-name` | the new name is a shell builtin or keyword | `rename f if` |
+| `reserved-name` | the new name is a shell builtin or keyword. For a variable the reason says so differently: bash accepts a builtin or reserved word as a variable name (checked on bash 3.2.57), and the rename is refused as a precaution | `rename f if` |
 | `name-conflict` | the new name is already a name in the scope of the rename, is called as a command in view, is a special shell variable (`IFS`, `RANDOM`, `PATH`...), appears in an `eval` or `trap` string an edited function reaches, or would join the variable to a local that a caller sees under that name. Renaming a special variable is refused too | `rename f g` with `g` defined |
 | `dynamic-scope` | bash resolves a variable by the call stack, so the rename could change which variable a use reads: a global renamed while a function that declares a local of that name reaches a use of it, a local that a callee reads, a prefix assignment (`x=1 cmd`) whose command reads the name, a function that declares the name and makes a call the analysis cannot follow, or a call graph too large to check | `rename a.sh:1:1 y` on `x=1; show() { echo "$x"; }; run() { local x=2; show; }` |
 | `name-reference` | the name is written where the analysis finds no use of it: `unset`, `declare -n`, `export -f`, `type`, `command -v`, `test -v`, `${!name}`, `complete -F`, `PROMPT_COMMAND`, a name passed to a function that takes names, or a word of an `eval` or `trap` string | `rename f g` with `unset -f f` in the file |
@@ -228,11 +262,17 @@ the `isError` result of `preview_rename`.
 | `skipped-file` | a file in view was skipped for its size and may use the name | `rename f h` with `source ./big.sh`, `big.sh` over `[limits] max_file_bytes` |
 | `too-many-sites` | more than 100,000 sites to edit or confirm by hand | `rename f h` with 100,001 calls of `f` |
 | `no-op` | the new name is the old name | `rename f f` |
+| `ambiguous-apply` | `--apply` by name while same-named other symbols exist; apply by `path:line:col` | `rename build_release ship --apply` on the corpus (`orphan.sh` also defines it) |
+| `outside-root` | the file part of the argument, or a file of the plan, lies outside the root once links are resolved | `rename ../x.sh:1:1 h` |
+| `read-only` | a file or its directory cannot be written | `rename f h --apply` with `chmod 444 a.sh` |
+| `invalid-utf8` | an edited file is not valid UTF-8 | a file holding a Latin-1 `caf\xe9` in a comment |
+| `hard-link`, `special-mode`, `not-owner`, `nul-byte`, `not-regular-file`, `stale-file` | the apply checks above | a second name for the file (`ln a.sh b.sh`); `chmod u+s a.sh`; a file of another user; a NUL byte; a link in place of the file; an edit after the preview |
 
-`--apply` adds six codes, listed under Apply: `stale-file`, `not-regular-file`,
-`outside-root`, `read-only`, `nul-byte` and `invalid-utf8`. They print in the
-same `refused:` form with exit 4; `preview_rename` never writes and never
-raises them.
+The apply checks (`stale-file`, `not-regular-file`, `outside-root`,
+`read-only`, `nul-byte`, `invalid-utf8`, `hard-link`, `special-mode`,
+`not-owner`) and `ambiguous-apply` come from `--apply` only; they print in the
+same `refused:` form with exit 4. `preview_rename` never writes and never
+raises them; it flags the local ones as `apply-would-refuse` warnings.
 
 `inexact-name` is not a refusal: it is the reason of a `skip` line, a site
 whose text is not exactly the name (`"f"`, `\f`, `f""`). Bash runs the

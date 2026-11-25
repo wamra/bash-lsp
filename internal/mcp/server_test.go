@@ -709,6 +709,9 @@ func TestMCPPreviewRenameWritesNothing(t *testing.T) {
 		call(5, "preview_rename", map[string]any{"symbol": "", "new_name": "h"}),
 		call(6, "preview_rename", map[string]any{"symbol": "a.sh:2:1", "new_name": strings.Repeat("x", 5000)}),
 		call(7, "preview_rename", map[string]any{"symbol": "f", "new_name": "h\x00"}),
+		call(8, "preview_rename", map[string]any{"symbol": "f\x00", "new_name": "h"}),
+		call(9, "preview_rename", map[string]any{"symbol": strings.Repeat("f", 5000), "new_name": "h"}),
+		call(10, "preview_rename", map[string]any{"symbol": "f", "new_name": ""}),
 	).replies(t)
 	if tr := result(t, rs[0]); tr.IsError || len(tr.Doc["edits"].([]any)) != 3 || len(tr.Doc["excluded"].([]any)) != 2 || tr.Doc["generation"] == nil {
 		t.Errorf("preview: %v %s", tr.IsError, tr.Text)

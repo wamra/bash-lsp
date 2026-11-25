@@ -3,6 +3,8 @@ package query
 import (
 	"errors"
 	"fmt"
+	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -147,7 +149,7 @@ func TestPreviewRenameRefusal(t *testing.T) {
 		t.Errorf("err %v", err)
 	}
 	// a file part outside the root is refused before the snapshot is asked
-	if _, err := PreviewRename(s, root, "../x.sh:1:1", "h", 0); err == nil || errors.As(err, &r) {
+	if _, err := PreviewRename(s, root, "../x.sh:1:1", "h", 0); !errors.As(err, &r) || r.Code != "outside-root" || !strings.Contains(r.Error(), "outside the root") {
 		t.Errorf("err %v", err)
 	}
 }
@@ -163,5 +165,107 @@ func TestPreviewRenameByPosition(t *testing.T) {
 	}
 	if _, err := PreviewRename(s, root, "a.sh:99:1", "w", 0); err == nil {
 		t.Error("a line past the end is accepted")
+	}
+}
+
+func TestRefusalTextRedactsAndStaysOnOneLine(t *testing.T) {
+	const tok = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+	s, root := world(t, map[string]string{"a.sh": "f() { :; }\nf\n"})
+	for _, c := range [][2]string{{"f", tok + "!"}, {tok, "h"}, {"../" + tok + ".sh:1:1", "h"}} {
+		_, err := PreviewRename(s, root, c[0], c[1], 0)
+		var r *RenameRefusedError
+		if !errors.As(err, &r) {
+			t.Fatalf("%v: %v", c, err)
+		}
+		if strings.Contains(r.Error(), "ghp_") || strings.Contains(r.Error(), tok[:20]) {
+			t.Errorf("%v: secret in %q", c, r.Error())
+		}
+	}
+	e := &RenameRefusedError{Code: "name-conflict", Reason: "line one\nline two\r " + tok, Sites: []Site{{"a.sh", 1, 2}}}
+	if got := e.Error(); strings.Count(got, "\n") != 1 || strings.Contains(got, "ghp_") || !strings.HasSuffix(got, "\nsite  a.sh:1:2") {
+		t.Errorf("%q", got)
+	}
+}
+
+func TestRefusalTextDropsWholeSiteLines(t *testing.T) {
+	e := &RenameRefusedError{Code: "name-conflict", Reason: "r"}
+	for i := 0; i < 1000; i++ {
+		e.Sites = append(e.Sites, Site{"some/long/path/to/a/file.sh", i + 1, 1})
+	}
+	got := e.Error()
+	if len(got) > 4100 {
+		t.Fatalf("%d bytes", len(got))
+	}
+	lines := strings.Split(got, "\n")
+	for _, l := range lines[1 : len(lines)-1] {
+		if !strings.HasPrefix(l, "site  some/long/path/to/a/file.sh:") || !strings.HasSuffix(l, ":1") && !strings.Contains(l, ":1") {
+			t.Fatalf("a site line is cut: %q", l)
+		}
+	}
+	if last := lines[len(lines)-1]; !strings.HasPrefix(last, "more  ") {
+		t.Errorf("last line %q", last)
+	}
+}
+
+func TestRefusalDoesNotRepeatItsCode(t *testing.T) {
+	e := &RenameRefusedError{Code: "dynamic-scope", Reason: "dynamic scope: a function"}
+	if got := e.Error(); got != "refused: dynamic-scope: a function" {
+		t.Errorf("%q", got)
+	}
+}
+
+func TestReservedNameReasonForAVariable(t *testing.T) {
+	s, root := world(t, map[string]string{"a.sh": "f() {\n  local v=1\n  echo \"$v\"\n}\ng() { :; }\n"})
+	_, err := PreviewRename(s, root, "a.sh:2:9", "if", 0)
+	var r *RenameRefusedError
+	if !errors.As(err, &r) || r.Code != "reserved-name" || !strings.Contains(r.Reason, "accepts it as a variable name") {
+		t.Fatalf("variable: %v", err)
+	}
+	_, err = PreviewRename(s, root, "g", "if", 0)
+	if !errors.As(err, &r) || r.Code != "reserved-name" || !strings.Contains(r.Reason, "builtin or keyword") {
+		t.Fatalf("function: %v", err)
+	}
+}
+
+func TestCheckFileMeta(t *testing.T) {
+	s, root := world(t, map[string]string{"a.sh": "f() { :; }\n"})
+	_ = s
+	p := root + "/a.sh"
+	if _, issue := CheckFileMeta(root, p, "a.sh"); issue != nil {
+		t.Fatalf("%+v", issue)
+	}
+	old := effectiveUID
+	defer func() { effectiveUID = old }()
+	effectiveUID = func() int { return os.Geteuid() + 1 }
+	if _, issue := CheckFileMeta(root, p, "a.sh"); issue == nil || (issue.Code != IssueNotOwner && runtime.GOOS != "windows") {
+		t.Errorf("another user's file: %+v", issue)
+	}
+	effectiveUID = func() int { return 0 } // root may rewrite and chown
+	if _, issue := CheckFileMeta(root, p, "a.sh"); issue != nil {
+		t.Errorf("root: %+v", issue)
+	}
+	effectiveUID = old
+	if err := os.Link(p, root+"/b.sh"); err == nil {
+		if _, issue := CheckFileMeta(root, p, "a.sh"); issue == nil || issue.Code != IssueHardLink {
+			t.Errorf("hard link: %+v", issue)
+		}
+	}
+}
+
+func TestCheckFileBytes(t *testing.T) {
+	for _, c := range []struct {
+		b, want []byte
+		code    string
+	}{
+		{[]byte("a\x00"), nil, IssueNUL},
+		{[]byte("a\xff"), nil, IssueInvalidUTF8},
+		{[]byte("a"), []byte("b"), IssueStale},
+		{[]byte("a"), []byte("a"), ""},
+		{[]byte("a"), nil, ""},
+	} {
+		got := CheckFileBytes("a.sh", c.b, c.want)
+		if (got == nil) != (c.code == "") || got != nil && got.Code != c.code {
+			t.Errorf("%q %q: %+v want %q", c.b, c.want, got, c.code)
+		}
 	}
 }

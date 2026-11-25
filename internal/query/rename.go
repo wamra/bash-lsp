@@ -3,6 +3,7 @@ package query
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -69,19 +70,33 @@ func (d *RenameDoc) Cut(k int) any {
 }
 
 // RenameRefusedError is a rename the analysis refuses, or an apply that finds
-// the files no longer match the plan. Error is the text both the command line
-// and the MCP tool print: "refused: <code>: <reason>", then one "site  path:line:col"
-// line per site the reason is about.
+// the files unfit to write. Error is the text both the command line and the
+// MCP tool print: "refused: <code>: <reason>", then one "site  path:line:col"
+// line per site the reason is about. The text is redacted, kept to one line
+// per record, and held to maxRefusalText bytes by dropping whole site lines.
 type RenameRefusedError struct {
-	Code, Reason string
-	Sites        []Site
+	Code   string `json:"code"`
+	Reason string `json:"reason"`
+	Sites  []Site `json:"sites"`
 }
 
+// maxRefusalText bounds Error().
+const maxRefusalText = 4000
+
 func (e *RenameRefusedError) Error() string {
+	// the engine words some reasons "dynamic scope: ..." under the code
+	// dynamic-scope: say it once
+	reason := strings.TrimPrefix(e.Reason, strings.ReplaceAll(e.Code, "-", " ")+": ")
+	head := "refused: " + e.Code + ": " + clipRunes(oneLine(redact.String(reason)), 1000)
 	var b strings.Builder
-	fmt.Fprintf(&b, "refused: %s: %s", e.Code, oneLine(redact.String(e.Reason)))
-	for _, s := range e.Sites {
-		fmt.Fprintf(&b, "\nsite  %s:%d:%d", s.Path, s.Line, s.Col)
+	b.WriteString(head)
+	for i, s := range e.Sites {
+		line := fmt.Sprintf("\nsite  %s:%d:%d", oneLine(redact.String(s.Path)), s.Line, s.Col)
+		if b.Len()+len(line) > maxRefusalText {
+			fmt.Fprintf(&b, "\nmore  %d sites are not listed", len(e.Sites)-i)
+			break
+		}
+		b.WriteString(line)
 	}
 	return b.String()
 }
@@ -114,7 +129,7 @@ func safeText(s string, n int) string { return clipRunes(redact.String(s), n) }
 // newName. A refusal of the analysis is a *RenameRefusedError.
 func PlanRename(s *analysis.Snapshot, root, spec, newName string) (*analysis.RenamePlan, error) {
 	if err := CheckInside(root, spec); err != nil {
-		return nil, err
+		return nil, &RenameRefusedError{Code: IssueOutsideRoot, Reason: err.Error()}
 	}
 	var plan *analysis.RenamePlan
 	path, off, ok, err := s.Position(spec)
@@ -130,7 +145,15 @@ func PlanRename(s *analysis.Snapshot, root, spec, newName string) (*analysis.Ren
 		var r *analysis.RenameRefusal
 		if errors.As(err, &r) {
 			b := NewBuilder(s, root)
-			out := &RenameRefusedError{Code: r.Code, Reason: r.Reason}
+			out := &RenameRefusedError{Code: r.Code, Reason: r.Reason, Sites: []Site{}}
+			if r.Code == analysis.RefuseReserved && ok {
+				// bash accepts a builtin or reserved word as the name of a
+				// variable (bash 3.2.57: `if=2; echo $if` prints 2); the
+				// rename is refused all the same
+				if sym, found := s.SymbolAt(path, off); found && sym.Kind == analysis.DeclVariable {
+					out.Reason = newName + " is the name of a bash builtin or reserved word; bash accepts it as a variable name, but a rename to it is refused as a precaution"
+				}
+			}
 			for _, l := range r.Sites {
 				out.Sites = append(out.Sites, b.Site(l))
 			}
@@ -171,7 +194,8 @@ func RenameDocOf(s *analysis.Snapshot, root string, plan *analysis.RenamePlan, m
 	for _, l := range cutTo(plan.Others, max, &cut) {
 		d.Others = append(d.Others, b.Site(l))
 	}
-	for _, w := range cutTo(plan.Warnings, max, &cut) {
+	warnings := append(slices.Clone(plan.Warnings), applyWarnings(s, root, plan)...)
+	for _, w := range cutTo(warnings, max, &cut) {
 		d.Warnings = append(d.Warnings, safeText(w, maxRenameWarning))
 	}
 	d.Truncated = cut
@@ -193,4 +217,39 @@ func PreviewRename(s *analysis.Snapshot, root, spec, newName string, max int) (*
 		return nil, err
 	}
 	return RenameDocOf(s, root, plan, max), nil
+}
+
+// maxApplyChecked is the most edited files a preview looks at for the
+// warning that an apply would refuse them.
+const maxApplyChecked = 200
+
+// applyWarnings lists, as "apply-would-refuse: CODE: file" warnings, the
+// edited files that `rename --apply` would refuse for a reason a local check
+// finds: the checks of CheckFileMeta, and NUL bytes and invalid UTF-8 in the
+// text the plan was built from. A file changed since is only found by the
+// apply itself.
+func applyWarnings(s *analysis.Snapshot, root string, plan *analysis.RenamePlan) []string {
+	b := NewBuilder(s, root)
+	var out []string
+	last, n := "", 0
+	for _, e := range plan.Edits {
+		if e.Path == last {
+			continue
+		}
+		last = e.Path
+		if n++; n > maxApplyChecked {
+			break
+		}
+		rel := b.Rel(e.Path)
+		_, issue := CheckFileMeta(root, e.Path, rel)
+		if issue == nil {
+			if ff := s.Facts(e.Path); ff != nil && ff.File != nil {
+				issue = CheckFileBytes(rel, ff.File.Src, nil)
+			}
+		}
+		if issue != nil && issue.Code != IssueStale {
+			out = append(out, fmt.Sprintf("%s: %s: %s", warnApplyWouldFail, issue.Code, rel))
+		}
+	}
+	return out
 }

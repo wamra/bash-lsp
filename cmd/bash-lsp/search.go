@@ -71,6 +71,6 @@ func cmdSearch(args []string, stdout, stderr io.Writer) int {
 }
 
 func usageErrorOf(stderr io.Writer, usage, msg string) int {
-	fmt.Fprintf(stderr, "bash-lsp: %s\n%s\n", msg, usage)
+	fmt.Fprint(stderr, redact.String(fmt.Sprintf("bash-lsp: %s\n%s\n", msg, usage)))
 	return 2
 }

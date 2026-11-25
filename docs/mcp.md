@@ -22,7 +22,7 @@ Standard output carries JSON-RPC messages, one per line, and nothing else. Log l
 | `get_index_status` | none | generation, file counts by dialect, skipped files, limits met |
 | `search_code` | `text` | native name matches plus code-index full-text hits |
 | `get_diagnostics` | `paths` (optional) | native findings; ShellCheck is not run here. Fields are `results`, `end_line` and `end_col`; `bash-lsp check --format json` prints `diagnostics`, `endLine`, `endCol` and `fixes` instead |
-| `preview_rename` | `symbol`, `new_name` | the plan of a rename: `edits`, `excluded` (sites left alone, with how they resolved, why, and their text redacted and cut to 200 bytes), `others`, `warnings`. A refusal is an `isError` result whose text starts `refused: CODE: reason` followed by `site  path:line:col` lines; the codes are in the README section "Rename". It never writes: applying is `bash-lsp rename --apply` |
+| `preview_rename` | `symbol`, `new_name` | the plan of a rename: `edits`, `excluded` (sites left alone, with how they resolved, why, and their text redacted and cut to 200 bytes), `others`, `warnings`. A refusal is an `isError` result whose text starts `refused: CODE: reason` followed by `site  path:line:col` lines; the codes are in the README section "Rename". Files an apply would refuse for a local reason show as `apply-would-refuse: CODE: file` warnings. It never writes: applying is `bash-lsp rename --apply` |
 
 A symbol is a function name, a root-relative file path, or `path:line:col` with a UTF-16 column, as the other answers print positions. A name defined in several files is refused with the list of `path:line:col` specs that tell the definitions apart.
 

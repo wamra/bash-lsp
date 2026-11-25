@@ -1,11 +1,11 @@
 package main
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"unicode/utf8"
 
@@ -23,10 +23,18 @@ const exitRefused = 4
 
 // renameHooks let a test change the disk between the steps of an apply.
 type renameHooks struct {
-	afterPlan    func() // the plan is built, nothing is checked yet
-	afterChecks  func() // every file passed its checks, nothing is staged yet
-	afterStaging func() // every file is staged, none is checked again
-	beforeRename func() // every file is staged and checked again, none replaced
+	afterPlan    func()                      // the plan is built, nothing is checked yet
+	afterChecks  func()                      // every file passed its checks, nothing is staged yet
+	afterStaging func()                      // every file is staged, none is checked again
+	beforeRename func()                      // every file is staged and checked again, none replaced
+	rename       func(from, to string) error // replaces os.Rename, for the files and for the roll back
+}
+
+func (h *renameHooks) move(from, to string) error {
+	if h.rename != nil {
+		return h.rename(from, to)
+	}
+	return os.Rename(from, to)
 }
 
 var applyHooks = &renameHooks{}
@@ -86,10 +94,36 @@ func parseRenameArgs(args []string) (renameOpts, error) {
 	return o, nil
 }
 
+// renameResult is the JSON of `rename --apply` and of a rename that failed
+// under --json: the plan when there is one, whether the files were written,
+// and what went wrong.
+type renameResult struct {
+	*query.RenameDoc
+	Applied    bool                      `json:"applied"`
+	Written    []string                  `json:"written"`
+	RolledBack []string                  `json:"rolled_back,omitempty"`
+	NotWritten []string                  `json:"not_written,omitempty"`
+	Refused    *query.RenameRefusedError `json:"refused,omitempty"`
+	Error      string                    `json:"error,omitempty"`
+}
+
+func say(w io.Writer, format string, args ...any) {
+	fmt.Fprint(w, redact.String(fmt.Sprintf(format, args...)))
+}
+
+func printJSON(w io.Writer, v any) int {
+	b, err := query.Marshal(v)
+	if err != nil {
+		return 1
+	}
+	w.Write(redact.JSON(b))
+	return 0
+}
+
 // cmdRename plans the rename of a function or variable and prints the plan;
 // with --apply it then rewrites the files. The plan is built from the snapshot
 // of the workspace; nothing is written unless every file still holds the bytes
-// the plan was built from.
+// the plan was built from, and a failure while writing is rolled back.
 func cmdRename(args []string, stdout, stderr io.Writer) int {
 	o, err := parseRenameArgs(args)
 	if err != nil {
@@ -102,53 +136,100 @@ func cmdRename(args []string, stdout, stderr io.Writer) int {
 	snap, root := ws.Snapshot(), ws.Root()
 	plan, err := query.PlanRename(snap, root, o.spec, o.newName)
 	if err != nil {
+		var ref *query.RenameRefusedError
+		if o.json && errors.As(err, &ref) {
+			printJSON(stdout, renameResult{Refused: ref})
+		}
 		return failRename(stderr, err)
 	}
 	doc := query.RenameDocOf(snap, root, plan, 0)
-	var wrote []string
+	res := renameResult{RenameDoc: doc, Written: []string{}}
 	if o.apply {
-		applyHooks.run(applyHooks.afterPlan)
-		if wrote, err = applyRename(snap, root, plan); err != nil {
-			return failRename(stderr, err)
+		_, _, isPosition, _ := snap.Position(o.spec)
+		if !isPosition && len(doc.Others) > 0 {
+			// the name alone cannot tell which of the same-named symbols
+			// was meant: the user said it by position, or nothing is written
+			err = &query.RenameRefusedError{Code: "ambiguous-apply", Sites: doc.Others, Reason: fmt.Sprintf(
+				"%d other symbols are also named %s and would stay; apply by path:line:col of the one to rename (preview by name shows them)", len(doc.Others), doc.Old)}
+		} else {
+			applyHooks.run(applyHooks.afterPlan)
+			var wrote []string
+			if wrote, err = applyRename(snap, root, plan); err == nil {
+				res.Applied, res.Written = true, wrote
+				if o.json {
+					return printJSON(stdout, res)
+				}
+				printPlan(stdout, doc)
+				for _, w := range wrote {
+					say(stdout, "wrote  %s\n", w)
+				}
+				return cut(stderr, doc)
+			}
 		}
+		// a failed apply still shows the plan
+		var ref *query.RenameRefusedError
+		var part *applyFailure
+		switch {
+		case errors.As(err, &part):
+			res.Written, res.RolledBack, res.NotWritten = part.written, part.rolledBack, part.notWritten
+			res.Error = redact.String(part.err.Error())
+		case errors.As(err, &ref):
+			res.Refused = ref
+		default:
+			res.Error = redact.String(err.Error())
+		}
+		if res.Written == nil {
+			res.Written = []string{}
+		}
+		if o.json {
+			printJSON(stdout, res)
+		} else {
+			printPlan(stdout, doc)
+		}
+		return failRename(stderr, err)
 	}
 	if o.json {
-		b, err := query.Marshal(doc)
-		if err != nil {
-			return fail(stderr, err)
-		}
-		stdout.Write(redact.JSON(b))
-		return 0
+		return printJSON(stdout, doc)
 	}
+	printPlan(stdout, doc)
+	return cut(stderr, doc)
+}
+
+func printPlan(stdout io.Writer, doc *query.RenameDoc) {
 	for _, l := range renameLines(doc) {
-		fmt.Fprintln(stdout, redact.String(l))
+		say(stdout, "%s\n", l)
 	}
-	for _, w := range wrote {
-		fmt.Fprintf(stdout, "wrote  %s\n", w)
-	}
+}
+
+func cut(stderr io.Writer, doc *query.RenameDoc) int {
 	if doc.Truncated {
 		fmt.Fprintf(stderr, "bash-lsp: the answer was cut (at most %d records per list); --json is cut the same way\n", query.MaxResults)
 	}
 	return 0
 }
 
-// failRename reports an error of the rename: a refusal is exit 4 and prints
-// its text as is, a partial write exit 1 with the files of both kinds named,
-// anything else exit 1.
+// failRename reports an error of the rename on standard error: a refusal is
+// exit 4 and prints its text; a failed write exit 1 with the files of each
+// kind named (and, when the roll back did not finish, the command that
+// reverses what is left); anything else exit 1.
 func failRename(stderr io.Writer, err error) int {
 	var ref *query.RenameRefusedError
 	var part *applyFailure
 	switch {
-	case errors.As(err, &ref):
-		fmt.Fprintln(stderr, ref.Error())
-		return exitRefused
 	case errors.As(err, &part):
-		fmt.Fprintf(stderr, "bash-lsp: rename: %v\n", part.err)
-		if len(part.written) > 0 {
-			fmt.Fprintf(stderr, "written: %s\n", strings.Join(part.written, ", "))
+		say(stderr, "bash-lsp: rename: %v\n", part.err)
+		if len(part.rolledBack) > 0 {
+			say(stderr, "rolled back: %s\n", strings.Join(part.rolledBack, ", "))
 		}
-		fmt.Fprintf(stderr, "not written: %s\n", strings.Join(part.notWritten, ", "))
+		if len(part.written) > 0 {
+			say(stderr, "written: %s\n", strings.Join(part.written, ", "))
+			say(stderr, "the roll back did not finish: these files still hold the new name. To undo it: %s\n", part.reverse)
+		}
+		say(stderr, "not written: %s\n", strings.Join(part.notWritten, ", "))
 		return 1
+	case errors.As(err, &ref):
+		say(stderr, "%s\n", ref.Error())
+		return exitRefused
 	}
 	return failQuery(stderr, err)
 }
@@ -161,7 +242,13 @@ func renameLines(d *query.RenameDoc) []string {
 		out = append(out, fmt.Sprintf("edit  %s:%d:%d  %s -> %s", e.Path, e.Line, e.Col, d.Old, d.New))
 	}
 	for _, x := range d.Excluded {
-		out = append(out, fmt.Sprintf("skip  %s:%d:%d  %s/%s  %s", x.Path, x.Line, x.Col, x.Resolution, x.Reason, oneLine.Replace(x.Text)))
+		// line breaks are written out first, then the text is cut again: the
+		// line stays one line and stays under 200 bytes of text
+		text := oneLine.Replace(x.Text)
+		if len(text) > 200 {
+			text = strings.TrimRight(cutBytes(text, 200), `\`)
+		}
+		out = append(out, fmt.Sprintf("skip  %s:%d:%d  %s/%s  %s", x.Path, x.Line, x.Col, x.Resolution, x.Reason, text))
 	}
 	for _, o := range d.Others {
 		out = append(out, fmt.Sprintf("other %s:%d:%d  different symbol named %s, not renamed", o.Path, o.Line, o.Col, d.Old))
@@ -172,13 +259,24 @@ func renameLines(d *query.RenameDoc) []string {
 	return out
 }
 
+// cutBytes cuts s to n bytes on a rune boundary.
+func cutBytes(s string, n int) string {
+	for n > 0 && n < len(s) && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
+
 // --- apply ---
 
-// applyFailure is an apply that stopped after the checks: which files were
-// replaced and which were not.
+// applyFailure is an apply that stopped after the checks. written are the
+// files that still hold the new name (empty once the roll back finished),
+// rolledBack the files put back, notWritten the files that hold their old
+// text. reverse is the command that undoes a roll back that did not finish.
 type applyFailure struct {
-	err                 error
-	written, notWritten []string
+	err                             error
+	written, rolledBack, notWritten []string
+	reverse                         string
 }
 
 func (e *applyFailure) Error() string { return e.err.Error() }
@@ -193,44 +291,33 @@ type renameFile struct {
 	src       []byte
 	edits     []analysis.RenameEdit
 	out       []byte
-	tmp, dest string
+	fi        os.FileInfo
+	tmp, dest string // the new text, staged beside dest
+	back      string // the original text, staged beside dest, for the roll back
 }
 
-func refused(code, format string, args ...any) error {
-	return &query.RenameRefusedError{Code: code, Reason: fmt.Sprintf(format, args...)}
+func refusedIssue(i *query.ApplyIssue) error {
+	return &query.RenameRefusedError{Code: i.Code, Reason: i.Reason}
 }
 
-// readChecked reads the file at f.path and checks it against what the plan
-// was built from. The order matters for the code of the refusal: where the
-// file is, what it is, whether it can be written, then its bytes.
-func (f *renameFile) readChecked(root string) error {
-	if _, ok := query.Inside(root, f.path); !ok {
-		return refused("outside-root", "%s resolves outside the root", f.rel)
+// check reads the file at f.path and checks it against what the plan was
+// built from. The order matters for the code of the refusal: where the file
+// is, what it is, whether it can be written, then its bytes.
+func (f *renameFile) check(root string) error {
+	fi, issue := query.CheckFileMeta(root, f.path, f.rel)
+	if issue != nil {
+		return refusedIssue(issue)
 	}
-	fi, err := os.Lstat(f.path)
-	if err != nil {
-		return refused("stale-file", "%s cannot be read any more: %v", f.rel, err)
-	}
-	if !fi.Mode().IsRegular() {
-		return refused("not-regular-file", "%s is not a regular file (a link, directory or device)", f.rel)
-	}
-	if err := writable(f.path); err != nil {
-		return refused("read-only", "%s cannot be written: %v", f.rel, err)
-	}
+	f.fi = fi
 	if fi.Size() > int64(len(f.src))+maxApplyGrowth {
-		return refused("stale-file", "%s changed since the plan was built", f.rel)
+		return refusedIssue(&query.ApplyIssue{Code: query.IssueStale, Reason: f.rel + " changed since the plan was built"})
 	}
 	b, err := os.ReadFile(f.path)
 	if err != nil {
-		return refused("stale-file", "%s cannot be read any more: %v", f.rel, err)
+		return refusedIssue(&query.ApplyIssue{Code: query.IssueStale, Reason: fmt.Sprintf("%s cannot be read any more: %v", f.rel, err)})
 	}
-	switch {
-	case bytes.IndexByte(b, 0) >= 0:
-		return refused("nul-byte", "%s holds a NUL byte", f.rel)
-	case !utf8.Valid(b):
-		return refused("invalid-utf8", "%s is not valid UTF-8", f.rel)
-	case !bytes.Equal(b, f.src):
-		return refused("stale-file", "%s changed since the plan was built", f.rel)
+	if issue := query.CheckFileBytes(f.rel, b, f.src); issue != nil {
+		return refusedIssue(issue)
 	}
 	return nil
 }
@@ -252,14 +339,33 @@ func (f *renameFile) build(old string) error {
 	return nil
 }
 
+// stage writes data beside the file, keeps its owner, and returns the name.
+func (f *renameFile) stage(data []byte) (string, error) {
+	tmp, dest, err := stageFile(f.path, data)
+	if err != nil {
+		return "", err
+	}
+	f.dest = dest
+	if err := query.PreserveOwner(tmp, f.fi); err != nil {
+		os.Remove(tmp)
+		return "", fmt.Errorf("the owner of %s cannot be kept: %v", f.rel, err)
+	}
+	return tmp, nil
+}
+
 // applyRename writes the plan. Every file is checked first (inside the root
-// once links are resolved, a regular file and not a link, writable, no NUL
-// byte, valid UTF-8, the bytes of the snapshot); a failure refuses the whole
-// rename and writes nothing. Then every new content is written to a temporary
-// file beside its target, the files are checked once more, and only then are
-// they renamed over their targets in path order. A failure while renaming
-// leaves the files before it replaced; the error says which. It returns the
-// root-relative names of the files it replaced.
+// once links are resolved, a regular file and not a link, no setuid, setgid
+// or sticky bit, one hard link, owned by the user, writable, in a directory
+// that takes a new file, no NUL byte, valid UTF-8, the bytes of the
+// snapshot); a failure refuses the whole rename and writes nothing. Then the
+// new text and, for the roll back, the original text of every file are
+// written to temporary files beside their targets; each file is checked once
+// more right before its own rename, and the files are renamed over their
+// targets in path order. When a rename fails, the files already replaced are
+// put back from their staged originals; the failure says which files were put
+// back and which, if the roll back itself failed, still hold the new name,
+// with the command that undoes them. Directories are synced after the
+// renames. It returns the root-relative names of the files it replaced.
 func applyRename(snap *analysis.Snapshot, root string, plan *analysis.RenamePlan) ([]string, error) {
 	var files []*renameFile
 	b := query.NewBuilder(snap, root)
@@ -275,9 +381,12 @@ func applyRename(snap *analysis.Snapshot, root string, plan *analysis.RenamePlan
 		files = append(files, &renameFile{path: e.Path, rel: b.Rel(e.Path), src: ff.File.Src, edits: []analysis.RenameEdit{e}})
 	}
 	for _, f := range files {
-		if err := f.readChecked(root); err != nil {
+		if err := f.check(root); err != nil {
 			return nil, err
 		}
+	}
+	if err := checkDirs(files); err != nil {
+		return nil, err
 	}
 	for _, f := range files {
 		if err := f.build(plan.Old); err != nil {
@@ -286,42 +395,124 @@ func applyRename(snap *analysis.Snapshot, root string, plan *analysis.RenamePlan
 	}
 	applyHooks.run(applyHooks.afterChecks)
 	names := func(fs []*renameFile) []string {
-		var out []string
+		out := []string{}
 		for _, f := range fs {
 			out = append(out, f.rel)
 		}
 		return out
 	}
-	dropTemps := func(fs []*renameFile) {
-		for _, f := range fs {
+	dropTemps := func() {
+		for _, f := range files {
 			if f.tmp != "" {
 				os.Remove(f.tmp)
 				f.tmp = ""
 			}
+			if f.back != "" {
+				os.Remove(f.back)
+				f.back = ""
+			}
 		}
 	}
 	for _, f := range files {
-		tmp, dest, err := stageFile(f.path, f.out)
+		var err error
+		if f.tmp, err = f.stage(f.out); err == nil {
+			f.back, err = f.stage(f.src)
+		}
 		if err != nil {
-			dropTemps(files)
+			dropTemps()
 			return nil, &applyFailure{err: fmt.Errorf("%s: %v", f.rel, err), notWritten: names(files)}
 		}
-		f.tmp, f.dest = tmp, dest
 	}
 	applyHooks.run(applyHooks.afterStaging)
 	for _, f := range files {
-		if err := f.readChecked(root); err != nil {
-			dropTemps(files)
+		if err := f.check(root); err != nil {
+			dropTemps()
 			return nil, err
 		}
 	}
 	applyHooks.run(applyHooks.beforeRename)
 	for i, f := range files {
-		if err := os.Rename(f.tmp, f.dest); err != nil {
-			dropTemps(files[i:])
-			return nil, &applyFailure{err: fmt.Errorf("%s: %v", f.rel, err), written: names(files[:i]), notWritten: names(files[i:])}
+		err := f.check(root)
+		if err == nil {
+			if err = applyHooks.move(f.tmp, f.dest); err == nil {
+				f.tmp = ""
+				continue
+			}
+			err = fmt.Errorf("%s: %v", f.rel, err)
 		}
-		f.tmp = ""
+		return nil, rollBack(root, plan, files, i, err, dropTemps)
 	}
+	dropTemps()
+	syncDirs(files)
 	return names(files), nil
+}
+
+// rollBack puts files[:done] back from their staged originals after the
+// rename of files[done] failed with cause, removes every temporary file, and
+// describes the outcome.
+func rollBack(root string, plan *analysis.RenamePlan, files []*renameFile, done int, cause error, dropTemps func()) error {
+	fail := &applyFailure{err: cause, written: []string{}}
+	for j := done - 1; j >= 0; j-- {
+		f := files[j]
+		if err := applyHooks.move(f.back, f.dest); err != nil {
+			fail.written = append([]string{f.rel}, fail.written...)
+			continue
+		}
+		f.back = ""
+		fail.rolledBack = append([]string{f.rel}, fail.rolledBack...)
+	}
+	dropTemps()
+	still := map[string]bool{}
+	for _, w := range fail.written {
+		still[w] = true
+	}
+	for _, f := range files {
+		if !still[f.rel] {
+			fail.notWritten = append(fail.notWritten, f.rel)
+		}
+	}
+	if len(fail.written) > 0 {
+		fail.reverse = fmt.Sprintf("bash-lsp rename %s %s --apply --root %s (by path:line:col of each definition if the name is shared)", plan.New, plan.Old, shellQuote(root))
+	}
+	return fail
+}
+
+func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+
+// checkDirs refuses the rename when a directory of the files does not take a
+// new file: the temporary files go there. The probe is a temporary file that
+// is removed at once.
+func checkDirs(files []*renameFile) error {
+	seen := map[string]bool{}
+	for _, f := range files {
+		dir := filepath.Dir(f.path)
+		if seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		p, err := os.CreateTemp(dir, ".bash-lsp-fmt-*")
+		if err != nil {
+			return &query.RenameRefusedError{Code: query.IssueReadOnly, Reason: fmt.Sprintf("the directory of %s cannot take a new file: %v", f.rel, err)}
+		}
+		p.Close()
+		os.Remove(p.Name())
+	}
+	return nil
+}
+
+// syncDirs flushes the directories the files were renamed in. A failure is
+// not reported: the files are in place.
+func syncDirs(files []*renameFile) {
+	seen := map[string]bool{}
+	for _, f := range files {
+		dir := filepath.Dir(f.dest)
+		if seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		if d, err := os.Open(dir); err == nil {
+			d.Sync()
+			d.Close()
+		}
+	}
 }

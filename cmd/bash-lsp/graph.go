@@ -10,6 +10,7 @@ import (
 	"github.com/wamra/bash-lsp/analysis"
 	"github.com/wamra/bash-lsp/internal/config"
 	"github.com/wamra/bash-lsp/internal/query"
+	"github.com/wamra/bash-lsp/internal/redact"
 	"github.com/wamra/bash-lsp/internal/workspace"
 )
 
@@ -160,10 +161,11 @@ func (c *graphCtx) emit(o graphOpts, stdout, stderr io.Writer, d *query.Doc) int
 func failQuery(stderr io.Writer, err error) int {
 	var amb *query.AmbiguousError
 	if errors.As(err, &amb) {
-		fmt.Fprintf(stderr, "bash-lsp: %v\n", amb)
+		fmt.Fprint(stderr, redact.String(fmt.Sprintf("bash-lsp: %v\n", amb)))
 		return 2
 	}
-	return fail(stderr, err)
+	fmt.Fprint(stderr, redact.String(fmt.Sprintf("bash-lsp: %v\n", err)))
+	return 1
 }
 
 // --- commands ---

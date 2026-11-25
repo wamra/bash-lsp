@@ -2,13 +2,29 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/wamra/bash-lsp/analysis"
+	"github.com/wamra/bash-lsp/internal/query"
+	"github.com/wamra/bash-lsp/tree"
 )
+
+// noTemps fails when a temporary file of a rewrite is left under root.
+func noTemps(t *testing.T, root string) {
+	t.Helper()
+	filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && strings.Contains(d.Name(), ".bash-lsp-fmt-") {
+			t.Errorf("temporary file left: %s", p)
+		}
+		return nil
+	})
+}
 
 // corpusCopy is a writable copy of the corpus; paths are resolved, the root
 // the commands print relative to.
@@ -70,6 +86,10 @@ func sameTree(t *testing.T, got, want map[string]string) {
 		t.Errorf("extra files %v", extra)
 	}
 }
+
+// corpusDef is the definition of build_release in lib/util.sh: --apply names
+// it by position, because the name alone is shared with orphan.sh.
+const corpusDef = "lib/util.sh:4:1"
 
 func hooks(t *testing.T) *renameHooks {
 	t.Helper()
@@ -143,7 +163,7 @@ func TestCLIRenameByPosition(t *testing.T) {
 func TestCLIRenameApply(t *testing.T) {
 	root := corpusCopy(t)
 	before := treeBytes(t, root)
-	out := runOK(t, "rename", "build_release", "ship", "--apply", "--root", root)
+	out := runOK(t, "rename", corpusDef, "ship", "--apply", "--root", root)
 	wantLines(t, out, "edit  main.sh:6:3  build_release -> ship", "skip  main.sh:10:9  candidate/string-eval")
 	after := treeBytes(t, root)
 	for _, f := range []string{"dyn.sh", "lib/util.sh", "main.sh"} {
@@ -194,7 +214,7 @@ func TestCLIRenameApplyKeepsMode(t *testing.T) {
 	if err := os.Chmod(filepath.Join(root, "main.sh"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	runOK(t, "rename", "build_release", "ship", "--apply", "--root", root)
+	runOK(t, "rename", corpusDef, "ship", "--apply", "--root", root)
 	if fi, _ := os.Stat(filepath.Join(root, "main.sh")); fi.Mode().Perm() != 0o755 {
 		t.Errorf("mode %v", fi.Mode())
 	}
@@ -210,12 +230,13 @@ func TestCLIRenameApplyRefusesStale(t *testing.T) {
 	}
 	before := treeBytes(t, root)
 	// the plan is built after Open, so edit between plan and checks
-	code, out, errs := runCode(t, "rename", "build_release", "ship", "--apply", "--root", root)
+	code, out, errs := runCode(t, "rename", corpusDef, "ship", "--apply", "--root", root)
 	if code != 4 || !strings.Contains(errs, "refused: stale-file: ") || !strings.Contains(errs, "lib/util.sh") {
 		t.Fatalf("exit %d out %q err %q", code, out, errs)
 	}
 	before["lib/util.sh"] += "# edited elsewhere\n"
 	sameTree(t, treeBytes(t, root), before)
+	noTemps(t, root)
 }
 
 func TestCLIRenameApplyRefusesChangedMtimeOnly(t *testing.T) {
@@ -227,7 +248,7 @@ func TestCLIRenameApplyRefusesChangedMtimeOnly(t *testing.T) {
 		b, _ := os.ReadFile(p)
 		os.WriteFile(p, b, 0o644)
 	}
-	if code, _, errs := runCode(t, "rename", "build_release", "ship", "--apply", "--root", root); code != 0 {
+	if code, _, errs := runCode(t, "rename", corpusDef, "ship", "--apply", "--root", root); code != 0 {
 		t.Fatalf("exit %d %s", code, errs)
 	}
 }
@@ -244,7 +265,7 @@ func TestCLIRenameApplyRefusesSymlink(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	code, _, errs := runCode(t, "rename", "build_release", "ship", "--apply", "--root", root)
+	code, _, errs := runCode(t, "rename", corpusDef, "ship", "--apply", "--root", root)
 	if code != 4 || !strings.Contains(errs, "refused: not-regular-file: ") || !strings.Contains(errs, "dyn.sh") {
 		t.Fatalf("exit %d err %q", code, errs)
 	}
@@ -257,6 +278,7 @@ func TestCLIRenameApplyRefusesSymlink(t *testing.T) {
 	if strings.Contains(got["real.txt"], "ship") {
 		t.Error("the link target was written")
 	}
+	noTemps(t, root)
 }
 
 func TestCLIRenameApplyRefusesLinkOutsideRoot(t *testing.T) {
@@ -274,13 +296,15 @@ func TestCLIRenameApplyRefusesLinkOutsideRoot(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	code, _, errs := runCode(t, "rename", "build_release", "ship", "--apply", "--root", root)
+	code, _, errs := runCode(t, "rename", corpusDef, "ship", "--apply", "--root", root)
 	if code != 4 || !strings.Contains(errs, "refused: outside-root: ") {
 		t.Fatalf("exit %d err %q", code, errs)
 	}
 	if b, _ := os.ReadFile(target); strings.Contains(string(b), "ship") {
 		t.Error("the file outside the root was written")
 	}
+	noTemps(t, outside)
+	noTemps(t, root)
 	if b, _ := os.ReadFile(filepath.Join(root, "main.sh")); strings.Contains(string(b), "ship") {
 		t.Error("main.sh was written")
 	}
@@ -296,7 +320,7 @@ func TestCLIRenameApplyRefusesDirectoryLinkOutsideRoot(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	code, _, errs := runCode(t, "rename", "build_release", "ship", "--apply", "--root", root)
+	code, _, errs := runCode(t, "rename", corpusDef, "ship", "--apply", "--root", root)
 	if code != 4 || !strings.Contains(errs, "refused: outside-root: ") {
 		t.Fatalf("exit %d err %q", code, errs)
 	}
@@ -313,7 +337,7 @@ func TestCLIRenameApplyRefusesNUL(t *testing.T) {
 		b, _ := os.ReadFile(p)
 		os.WriteFile(p, append(b, 0, 'x', '\n'), 0o644)
 	}
-	code, _, errs := runCode(t, "rename", "build_release", "ship", "--apply", "--root", root)
+	code, _, errs := runCode(t, "rename", corpusDef, "ship", "--apply", "--root", root)
 	if code != 4 || !strings.Contains(errs, "refused: nul-byte: ") {
 		t.Fatalf("exit %d err %q", code, errs)
 	}
@@ -330,7 +354,7 @@ func TestCLIRenameApplyRefusesInvalidUTF8(t *testing.T) {
 		b, _ := os.ReadFile(p)
 		os.WriteFile(p, append(b, 0xff, 0xfe, '\n'), 0o644)
 	}
-	code, _, errs := runCode(t, "rename", "build_release", "ship", "--apply", "--root", root)
+	code, _, errs := runCode(t, "rename", corpusDef, "ship", "--apply", "--root", root)
 	if code != 4 || !strings.Contains(errs, "refused: invalid-utf8: ") {
 		t.Fatalf("exit %d err %q", code, errs)
 	}
@@ -345,7 +369,7 @@ func TestCLIRenameApplyRefusesReadOnly(t *testing.T) {
 		t.Skip("root can write a read-only file")
 	}
 	before := treeBytes(t, root)
-	code, _, errs := runCode(t, "rename", "build_release", "ship", "--apply", "--root", root)
+	code, _, errs := runCode(t, "rename", corpusDef, "ship", "--apply", "--root", root)
 	if code != 4 || !strings.Contains(errs, "refused: read-only: ") || !strings.Contains(errs, "dyn.sh") {
 		t.Fatalf("exit %d err %q", code, errs)
 	}
@@ -365,7 +389,7 @@ func TestCLIRenameStagingFailureWritesNothing(t *testing.T) {
 		t.Cleanup(func() { os.Chmod(filepath.Join(root, "lib"), 0o755) })
 	}
 	before := treeBytes(t, root)
-	code, _, errs := runCode(t, "rename", "build_release", "ship", "--apply", "--root", root)
+	code, _, errs := runCode(t, "rename", corpusDef, "ship", "--apply", "--root", root)
 	if code != 1 || !strings.Contains(errs, "not written: ") || !strings.Contains(errs, "lib/util.sh") || strings.Contains(errs, "\nwritten: ") {
 		t.Fatalf("exit %d err %q", code, errs)
 	}
@@ -388,7 +412,7 @@ func TestCLIRenameApplyChecksAgainBeforeReplacing(t *testing.T) {
 		os.WriteFile(p, append(b, "# late edit\n"...), 0o644)
 	}
 	before := treeBytes(t, root)
-	code, _, errs := runCode(t, "rename", "build_release", "ship", "--apply", "--root", root)
+	code, _, errs := runCode(t, "rename", corpusDef, "ship", "--apply", "--root", root)
 	if code != 4 || !strings.Contains(errs, "refused: stale-file: ") {
 		t.Fatalf("exit %d err %q", code, errs)
 	}
@@ -396,9 +420,9 @@ func TestCLIRenameApplyChecksAgainBeforeReplacing(t *testing.T) {
 	sameTree(t, treeBytes(t, root), before)
 }
 
-// A failure while replacing: the files replaced so far and the files not
-// replaced are both named, and no temporary file is left.
-func TestCLIRenamePartialFailureReport(t *testing.T) {
+// A failure while replacing: the files replaced so far are put back, byte
+// for byte, and no temporary file is left.
+func TestCLIRenamePartialFailureRollsBack(t *testing.T) {
 	root := corpusCopy(t)
 	h := hooks(t)
 	h.beforeRename = func() {
@@ -406,23 +430,314 @@ func TestCLIRenamePartialFailureReport(t *testing.T) {
 		os.Remove(p)
 		os.Mkdir(p, 0o755) // a rename onto a directory fails
 	}
-	code, _, errs := runCode(t, "rename", "build_release", "ship", "--apply", "--root", root)
+	before := treeBytes(t, root)
+	delete(before, "main.sh")
+	code, out, errs := runCode(t, "rename", corpusDef, "ship", "--apply", "--root", root)
 	if code != 1 {
 		t.Fatalf("exit %d err %q", code, errs)
 	}
-	wantLines(t, errs, "written: dyn.sh, lib/util.sh", "not written: main.sh")
-	if b, _ := os.ReadFile(filepath.Join(root, "dyn.sh")); !strings.Contains(string(b), "ship dyn") {
-		t.Errorf("dyn.sh %q", b)
+	wantLines(t, errs, "rolled back: dyn.sh, lib/util.sh", "not written: dyn.sh, lib/util.sh, main.sh")
+	if strings.Contains(errs, "\nwritten:") {
+		t.Errorf("files reported as still written: %s", errs)
 	}
-	var left []string
-	filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		if err == nil && strings.Contains(d.Name(), ".bash-lsp-fmt-") {
-			left = append(left, p)
+	// the plan is shown, with the sites of the file that was not written
+	wantLines(t, out, "edit  main.sh:6:3  build_release -> ship", "edit  dyn.sh:4:1  build_release -> ship")
+	got := treeBytes(t, root)
+	sameTree(t, got, before)
+	noTemps(t, root)
+}
+
+// The Nth rename fails (a hook stands for a file system that refuses it): the
+// files before it are restored and the rest was never touched.
+func TestCLIRenameNthRenameFailsRestoresEverything(t *testing.T) {
+	for _, n := range []int{1, 2, 3} {
+		root := corpusCopy(t)
+		before := treeBytes(t, root)
+		h := hooks(t)
+		calls := 0
+		h.rename = func(from, to string) error {
+			calls++
+			if calls == n {
+				return errors.New("refused by the test")
+			}
+			return os.Rename(from, to)
 		}
-		return nil
-	})
-	if len(left) != 0 {
-		t.Errorf("temp files left: %v", left)
+		code, _, errs := runCode(t, "rename", corpusDef, "ship", "--apply", "--root", root)
+		if code != 1 || !strings.Contains(errs, "refused by the test") {
+			t.Fatalf("n=%d: exit %d err %q", n, code, errs)
+		}
+		sameTree(t, treeBytes(t, root), before)
+		noTemps(t, root)
+	}
+}
+
+// A roll back step that fails: the files still holding the new name are
+// listed with the command that undoes them.
+func TestCLIRenameRollBackFailureIsReported(t *testing.T) {
+	root := corpusCopy(t)
+	h := hooks(t)
+	calls := 0
+	h.rename = func(from, to string) error {
+		calls++
+		switch {
+		case calls == 3: // the third file cannot be replaced
+			return errors.New("refused by the test")
+		case strings.HasSuffix(to, "dyn.sh") && calls > 3: // dyn.sh cannot be put back
+			return errors.New("cannot restore")
+		}
+		return os.Rename(from, to)
+	}
+	code, out, errs := runCode(t, "rename", corpusDef, "ship", "--apply", "--root", root)
+	if code != 1 {
+		t.Fatalf("exit %d", code)
+	}
+	wantLines(t, errs, "rolled back: lib/util.sh", "written: dyn.sh", "not written: lib/util.sh, main.sh",
+		"bash-lsp rename ship build_release --apply --root '"+root+"'")
+	if b, _ := os.ReadFile(filepath.Join(root, "dyn.sh")); !strings.Contains(string(b), "ship dyn") {
+		t.Errorf("dyn.sh was expected to keep the new name: %q", b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(root, "lib", "util.sh")); strings.Contains(string(b), "ship") {
+		t.Errorf("lib/util.sh was not put back")
+	}
+	wantLines(t, out, "edit  dyn.sh:4:1")
+	noTemps(t, root)
+}
+
+// A file edited after the others were replaced is caught by the check before
+// its own rename; what was replaced is put back.
+func TestCLIRenameChecksEachFileBeforeItsRename(t *testing.T) {
+	root := corpusCopy(t)
+	before := treeBytes(t, root)
+	h := hooks(t)
+	calls := 0
+	h.rename = func(from, to string) error {
+		if calls++; calls == 2 {
+			p := filepath.Join(root, "main.sh")
+			os.WriteFile(p, append([]byte(before["main.sh"]), "# late\n"...), 0o644)
+		}
+		return os.Rename(from, to)
+	}
+	code, _, errs := runCode(t, "rename", corpusDef, "ship", "--apply", "--root", root)
+	if code != 1 || !strings.Contains(errs, "refused: stale-file") || !strings.Contains(errs, "rolled back: dyn.sh, lib/util.sh") {
+		t.Fatalf("exit %d err %q", code, errs)
+	}
+	before["main.sh"] += "# late\n"
+	sameTree(t, treeBytes(t, root), before)
+	noTemps(t, root)
+}
+
+func TestCLIRenameFailureUnderJSONPrintsThePlan(t *testing.T) {
+	root := corpusCopy(t)
+	h := hooks(t)
+	h.rename = func(from, to string) error { return errors.New("refused by the test") }
+	code, out, errs := runCode(t, "rename", corpusDef, "ship", "--apply", "--json", "--root", root)
+	var doc struct {
+		Applied    bool
+		Written    []string
+		RolledBack []string `json:"rolled_back"`
+		NotWritten []string `json:"not_written"`
+		Error      string
+		Edits      []struct{ Path string }
+	}
+	mustJSON(t, out, &doc)
+	if code != 1 || doc.Applied || len(doc.Edits) != 4 || len(doc.NotWritten) != 3 || doc.Error == "" || !strings.Contains(errs, "refused by the test") {
+		t.Errorf("exit %d\n%s\nstderr %q", code, out, errs)
+	}
+}
+
+func TestCLIRenameApplyJSON(t *testing.T) {
+	root := corpusCopy(t)
+	out := runOK(t, "rename", corpusDef, "ship", "--apply", "--json", "--root", root)
+	var doc struct {
+		Applied bool
+		Written []string
+		Edits   []struct{ Path string }
+	}
+	mustJSON(t, out, &doc)
+	if !doc.Applied || strings.Join(doc.Written, " ") != "dyn.sh lib/util.sh main.sh" || len(doc.Edits) != 4 {
+		t.Errorf("%s", out)
+	}
+}
+
+// Re-running by name must not touch the other symbol of the same name.
+func TestCLIRenameApplyByNameRefusesWhenOthersExist(t *testing.T) {
+	root := corpusCopy(t)
+	before := treeBytes(t, root)
+	code, out, errs := runCode(t, "rename", "build_release", "ship", "--apply", "--root", root)
+	if code != 4 || !strings.HasPrefix(errs, "refused: ambiguous-apply: ") || !strings.Contains(errs, "path:line:col") || !strings.Contains(errs, "\nsite  orphan.sh:2:1") {
+		t.Fatalf("exit %d err %q", code, errs)
+	}
+	wantLines(t, out, "edit  lib/util.sh:4:1", "other orphan.sh:2:1") // the plan is shown
+	sameTree(t, treeBytes(t, root), before)
+	// preview by name still works and shows the others
+	if o := runOK(t, "rename", "build_release", "ship", "--root", root); !strings.Contains(o, "other orphan.sh:2:1") {
+		t.Errorf("%s", o)
+	}
+	// by position it applies, and a second run (the old name is now only
+	// orphan.sh's) refuses nothing it did not say
+	runOK(t, "rename", corpusDef, "ship", "--apply", "--root", root)
+	if b, _ := os.ReadFile(filepath.Join(root, "orphan.sh")); !strings.Contains(string(b), "build_release") {
+		t.Errorf("orphan.sh changed:\n%s", b)
+	}
+}
+
+func TestCLIRenameApplyRefusesHardLink(t *testing.T) {
+	root := corpusCopy(t)
+	h := hooks(t)
+	h.afterPlan = func() {
+		if err := os.Link(filepath.Join(root, "dyn.sh"), filepath.Join(root, "dyn-copy.sh")); err != nil {
+			t.Skip("no hard links:", err)
+		}
+	}
+	before := treeBytes(t, root)
+	code, _, errs := runCode(t, "rename", corpusDef, "ship", "--apply", "--root", root)
+	if code != 4 || !strings.Contains(errs, "refused: hard-link: ") || !strings.Contains(errs, "dyn.sh") {
+		t.Fatalf("exit %d err %q", code, errs)
+	}
+	before["dyn-copy.sh"] = before["dyn.sh"]
+	sameTree(t, treeBytes(t, root), before)
+}
+
+func TestCLIRenameApplyRefusesSpecialMode(t *testing.T) {
+	root := corpusCopy(t)
+	h := hooks(t)
+	h.afterPlan = func() {
+		if err := os.Chmod(filepath.Join(root, "dyn.sh"), 0o755|os.ModeSetuid); err != nil {
+			t.Skip("no setuid:", err)
+		}
+	}
+	before := treeBytes(t, root)
+	code, _, errs := runCode(t, "rename", corpusDef, "ship", "--apply", "--root", root)
+	if code != 4 || !strings.Contains(errs, "refused: special-mode: ") {
+		t.Fatalf("exit %d err %q", code, errs)
+	}
+	sameTree(t, treeBytes(t, root), before)
+}
+
+// A read-only directory is found before anything is staged: exit 4, nothing
+// written, no temporary file.
+func TestCLIRenameApplyRefusesReadOnlyDirectory(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can write anywhere")
+	}
+	root := corpusCopy(t)
+	lib := filepath.Join(root, "lib")
+	if err := os.Chmod(lib, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(lib, 0o755) })
+	before := treeBytes(t, root)
+	code, _, errs := runCode(t, "rename", corpusDef, "ship", "--apply", "--root", root)
+	if code != 4 || !strings.Contains(errs, "refused: read-only: ") || !strings.Contains(errs, "lib/util.sh") {
+		t.Fatalf("exit %d err %q", code, errs)
+	}
+	sameTree(t, treeBytes(t, root), before)
+	noTemps(t, root)
+}
+
+func TestCLIRenamePreviewWarnsOfFilesApplyWouldRefuse(t *testing.T) {
+	root := corpusCopy(t)
+	if err := os.Chmod(filepath.Join(root, "dyn.sh"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root can write a read-only file")
+	}
+	out := runOK(t, "rename", "build_release", "ship", "--root", root)
+	wantLines(t, out, "warn  apply-would-refuse: read-only: dyn.sh")
+	js := runOK(t, "rename", "build_release", "ship", "--json", "--root", root)
+	wantLines(t, js, "apply-would-refuse: read-only: dyn.sh")
+}
+
+func TestCLIRenamePreviewWarnsOfNULAndInvalidUTF8(t *testing.T) {
+	root := corpusCopy(t)
+	os.WriteFile(filepath.Join(root, "dyn.sh"), []byte("source ./lib/util.sh\nbuild_release dyn\n\x00\n"), 0o644)
+	os.WriteFile(filepath.Join(root, "main.sh"), []byte("source ./lib/util.sh\nbuild_release \"$1\"\n# caf\xe9\n"), 0o644)
+	out := runOK(t, "rename", corpusDef, "ship", "--root", root)
+	wantLines(t, out, "warn  apply-would-refuse: nul-byte: dyn.sh", "warn  apply-would-refuse: invalid-utf8: main.sh")
+}
+
+func TestCLIRenameBuildChecksTheEditCoversTheName(t *testing.T) {
+	f := &renameFile{rel: "a.sh", src: []byte("abc def\n"), edits: []analysis.RenameEdit{{Path: "a.sh", Range: tree.Range{Start: tree.Pos{Offset: 0}, End: tree.Pos{Offset: 3}}, NewText: "x"}}}
+	if err := f.build("abc"); err != nil || string(f.out) != "x def\n" {
+		t.Fatalf("%v %q", err, f.out)
+	}
+	if err := f.build("abd"); err == nil {
+		t.Error("an edit that does not cover the old name is accepted")
+	}
+	f.edits[0].Range.End.Offset = 99
+	if err := f.build("abc"); err == nil {
+		t.Error("an edit past the end is accepted")
+	}
+}
+
+func TestCLIRenameOutsideRootSpecIsARefusal(t *testing.T) {
+	code, _, errs := runCode(t, "rename", "../x.sh:1:1", "h", "--root", corpus)
+	if code != 4 || !strings.HasPrefix(errs, "refused: outside-root: ") {
+		t.Errorf("exit %d %q", code, errs)
+	}
+}
+
+func TestCLIRenameRefusalUnderJSON(t *testing.T) {
+	code, out, errs := runCode(t, "rename", "build_release", "log", "--json", "--root", corpus)
+	var doc struct {
+		Applied bool
+		Refused struct {
+			Code, Reason string
+			Sites        []struct{ Path string }
+		}
+	}
+	mustJSON(t, out, &doc)
+	if code != 4 || doc.Refused.Code != "name-conflict" || len(doc.Refused.Sites) == 0 || !strings.HasPrefix(errs, "refused: name-conflict: ") {
+		t.Errorf("exit %d\n%s\nstderr %q", code, out, errs)
+	}
+}
+
+func TestCLIRenameRedactsEveryPath(t *testing.T) {
+	const tok = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+	root := corpusCopy(t)
+	for _, args := range [][]string{
+		{"rename", corpusDef, tok},                             // invalid name echoed
+		{"rename", tok, "h"},                                   // unknown symbol echoed
+		{"rename", "../" + tok + ".sh:1:1", "h"},               // outside spec echoed
+		{"rename", corpusDef, "x", "--apply", "--bogus" + tok}, // usage echoes the flag
+		{"callers", tok + "/x.sh:1:1"},                         // graph command error
+	} {
+		_, out, errs := runCode(t, append(args, "--root", root)...)
+		if strings.Contains(out+errs, "ghp_") || strings.Contains(out+errs, tok[:20]) {
+			t.Errorf("%v: secret printed\n%s%s", args, out, errs)
+		}
+	}
+}
+
+func TestCLIRenameRefusalTextIsOneLineAndWithoutDuplicatePrefix(t *testing.T) {
+	_, _, errs := runCode(t, "rename", "a.sh:1:1", "y", "--root", dynRoot(t))
+	if !strings.HasPrefix(errs, "refused: dynamic-scope: a function that declares") || strings.Contains(errs, "dynamic scope: dynamic scope") {
+		t.Errorf("%q", errs)
+	}
+}
+
+func dynRoot(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	if r, err := filepath.EvalSymlinks(root); err == nil {
+		root = r
+	}
+	src := "x=1\nshow() { echo \"$x\"; }\nrun() { local x=2; show; }\nrun\n"
+	if err := os.WriteFile(filepath.Join(root, "a.sh"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+func TestCLIRenameSkipLinesStayOneLine(t *testing.T) {
+	d := &query.RenameDoc{Old: "f", New: "h", Excluded: []query.RenameSkip{{
+		Site: query.Site{Path: "a.sh", Line: 1, Col: 1}, Resolution: "candidate", Reason: "string-eval",
+		Text: strings.Repeat("a\n", 100)}}}
+	for _, l := range renameLines(d) {
+		if strings.ContainsAny(l, "\r\n") || len(l) > 200+len("skip  a.sh:1:1  candidate/string-eval  ") {
+			t.Errorf("%d bytes: %q", len(l), l)
+		}
 	}
 }
 
@@ -449,9 +764,9 @@ func TestCLIRenameRefusedExit4(t *testing.T) {
 		}
 	}
 	sameTree(t, treeBytes(t, root), before)
-	// with --json the refusal is still on stderr, stdout stays empty
+	// with --json the refusal is still on stderr, and stdout carries it as JSON
 	code, out, errs := runCode(t, "rename", "build_release", "log", "--json", "--root", root)
-	if code != 4 || out != "" || !strings.HasPrefix(errs, "refused: name-conflict: ") {
+	if code != 4 || !strings.Contains(out, `"code": "name-conflict"`) || !strings.HasPrefix(errs, "refused: name-conflict: ") {
 		t.Errorf("--json: exit %d out %q err %q", code, out, errs)
 	}
 	// the sites of a refusal are listed
