@@ -44,10 +44,6 @@ const (
 	maxRenameMessage = 1000
 	// maxRenameNote bounds the whole text of the annotation or the message.
 	maxRenameNote = 4096
-
-	// codeLineBreaks is the stable code of the refusal for text with a bare
-	// CR line break.
-	codeLineBreaks = "unsupported-line-breaks"
 )
 
 type renameParams struct {
@@ -155,27 +151,6 @@ func (s *server) refuseRequest(code, reason string, sites []Location, dataCode s
 	return deferred{}, nil
 }
 
-// hasBareCR reports whether b has a CR that is not followed by LF. LSP counts
-// such a CR as a line break, the positions of the analysis do not.
-func hasBareCR(b []byte) bool {
-	for i := 0; ; {
-		j := bytes.IndexByte(b[i:], '\r')
-		if j < 0 {
-			return false
-		}
-		i += j + 1
-		if i >= len(b) || b[i] != '\n' {
-			return true
-		}
-	}
-}
-
-// lineBreakRefusal answers a rename that would need positions in a file with
-// bare CR line breaks.
-func (s *server) lineBreakRefusal(path string) (any, *rpcError) {
-	return s.refuseRequest(codeLineBreaks, s.relPath(path)+" has a bare CR line break, which the positions of this server do not support yet; convert it to LF or CRLF", nil, codeLineBreaks)
-}
-
 func (s *server) prepareRename(raw json.RawMessage) (any, *rpcError) {
 	var p textDocumentPositionParams
 	if rerr := decode(raw, &p); rerr != nil {
@@ -188,23 +163,12 @@ func (s *server) prepareRename(raw json.RawMessage) (any, *rpcError) {
 	if !ok {
 		return s.refuseRequest(analysis.RefuseNotSymbol, "the document is not part of the workspace", nil, analysis.RefuseNotSymbol)
 	}
-	if hasBareCR(fileOf(snap, path).Src) {
-		return s.lineBreakRefusal(path)
-	}
 	rng, name, err := snap.PrepareRename(path, off)
 	if err != nil {
 		return s.failRequest(snap, err)
 	}
-	plan, err := probeRename(snap, path, off)
-	if err != nil {
+	if _, err := probeRename(snap, path, off); err != nil {
 		return s.failRequest(snap, err)
-	}
-	if plan != nil {
-		for _, e := range plan.Edits {
-			if hasBareCR(fileOf(snap, e.Path).Src) {
-				return s.lineBreakRefusal(e.Path)
-			}
-		}
 	}
 	r := s.rangeIn(converters{}, snap, path, rng)
 	if !s.caps().RenamePrepare {
@@ -281,9 +245,6 @@ func (s *server) rename(raw json.RawMessage) (any, *rpcError) {
 	if rerr := s.checkText(snap, path, texts); rerr != nil {
 		return nil, rerr
 	}
-	if hasBareCR(texts[path]) {
-		return s.lineBreakRefusal(path)
-	}
 	plan, err := snap.PlanRename(path, off, p.NewName)
 	if err != nil {
 		return s.failRequest(snap, err)
@@ -294,11 +255,6 @@ func (s *server) rename(raw json.RawMessage) (any, *rpcError) {
 		}
 		if rerr := s.checkText(snap, e.Path, texts); rerr != nil {
 			return nil, rerr
-		}
-	}
-	for _, e := range plan.Edits {
-		if hasBareCR(texts[e.Path]) {
-			return s.lineBreakRefusal(e.Path)
 		}
 	}
 	if s.cur != nil && s.isCancelled(idKey(s.curID)) {

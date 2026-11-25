@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/wamra/bash-lsp/analysis"
+	"github.com/wamra/bash-lsp/tree"
 )
 
 // ---- folding, selection, highlights and links ----
@@ -54,13 +55,40 @@ type selectionRangeParams struct {
 	Positions    []Position             `json:"positions"`
 }
 
+// lineFold is a fold in LSP lines, 0-based and inclusive.
+type lineFold struct {
+	StartLine, EndLine int
+	Kind               string
+}
+
+// lspFolds maps folds given as byte offsets of f to LSP lines, in start order
+// with enclosing folds first, dropping repeats.
+func lspFolds(f *tree.File, folds []analysis.Fold) []lineFold {
+	out := make([]lineFold, 0, len(folds))
+	seen := map[lineFold]bool{}
+	for _, fo := range folds {
+		lf := lineFold{f.LSPLine(fo.StartOffset), f.LSPLine(fo.EndOffset), fo.Kind}
+		if lf.EndLine > lf.StartLine && !seen[lf] {
+			seen[lf] = true
+			out = append(out, lf)
+		}
+	}
+	sort.SliceStable(out, func(a, b int) bool {
+		if out[a].StartLine != out[b].StartLine {
+			return out[a].StartLine < out[b].StartLine
+		}
+		return out[a].EndLine > out[b].EndLine
+	})
+	return out
+}
+
 // foldingRanges makes the wire folds. With lineFoldingOnly the client folds
 // whole lines and shows the closing line, so a fold ends on the line before
 // the closing keyword or bracket (comment and region folds keep their end). A
 // fold left with one line is dropped. With a range limit at most that many
 // are returned, outermost first (by nesting depth, then in source order), and
 // listed in source order.
-func foldingRanges(folds []analysis.Fold, c clientCaps) []foldingRange {
+func foldingRanges(folds []lineFold, c clientCaps) []foldingRange {
 	out := make([]foldingRange, 0, len(folds))
 	for _, f := range folds {
 		end := f.EndLine
@@ -112,7 +140,12 @@ func (s *server) foldingRange(raw json.RawMessage) (any, *rpcError) {
 	if rerr != nil {
 		return nil, rerr
 	}
-	return foldingRanges(be.Snapshot().Folds(path), s.caps()), nil
+	snap := be.Snapshot()
+	f := fileOf(snap, path)
+	if f == nil {
+		return []foldingRange{}, nil
+	}
+	return foldingRanges(lspFolds(f, snap.Folds(path)), s.caps()), nil
 }
 
 func (s *server) selectionRange(raw json.RawMessage) (any, *rpcError) {

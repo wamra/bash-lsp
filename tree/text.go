@@ -69,6 +69,13 @@ func (f *File) PosAt(offset int) Pos {
 	return Pos{Offset: offset, Line: i + 1, Col: offset - f.lines[i] + 1}
 }
 
+// LSPLine returns the 0-based LSP line holding offset, clamped to
+// [0, len(Src)]. A line break belongs to the line it ends.
+func (f *File) LSPLine(offset int) int {
+	offset = min(max(offset, 0), len(f.Src))
+	return lineAt(f.lspLines(), offset)
+}
+
 // units returns the UTF-16 length of the rune at the start of b and its byte
 // size. Each invalid byte counts as one unit.
 func units(b []byte) (u, size int) {

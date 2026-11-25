@@ -61,6 +61,7 @@ const (
 	RefuseDynamicScope  = "dynamic-scope"
 	RefuseNameReference = "name-reference"
 	RefuseNoOp          = "no-op"
+	RefuseLineBreaks    = "unsupported-line-breaks"
 )
 
 // Reasons of the refusals that have more than one, or that other code tests.
@@ -177,7 +178,7 @@ func (s *Snapshot) refuse(code, reason string, sites []Location) *RenameRefusal 
 // valid new name.
 func nameIndependentRefusal(code, reason string) bool {
 	switch code {
-	case RefuseRecovered, RefuseSkippedFile, RefuseDynamicScope, RefuseNameReference:
+	case RefuseRecovered, RefuseSkippedFile, RefuseDynamicScope, RefuseNameReference, RefuseLineBreaks:
 		return true
 	case RefuseConflict:
 		return reason == reasonSpecialSource
@@ -322,6 +323,9 @@ func (s *Snapshot) PrepareRename(path string, offset int) (tree.Range, string, e
 	}
 	if rs.isExcluded(site.key) {
 		return tree.Range{}, "", s.candidateSiteRefusal(site.sym.Name, site)
+	}
+	if ref := s.loneCRRefusal([]int{s.idx[path]}); ref != nil {
+		return tree.Range{}, "", ref
 	}
 	return site.rng, site.sym.Name, nil
 }
@@ -603,6 +607,12 @@ func (s *Snapshot) planSymbol(sym *Symbol, newName string, cursor *renameSite) (
 			files = append(files, f)
 		}
 	}
+	if ref := s.loneCRRefusal(files); ref != nil {
+		return nil, ref
+	}
+	if ref := s.loneCRMentionRefusal(sym.Name, newName); ref != nil {
+		return nil, ref
+	}
 	union := newBitset(len(s.paths)) // the files visible from any edited file
 	for _, f := range files {
 		union.or(s.visible[f])
@@ -653,6 +663,63 @@ func (s *Snapshot) planSymbol(sym *Symbol, newName string, cursor *renameSite) (
 		s.noteRenameCap(capOthers, s.declFile[sym.Decls[0]], sym.Decls[0].NameRange.Start.Line)
 	}
 	return plan, nil
+}
+
+// hasLoneCR reports whether f has a CR that is not followed by LF outside a
+// comment. The lexer reads such a CR as a blank, the shell as an ordinary
+// character, so the sites and the scopes found around it cannot be trusted. A
+// comment ends at LF in both readings, so a CR inside one is harmless.
+func hasLoneCR(f *tree.File) bool {
+	src := f.Src
+	next := 0 // the first comment that may still hold the CR
+	for i := 0; i < len(src); i++ {
+		j := bytes.IndexByte(src[i:], '\r')
+		if j < 0 {
+			return false
+		}
+		i += j
+		if i+1 < len(src) && src[i+1] == '\n' {
+			continue
+		}
+		for next < len(f.Comments) && f.Comments[next].Range.End.Offset <= i {
+			next++
+		}
+		if next < len(f.Comments) && f.Comments[next].Range.Start.Offset <= i {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func (s *Snapshot) lineBreakRefusal(file int) *RenameRefusal {
+	return s.refuse(RefuseLineBreaks, s.paths[file]+" has a lone CR line break, which the shell reads as a character and this analysis as a blank; convert it to LF or CRLF", nil)
+}
+
+// loneCRRefusal refuses when one of files has a lone CR outside a comment.
+func (s *Snapshot) loneCRRefusal(files []int) *RenameRefusal {
+	for _, fi := range files {
+		if f := s.facts[fi].File; f != nil && hasLoneCR(f) {
+			return s.lineBreakRefusal(fi)
+		}
+	}
+	return nil
+}
+
+// loneCRMentionRefusal refuses when a file anywhere in the snapshot that has
+// a lone CR outside a comment contains either name: a use or a definition
+// read around the CR could be hidden from the rename, or invented by it.
+func (s *Snapshot) loneCRMentionRefusal(old, new string) *RenameRefusal {
+	for fi := range s.paths {
+		f := s.facts[fi].File
+		if f == nil || bytes.IndexByte(f.Src, '\r') < 0 {
+			continue
+		}
+		if (bytes.Contains(f.Src, []byte(old)) || bytes.Contains(f.Src, []byte(new))) && hasLoneCR(f) {
+			return s.lineBreakRefusal(fi)
+		}
+	}
+	return nil
 }
 
 // incompleteWarnings says why the graph around the edited files is incomplete

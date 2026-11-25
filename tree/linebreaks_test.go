@@ -129,8 +129,8 @@ func TestLineTablesAgreeWithoutLoneCR(t *testing.T) {
 		same(t, "random", []byte(sb.String()))
 	}
 	n := 0
-	filepath.WalkDir("../bench/testdata", func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+	filepath.WalkDir("../testdata", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || filepath.Ext(path) != ".sh" {
 			return nil
 		}
 		b, err := os.ReadFile(path)
@@ -142,7 +142,7 @@ func TestLineTablesAgreeWithoutLoneCR(t *testing.T) {
 		return nil
 	})
 	if n == 0 {
-		t.Fatal("no files under bench/testdata")
+		t.Fatal("no shell files under ../testdata")
 	}
 }
 
@@ -153,4 +153,19 @@ func hasLoneCR(b []byte) bool {
 		}
 	}
 	return false
+}
+
+// LSPLine counts LF, CRLF and a lone CR as line breaks; a break belongs to the
+// line it ends.
+func TestLSPLine(t *testing.T) {
+	src := "a\rb\r\n\r\r\nc\n"
+	f := NewFile("x.sh", []byte(src))
+	for off, want := range []int{0, 0, 1, 1, 1, 2, 3, 3, 4, 4} {
+		if got := f.LSPLine(off); got != want {
+			t.Errorf("offset %d (%q): line %d, want %d", off, src[off:off+1], got, want)
+		}
+	}
+	if f.LSPLine(-3) != 0 || f.LSPLine(len(src)) != 5 || f.LSPLine(len(src)+9) != 5 {
+		t.Errorf("clamping: %d %d %d", f.LSPLine(-3), f.LSPLine(len(src)), f.LSPLine(len(src)+9))
+	}
 }

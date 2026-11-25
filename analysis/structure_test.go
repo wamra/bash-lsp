@@ -11,17 +11,29 @@ import (
 
 const foldSrc = "# one\n# two\n# three\nf() {\n  if true; then\n    cat <<EOF\nbody\nEOF\n  fi\n}\n# region setup\nx=1\n# endregion\n"
 
-func foldStrs(fs []Fold) string {
+// foldStrs lists folds as (first line, last line, kind), lines 0-based and
+// counted by LF, CRLF and a lone CR.
+func foldStrs(src string, fs []Fold) string {
+	line := func(off int) int {
+		n := 0
+		for i := 0; i < off; i++ {
+			if src[i] == '\n' || src[i] == '\r' && (i+1 == len(src) || src[i+1] != '\n') {
+				n++
+			}
+		}
+		return n
+	}
 	var out []string
 	for _, f := range fs {
-		out = append(out, fmt.Sprintf("(%d,%d,%s)", f.StartLine, f.EndLine, f.Kind))
+		out = append(out, fmt.Sprintf("(%d,%d,%s)", line(f.StartOffset), line(f.EndOffset), f.Kind))
 	}
 	return strings.Join(out, " ")
 }
 
 func TestFolds(t *testing.T) {
-	q := buildMem(t, map[string]string{"a.sh": foldSrc})
-	got := foldStrs(q.s.Folds(q.abs("a.sh")))
+	src := foldSrc
+	q := buildMem(t, map[string]string{"a.sh": src})
+	got := foldStrs(src, q.s.Folds(q.abs("a.sh")))
 	want := "(0,2,comment) (3,9,) (4,8,) (5,7,) (10,12,region)"
 	if got != want {
 		t.Fatalf("folds %s, want %s", got, want)
@@ -31,10 +43,27 @@ func TestFolds(t *testing.T) {
 func TestFoldsOtherShapes(t *testing.T) {
 	src := "#!/bin/sh\n# only\nx=1\n( echo a\n  echo b )\n{ echo a\n  echo b; }\nwhile true; do\n  :\ndone\ncase a in\n  a) :;;\nesac\nif true; then :; fi\n# lone region\n# endregion\n# stray\n"
 	q := buildMem(t, map[string]string{"a.sh": src})
-	got := foldStrs(q.s.Folds(q.abs("a.sh")))
+	got := foldStrs(src, q.s.Folds(q.abs("a.sh")))
 	want := "(3,4,) (5,6,) (7,9,) (10,12,)"
 	if got != want {
 		t.Fatalf("folds %s, want %s", got, want)
+	}
+}
+
+// Folds carry byte offsets, so they do not depend on how lines are counted.
+func TestFoldsOnLoneCRText(t *testing.T) {
+	for _, tc := range []struct{ name, src, want string }{
+		{"function", "# a\rb\nf() {\n  echo hi\n  echo ho\n}\n", "(0,1,comment) (2,5,)"},
+		{"comment run and region", "x=1\r# c1\n# c2\n# region r\nf() {\n  echo hi\n  echo ho\n}\n# endregion\n", "(1,2,comment) (3,8,region) (4,7,)"},
+		{"lone CR between comments", "# c1\n\r# c2\n", ""},
+		{"one tool line", "f() { :;\r}\n", "(0,1,)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			q := buildMem(t, map[string]string{"a.sh": tc.src})
+			if got := foldStrs(tc.src, q.s.Folds(q.abs("a.sh"))); got != tc.want {
+				t.Fatalf("folds %s, want %s", got, tc.want)
+			}
+		})
 	}
 }
 
