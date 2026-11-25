@@ -911,25 +911,39 @@ func TestCLIRenameRedactsFileNamesInEveryLine(t *testing.T) {
 	}
 }
 
-// --apply edits by byte span: a file with lone CR, CRLF and CR CR LF breaks
-// and multi-byte text comes out byte-exact, and tool lines count LF only.
-func TestCLIRenameApplyLoneCRIsByteExact(t *testing.T) {
+// A file with a lone CR outside a comment is refused, by preview and by
+// --apply, and nothing is written; CRLF files and a lone CR in a comment
+// rename byte-exactly.
+func TestCLIRenameLoneCR(t *testing.T) {
 	root := t.TempDir()
 	if r, err := filepath.EvalSymlinks(root); err == nil {
 		root = r
 	}
-	const src = "# \U0001F600\rb\r\r\nfoo() { :; }\r\necho;\rfoo\r\nx=1;\rfoo\r"
-	if err := os.WriteFile(filepath.Join(root, "a.sh"), []byte(src), 0o644); err != nil {
+	const bad = "x=1;\rbar() { :; }\nbar\n"
+	if err := os.WriteFile(filepath.Join(root, "a.sh"), []byte(bad), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out := runOK(t, "rename", "foo", "bar", "--apply", "--root", root)
-	// Tool lines: the file has LF at the ends of lines 1 (CR CR LF), 2 (CRLF) and 3 (CRLF).
-	wantLines(t, out, "edit  a.sh:2:1  foo -> bar", "edit  a.sh:3:7  foo -> bar", "edit  a.sh:4:6  foo -> bar")
-	got, err := os.ReadFile(filepath.Join(root, "a.sh"))
-	if err != nil {
-		t.Fatal(err)
+	for _, args := range [][]string{{"rename", "bar", "zzz", "--root", root}, {"rename", "bar", "zzz", "--apply", "--root", root}} {
+		code, out, errs := runCode(t, args...)
+		if code == 0 || !strings.Contains(errs, "refused: unsupported-line-breaks: ") || !strings.Contains(errs, "a.sh") || out != "" {
+			t.Fatalf("%v: exit %d out %q err %q", args, code, out, errs)
+		}
 	}
-	if want := strings.ReplaceAll(src, "foo", "bar"); string(got) != want {
-		t.Fatalf("file %q, want %q", got, want)
+	if b, _ := os.ReadFile(filepath.Join(root, "a.sh")); string(b) != bad {
+		t.Fatalf("file changed: %q", b)
+	}
+
+	good := map[string]string{"c.sh": "bar() { :; }\r\nbar\r\n", "d.sh": "# \U0001F600\rb\nbar() { :; }\nbar\n"}
+	for name, src := range good {
+		os.Remove(filepath.Join(root, "a.sh"))
+		if err := os.WriteFile(filepath.Join(root, name), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runOK(t, "rename", "bar", "zzz", "--apply", "--root", root)
+		got, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil || string(got) != strings.ReplaceAll(src, "bar", "zzz") {
+			t.Fatalf("%s: %q %v", name, got, err)
+		}
+		os.Remove(filepath.Join(root, name))
 	}
 }
