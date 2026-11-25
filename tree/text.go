@@ -5,14 +5,30 @@ import (
 	"unicode/utf8"
 )
 
+// lineStarts returns the byte offset of each line start. A line break is
+// "\r\n", "\n", or a "\r" not followed by "\n" (LSP 3.17, Text Documents).
 func lineStarts(src []byte) []int {
 	starts := []int{0}
 	for i, b := range src {
-		if b == '\n' {
+		if b == '\n' || b == '\r' && (i+1 == len(src) || src[i+1] != '\n') {
 			starts = append(starts, i+1)
 		}
 	}
 	return starts
+}
+
+// lineContentEnd is the byte offset where the text of line (0-based) ends,
+// before its line break.
+func (f *File) lineContentEnd(line int) int {
+	if line+1 >= len(f.lines) {
+		return len(f.Src)
+	}
+	start, end := f.lines[line], f.lines[line+1]
+	end-- // the "\n", or a bare "\r"
+	if f.Src[end] == '\n' && end > start && f.Src[end-1] == '\r' {
+		end--
+	}
+	return end
 }
 
 // PosAt returns the position of offset, clamped to [0, len(Src)].
@@ -53,7 +69,7 @@ func (f *File) ToUTF16(p Pos) (line, char int) {
 }
 
 // FromUTF16 converts a 0-based line and UTF-16 column to a Pos. A column past
-// the end of the line clamps to the line end (before any \r\n); a line past
+// the end of the line clamps to the line end (before its line break); a line past
 // the last clamps to EOF.
 func (f *File) FromUTF16(line, char int) Pos {
 	if line >= len(f.lines) {
@@ -66,13 +82,7 @@ func (f *File) FromUTF16(line, char int) Pos {
 		char = 0
 	}
 	start := f.lines[line]
-	end := len(f.Src)
-	if line+1 < len(f.lines) {
-		end = f.lines[line+1] - 1 // the \n
-		if end > start && f.Src[end-1] == '\r' {
-			end--
-		}
-	}
+	end := f.lineContentEnd(line)
 	off, n := start, 0
 	for off < end && n < char {
 		u, size := units(f.Src[off:end])
