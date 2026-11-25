@@ -27,11 +27,13 @@ type FeatureInfo struct {
 
 // The first versions below are FDS-016's table (docs/internal/specs/
 // 2026-11-22-bash-lsp-brd-fds-v0.2.md, row FDS-016), which takes them from
-// the bash NEWS file. They are unconfirmed: no bash of those series is on
-// the development machine, and bench/results/version-probe-m3.json confirms
-// only that each fails on 3.2.57 (docs/version-table.md). `mapfile` and
-// `readarray` are left out: FDS-016 records one conflicting source for
-// their first version.
+// the bash NEWS file, as confirmed by probing real builds of bash 3.2.57,
+// 4.0, 4.2, 4.3, 4.4, 5.0, 5.1 and 5.3 (bench/results/version-probe-*.json,
+// docs/version-table.md): each row fails below its first version and passes
+// from it, on the builds listed there. Bash 4.1 and 5.2 were not built, so
+// a first version is confirmed against the builds on either side of it, not
+// against every release. `mapfile` and `readarray` are left out: FDS-016
+// records one conflicting source for their first version.
 var featureTable = []FeatureInfo{
 	{"assoc-array", BashVersion{4, 0}, false, "associative arrays"},
 	{"case-modification", BashVersion{4, 0}, true, "case-modification expansions"},
@@ -44,7 +46,7 @@ var featureTable = []FeatureInfo{
 	{"lastpipe", BashVersion{4, 2}, false, "lastpipe settings"},
 	{"nameref", BashVersion{4, 3}, false, "namerefs"},
 	{"wait-n", BashVersion{4, 3}, false, "waiting for any job"},
-	{"negative-subscript", BashVersion{4, 3}, true, "negative array subscripts"},
+	{"negative-subscript", BashVersion{4, 2}, true, "negative array subscripts"},
 	{"transform-op", BashVersion{4, 4}, true, "parameter transformations"},
 	{"epochseconds", BashVersion{5, 0}, false, "the EPOCHSECONDS and EPOCHREALTIME variables"},
 	{"wait-p", BashVersion{5, 1}, false, "job ids captured by wait"},

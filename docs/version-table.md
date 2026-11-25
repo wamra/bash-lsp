@@ -2,48 +2,53 @@
 
 Source of every first version: FDS-016 in
 `docs/internal/specs/2026-11-22-bash-lsp-brd-fds-v0.2.md`, which takes the
-table from the bash NEWS file. **The first versions are unconfirmed.** The
-only bash on the development machine is 3.2.57, so each row is confirmed in
-one direction only: the feature fails there
-(`bench/results/version-probe-m3.json`, from `bench/version_probe.py
-/bin/bash`; `$BASH_VERSION` in the file is `3.2.57(1)-release`). Whether a
-feature first appears in the version named is not tested. The FDS-016 release
-gate (each row confirmed against a real bash of that series) is still open
-(plan Decision 15).
+table from the bash NEWS file. **The first versions are confirmed against real
+builds.** `bench/version_probe.py <bash>` runs one fixed snippet per row under
+`env -i PATH=/usr/bin:/bin <bash> --noprofile --norc` and records the result in
+`bench/results/version-probe-<v>.json`. It was run on `/bin/bash` 3.2.57 and
+on builds of bash 4.0, 4.2, 4.3, 4.4, 5.0, 5.1 and 5.3 made from the
+ftp.gnu.org tarballs (bash 4.1 and 5.2 were not built). In all eight runs every
+row fails below its first version and passes from it
+(`TestTableMatchesProbeResults` re-checks this against the result files). One
+row was wrong and is fixed: `negative-subscript` was 4.3 in FDS-016 and is
+4.2 (it passes on 4.2.0 and fails on 4.0 and 3.2.57; there is no 4.1 build, so
+4.1 itself is not measured).
 
 The table is data: `analysis.FeatureTable()` in `analysis/versionrules.go`.
 The vendored parser carries no per-feature version notes, so none is used.
 
 ## Version rows
 
-| Key | First bash | On 3.2.57 | What is detected | Where |
-|---|---|---|---|---|
-| `assoc-array` | 4.0 | fails (measured): `declare: -A: invalid option`, exit 2 | a declaration with `-A` (`declare`, `typeset`, `local`, `readonly`, `export`) | analysis (`VarAttrs.Assoc`) |
-| `case-modification` | 4.0 | fails (measured): `bad substitution`, exit 1 | `${v^}`, `${v^^}`, `${v,}`, `${v,,}` | front |
-| `coproc` | 4.0 | fails (measured): syntax error for `coproc { :; }`, exit 2 | the `coproc` keyword | front |
-| `globstar` | 4.0 | fails (measured): `invalid shell option name`, exit 1 | `shopt -s globstar` (not `-u`, `-q`) | analysis (command) |
-| `case-fallthrough` | 4.0 | fails (measured): syntax error for `;&` and for `;;&`, exit 2 | `;&` and `;;&` | front |
-| `pipe-all` | 4.0 | fails (measured): syntax error, exit 2 | `\|&` | front |
-| `append-all` | 4.0 | fails (measured): syntax error, exit 2 | `&>>` | front |
-| `declare-g` | 4.2 | fails (measured): `declare: -g: invalid option`, exit 2 | `declare`, `typeset`, `local` with `-g` | analysis (`VarAttrs.Global`) |
-| `lastpipe` | 4.2 | fails (measured): `invalid shell option name`, exit 1 | `shopt -s lastpipe` | analysis (command) |
-| `nameref` | 4.3 | fails (measured): `declare: -n: invalid option`, exit 2 | `declare`, `typeset`, `local` with `-n` | analysis (`VarAttrs.Nameref`) |
-| `wait-n` | 4.3 | fails (measured): `wait: -n: invalid option`, exit 2 | `wait` with an option word that holds `n` | analysis (command) |
-| `negative-subscript` | 4.3 | fails (measured): `bad array subscript`, exit 1 (the probe asserts the value) | a subscript that is `-` and an integer literal, in `${a[-1]}`, `a[-1]=x`, `$((a[-1]))` | front |
-| `transform-op` | 4.4 | fails (measured): `bad substitution`, exit 1 | `${v@Q}` only (the other `@` operators are not flagged, see below) | front |
-| `epochseconds` | 5.0 | fails (measured): the variable is unset (exit 1 from `[ -n "${EPOCHSECONDS-}" ]`) | a read of `EPOCHSECONDS` or `EPOCHREALTIME` | analysis (variable read) |
-| `wait-p` | 5.1 | fails (measured): `wait: -p: invalid option`, exit 2 | `wait` with an option word that holds `p` | analysis (command) |
+| Key | First bash | Confirmed | On 3.2.57 | What is detected | Where |
+|---|---|---|---|---|---|
+| `assoc-array` | 4.0 | fails on 3.2.57; passes on 4.0 to 5.3 | fails (measured): `declare: -A: invalid option`, exit 2 | a declaration with `-A` (`declare`, `typeset`, `local`, `readonly`, `export`) | analysis (`VarAttrs.Assoc`) |
+| `case-modification` | 4.0 | fails on 3.2.57; passes on 4.0 to 5.3 | fails (measured): `bad substitution`, exit 1 | `${v^}`, `${v^^}`, `${v,}`, `${v,,}` | front |
+| `coproc` | 4.0 | fails on 3.2.57; passes on 4.0 to 5.3 | fails (measured): syntax error for `coproc { :; }`, exit 2 | the `coproc` keyword | front |
+| `globstar` | 4.0 | fails on 3.2.57; passes on 4.0 to 5.3 | fails (measured): `invalid shell option name`, exit 1 | `shopt -s globstar` (not `-u`, `-q`) | analysis (command) |
+| `case-fallthrough` | 4.0 | fails on 3.2.57; passes on 4.0 to 5.3 | fails (measured): syntax error for `;&` and for `;;&`, exit 2 | `;&` and `;;&` | front |
+| `pipe-all` | 4.0 | fails on 3.2.57; passes on 4.0 to 5.3 | fails (measured): syntax error, exit 2 | `\|&` | front |
+| `append-all` | 4.0 | fails on 3.2.57; passes on 4.0 to 5.3 | fails (measured): syntax error, exit 2 | `&>>` | front |
+| `declare-g` | 4.2 | fails on 3.2.57 to 4.0; passes on 4.2 to 5.3 | fails (measured): `declare: -g: invalid option`, exit 2 | `declare`, `typeset`, `local` with `-g` | analysis (`VarAttrs.Global`) |
+| `lastpipe` | 4.2 | fails on 3.2.57 to 4.0; passes on 4.2 to 5.3 | fails (measured): `invalid shell option name`, exit 1 | `shopt -s lastpipe` | analysis (command) |
+| `nameref` | 4.3 | fails on 3.2.57 to 4.2; passes on 4.3 to 5.3 | fails (measured): `declare: -n: invalid option`, exit 2 | `declare`, `typeset`, `local` with `-n` | analysis (`VarAttrs.Nameref`) |
+| `wait-n` | 4.3 | fails on 3.2.57 to 4.2; passes on 4.3 to 5.3 | fails (measured): `wait: -n: invalid option`, exit 2 | `wait` with an option word that holds `n` | analysis (command) |
+| `negative-subscript` | 4.2 | fails on 3.2.57 to 4.0; passes on 4.2 to 5.3 | fails (measured): `bad array subscript`, exit 1 (the probe asserts the value) | a subscript that is `-` and an integer literal, in `${a[-1]}`, `a[-1]=x`, `$((a[-1]))` | front |
+| `transform-op` | 4.4 | fails on 3.2.57 to 4.3; passes on 4.4 to 5.3 | fails (measured): `bad substitution`, exit 1 | `${v@Q}` only (the other `@` operators are not flagged, see below) | front |
+| `epochseconds` | 5.0 | fails on 3.2.57 to 4.4; passes on 5.0 to 5.3 | fails (measured): the variable is unset (exit 1 from `[ -n "${EPOCHSECONDS-}" ]`) | a read of `EPOCHSECONDS` or `EPOCHREALTIME` | analysis (variable read) |
+| `wait-p` | 5.1 | fails on 3.2.57 to 5.0; passes on 5.1 to 5.3 | fails (measured): `wait: -p: invalid option`, exit 2 | `wait` with an option word that holds `p` | analysis (command) |
 
-Each row reads "fails on 3.2.57 (measured); first version per FDS-016,
-unconfirmed".
+Each row fails below its first version and passes from it on every build
+probed. The "On 3.2.57" column keeps the exact message.
 
 ## Left out of the table
 
 - **`mapfile` / `readarray`.** FDS-016 records "one conflicting source" for
-  their first version, and nothing on this machine settles it. The probe shows
+  their first version. The probe shows
   `mapfile` fails on 3.2.57 (`command not found`, exit 127), so a script that
-  uses it does not run on 3.2, but WB1301 does not name a version for it. A
-  row is added when a real bash of the series it names has been run.
+  uses it does not run on 3.2, but WB1301 does not name a version for it. The
+  probe (`mapfile -t a </dev/null`) passes on every build from 4.0 up, which
+  would agree with a first version of 4.0; it stays out until the conflicting
+  source is settled.
 
 ## Bash-only syntax (WB1302)
 
