@@ -471,10 +471,10 @@ func TestInitializeCapabilities(t *testing.T) {
 	if err := json.Unmarshal(got, &resp); err != nil {
 		t.Fatal(err)
 	}
-	want := `{"callHierarchyProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix"]},"definitionProvider":true,` +
+	want := `{"callHierarchyProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix","refactor.rewrite","source.fixAll"]},"definitionProvider":true,` +
 		`"diagnosticProvider":{"interFileDependencies":true,"workspaceDiagnostics":false},"documentFormattingProvider":true,` +
 		`"documentHighlightProvider":true,"documentLinkProvider":{"resolveProvider":false},` +
-		`"documentRangeFormattingProvider":true,"documentSymbolProvider":true,"foldingRangeProvider":true,"hoverProvider":true,"implementationProvider":true,` +
+		`"documentRangeFormattingProvider":true,"documentSymbolProvider":true,"foldingRangeProvider":true,"hoverProvider":true,"implementationProvider":true,"inlayHintProvider":true,` +
 		`"positionEncoding":"utf-16","referencesProvider":true,"selectionRangeProvider":true,` +
 		`"semanticTokensProvider":{"full":{"delta":true},"legend":{"tokenModifiers":["declaration","readonly","modification","defaultLibrary","local","exported","array","associative","integer","nameref","environment","external","unresolved"],"tokenTypes":["function","variable","parameter","macro"]},"range":true},` +
 		`"signatureHelpProvider":{"retriggerCharacters":[" "],"triggerCharacters":[" "]},` +

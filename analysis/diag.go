@@ -1095,7 +1095,7 @@ func addIdents(m map[string]bool, v string) {
 // quoteCandidate reports whether p, an unquoted part of a word, is `$name`
 // or `${name...}` with name an identifier; not `${#name}` (a length) and not
 // `${name:+x}` or `${name+x}` (quoting those turns "unset" into an empty
-// argument).
+// argument), and not `${!name*}` or `${!name@}` (the names matching a prefix).
 func quoteCandidate(p *tree.Node, src []byte) bool {
 	a, b := p.Range.Start.Offset, p.Range.End.Offset
 	if a < 0 || b > len(src) || a >= b || src[a] != '$' || !identRe.MatchString(p.Name) {
@@ -1109,8 +1109,12 @@ func quoteCandidate(p *tree.Node, src []byte) bool {
 	if strings.HasPrefix(body, "#") {
 		return false
 	}
+	indirect := strings.HasPrefix(body, "!")
 	body = strings.TrimPrefix(body, "!")
 	rest, ok := strings.CutPrefix(body, p.Name)
+	if indirect && (strings.HasPrefix(rest, "*") || strings.HasPrefix(rest, "@")) {
+		return false // `${!pre*}` and `${!pre@}` join the names that match
+	}
 	return ok && !strings.HasPrefix(rest, ":+") && !strings.HasPrefix(rest, "+")
 }
 
