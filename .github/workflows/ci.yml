@@ -14,8 +14,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # macOS is left out on purpose: it is the development platform and its
-  # hosted runners cost about ten times the Linux rate in a private repo.
+  # macOS is left out of the automatic run on purpose: it is the development
+  # platform and its hosted runners cost about ten times the Linux rate in a
+  # private repo. The `test-macos` job below runs on manual dispatch only.
   test:
     strategy:
       fail-fast: false
@@ -32,6 +33,19 @@ jobs:
       - name: Race detector
         if: runner.os == 'Linux'
         run: go test -race ./...
+
+  # Manual only (AC-16): the same steps as `test`, once per release, for the
+  # cost reason above.
+  test-macos:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test ./...
 
   build:
     needs: test

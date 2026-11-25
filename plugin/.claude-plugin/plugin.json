@@ -1,6 +1,6 @@
 {
   "name": "bash-lsp",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "description": "Bash language server: go to definition, find references, hover, symbols, syntax and lint diagnostics for shell scripts. Reads files, runs none of them; starts ShellCheck only when it is installed outside the workspace.",
   "license": "MIT",
   "author": {
