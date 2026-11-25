@@ -652,3 +652,34 @@ func TestUnclosedHeredocIsAWarning(t *testing.T) {
 		t.Fatalf("%s", describe(src, ds))
 	}
 }
+
+// The here-document is a warning only when nothing is left open at it: each
+// source below is as `bash -n` judges it (3.2 and 5.3 agree on all of them).
+func TestUnclosedHeredocSeverityFollowsBash(t *testing.T) {
+	for src, want := range map[string]Severity{
+		"cat <<EOF\nx\n":                     SevWarning,
+		"cat <<-EOF\nx\n":                    SevWarning,
+		"cat <<'EOF'\nx\n":                   SevWarning,
+		"cat <<A <<B\nx\n":                   SevWarning,
+		"cat <<EOF; echo ok\nx\n":            SevWarning,
+		"cat <<EOF\nx":                       SevWarning,
+		"echo a\nf() { :; }\ncat <<EOF\nx\n": SevWarning,
+		"f() {\n cat <<EOF\nx\n":             SevError,
+		"if a; then cat <<EOF\nx\n":          SevError,
+		"( cat <<EOF\nx\n":                   SevError,
+		"{ cat <<EOF\nx\n":                   SevError,
+		"while a; do cat <<EOF\nx\n":         SevError,
+		"for i in 1; do cat <<EOF\nx\n":      SevError,
+		"case x in a) cat <<EOF\nx\n":        SevError,
+		"x=$(cat <<EOF\nx\n":                 SevError,
+	} {
+		ds := ofRule(diagsIn(map[string]string{"x.sh": src}, "x.sh"), "WB1001")
+		var got []Severity
+		for _, d := range ds {
+			got = append(got, d.Severity)
+		}
+		if len(got) != 1 || got[0] != want {
+			t.Errorf("%q: severities %v, want [%d]", src, got, want)
+		}
+	}
+}
