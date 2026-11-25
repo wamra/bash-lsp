@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/wamra/bash-lsp/parse"
 	"github.com/wamra/bash-lsp/tree"
 )
 
@@ -96,6 +97,38 @@ func lineEnd(f *tree.File, p tree.Pos) tree.Pos {
 // end word.
 const unclosedHeredoc = "unclosed here-document"
 
+// heredocLeavesOpen reports whether a construct is still open at the
+// unclosed here-document e: bash accepts the file when the here-document is
+// the last thing in it and rejects it inside an open `if`, loop, group,
+// function or substitution. The test is bash's own: the file up to the end
+// of the here-document's line is parsed with each pending here-document
+// closed by its end word; any other error means something is open.
+func (c *diagCtx) heredocLeavesOpen(e tree.SyntaxError) bool {
+	src := c.f.Src
+	end := len(src)
+	if i := bytes.IndexByte(src[min(e.Range.Start.Offset, len(src)):], '\n'); i >= 0 {
+		end = e.Range.Start.Offset + i
+	}
+	text := append(append([]byte(nil), src[:end]...), '\n')
+	for range 16 { // one round per here-document pending on the line
+		var stop string
+		for _, pe := range parse.FileAs(c.f.Path, text, c.f.Dialect).Errors {
+			rest, ok := strings.CutPrefix(pe.Msg, unclosedHeredoc+" `")
+			if !ok || !strings.HasSuffix(rest, "`") {
+				return true
+			}
+			if stop == "" {
+				stop = strings.TrimSuffix(rest, "`")
+			}
+		}
+		if stop == "" {
+			return false
+		}
+		text = append(append(text, stop...), '\n')
+	}
+	return true
+}
+
 // syntax reports the file's syntax errors (WB1001), recovered internal
 // errors (WB1003), error gaps that hold no error (WB1001) and resync limits
 // (WB1005). An error inside a gap is ranged from the gap's start to the end
@@ -138,7 +171,7 @@ func (c *diagCtx) syntax() {
 			msg = fmt.Sprintf("internal parser error; this file is analysed up to line %d", e.Range.Start.Line)
 		}
 		d := c.add(rule, r, msg)
-		if !e.Internal && strings.HasPrefix(msg, unclosedHeredoc) {
+		if !e.Internal && strings.HasPrefix(msg, unclosedHeredoc) && !c.heredocLeavesOpen(e) {
 			d.Severity = SevWarning // bash -n accepts a here-document that runs to the end of the file
 		}
 	}

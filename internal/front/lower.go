@@ -27,6 +27,8 @@ type lowerer struct {
 	nodes []tree.Node
 	ptrs  []*tree.Node
 
+	lazy int // inside text that `bash -n` does not parse (backticks, a here-document body)
+
 	depth int // recursion depth of stmt, word, part and ifClause; see maxDepth
 
 	// feats is the syntactic evidence of dialect and version found while
@@ -265,13 +267,19 @@ func (l *lowerer) group(list []*syntax.Stmt) *tree.Node {
 	return l.mk(tree.KBlock, syntax.Pos{}, syntax.Pos{}, l.stmts(list)...)
 }
 
-// groupBefore is group for the body of an if clause. When the body is the one
-// statement the parser invented (nothing between `then` or `else` and the
-// next keyword), `missing command` is reported at that keyword, the token
-// `bash -n` names, instead of where the body should have started.
+// groupBefore is group for the body of a compound command: see stmtsBefore.
 func (l *lowerer) groupBefore(list []*syntax.Stmt, next syntax.Pos) *tree.Node {
+	return l.mk(tree.KBlock, syntax.Pos{}, syntax.Pos{}, l.stmtsBefore(list, next)...)
+}
+
+// stmtsBefore is stmts for a body that a keyword or bracket ends. When the
+// body is the one statement the parser invented (nothing between `then`,
+// `do`, `{` and the closing token), `missing command` is reported at that
+// token, the one `bash -n` names, instead of where the body should have
+// started. next is the position the parser recorded for it.
+func (l *lowerer) stmtsBefore(list []*syntax.Stmt, next syntax.Pos) []*tree.Node {
 	first := len(l.errs)
-	n := l.group(list)
+	out := l.stmts(list)
 	if len(list) == 1 && list[0].Position.IsRecovered() && next.IsValid() && !next.IsRecovered() {
 		at := l.pos(next)
 		for i := first; i < len(l.errs); i++ {
@@ -280,7 +288,7 @@ func (l *lowerer) groupBefore(list []*syntax.Stmt, next syntax.Pos) *tree.Node {
 			}
 		}
 	}
-	return n
+	return out
 }
 
 func (l *lowerer) stmt(s *syntax.Stmt) *tree.Node {
@@ -353,6 +361,9 @@ func (l *lowerer) command(c syntax.Command) *tree.Node {
 		n := l.mk(tree.KFuncDecl, c.Position, syntax.Pos{}, l.stmt(c.Body))
 		if c.Name != nil {
 			n.Name, n.NameRange = l.name(c.Name.Value, c.Name.ValuePos, c.Name.ValueEnd)
+			if c.Name.Value == "else" && !c.RsrvWord { // `function else` is accepted
+				l.errs = append(l.errs, tree.SyntaxError{Range: n.NameRange, Msg: "`else` cannot be a function name"})
+			}
 			if c.RsrvWord {
 				l.featureFrom(tree.FeatFunctionKeyword, c.Position, c.Name.ValueEnd)
 			}
@@ -368,7 +379,7 @@ func (l *lowerer) command(c syntax.Command) *tree.Node {
 	case *syntax.IfClause:
 		return l.ifClause(c, true)
 	case *syntax.WhileClause:
-		n := l.mk(tree.KWhile, c.WhilePos, c.End(), l.group(c.Cond), l.group(c.Do))
+		n := l.mk(tree.KWhile, c.WhilePos, c.End(), l.group(c.Cond), l.groupBefore(c.Do, c.DonePos))
 		l.missing(n, c.DoPos, "do")
 		l.missing(n, c.DonePos, "done")
 		return n
@@ -396,11 +407,11 @@ func (l *lowerer) command(c syntax.Command) *tree.Node {
 		l.missing(n, c.Esac, "esac")
 		return n
 	case *syntax.Block:
-		n := l.mk(tree.KBlock, c.Lbrace, c.End(), l.stmts(c.Stmts)...)
+		n := l.mk(tree.KBlock, c.Lbrace, c.End(), l.stmtsBefore(c.Stmts, c.Rbrace)...)
 		l.missing(n, c.Rbrace, "}")
 		return n
 	case *syntax.Subshell:
-		n := l.mk(tree.KSubshell, c.Lparen, c.End(), l.stmts(c.Stmts)...)
+		n := l.mk(tree.KSubshell, c.Lparen, c.End(), l.stmtsBefore(c.Stmts, c.Rparen)...)
 		l.missing(n, c.Rparen, ")")
 		return n
 	case *syntax.BinaryCmd:
@@ -514,7 +525,7 @@ func (l *lowerer) forClause(c *syntax.ForClause) *tree.Node {
 	if c.Braces {
 		open, closeTok = "{", "}"
 	}
-	body := l.mk(tree.KBlock, c.DoPos, c.End(), l.stmts(c.Do)...)
+	body := l.mk(tree.KBlock, c.DoPos, c.End(), l.stmtsBefore(c.Do, c.DonePos)...)
 	var n *tree.Node
 	switch loop := c.Loop.(type) {
 	case *syntax.WordIter:
@@ -602,7 +613,9 @@ func (l *lowerer) redirect(r *syntax.Redirect) *tree.Node {
 	if r.Hdoc != nil {
 		var body []*tree.Node
 		if len(r.Hdoc.Parts) > 0 {
+			l.lazy++
 			body = append(body, l.word(r.Hdoc))
+			l.lazy--
 		}
 		var hd *tree.Node
 		if len(r.Hdoc.Parts) > 0 {
@@ -755,6 +768,10 @@ func (l *lowerer) part1(p syntax.WordPart) *tree.Node {
 		l.paramFeatures(p, n)
 		return n
 	case *syntax.CmdSubst:
+		if p.Backquotes {
+			l.lazy++
+			defer func() { l.lazy-- }()
+		}
 		n := l.mk(tree.KCmdSubst, p.Left, p.End(), l.stmts(p.Stmts)...)
 		l.missing(n, p.Right, ")")
 		return n
@@ -1106,7 +1123,7 @@ func (l *lowerer) nulSourceName(value string, s, e int) (string, int) {
 // if clause, so one that reaches a statement is one `bash -n` rejects.
 func (l *lowerer) strayElse(s *syntax.Stmt) {
 	c, ok := s.Cmd.(*syntax.CallExpr)
-	if !ok || len(c.Assigns) > 0 || len(c.Args) == 0 {
+	if l.lazy > 0 || !ok || len(c.Assigns) > 0 || len(c.Args) == 0 {
 		return
 	}
 	lit, ok := plainLit(c.Args[0])
