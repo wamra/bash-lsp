@@ -183,17 +183,33 @@ func writable(path string) error {
 // writeFileAtomic replaces the file at path (the target, if path is a link)
 // with data: a temporary file in the same directory with the same permission
 // bits, written, synced and renamed over it.
-func writeFileAtomic(path string, data []byte) (err error) {
+func writeFileAtomic(path string, data []byte) error {
+	tmp, target, err := stageFile(path, data)
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, target); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+// stageFile writes data to a temporary file beside path (the target, if path
+// is a link) with the permission bits of the file, synced, and returns its
+// name and the file it is meant to replace. On an error no temporary file is
+// left.
+func stageFile(path string, data []byte) (tmpName, target string, err error) {
 	if real, rerr := filepath.EvalSymlinks(path); rerr == nil {
 		path = real
 	}
 	info, err := os.Stat(path)
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".bash-lsp-fmt-*")
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	defer func() {
 		if err != nil {
@@ -202,16 +218,16 @@ func writeFileAtomic(path string, data []byte) (err error) {
 		}
 	}()
 	if err = tmp.Chmod(info.Mode().Perm()); err != nil {
-		return err
+		return "", "", err
 	}
 	if _, err = tmp.Write(data); err != nil {
-		return err
+		return "", "", err
 	}
 	if err = tmp.Sync(); err != nil {
-		return err
+		return "", "", err
 	}
 	if err = tmp.Close(); err != nil {
-		return err
+		return "", "", err
 	}
-	return os.Rename(tmp.Name(), path)
+	return tmp.Name(), path, nil
 }

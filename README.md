@@ -68,6 +68,7 @@ bash-lsp check [paths] [--format text|json] [--shellcheck auto|off] [--fail-on e
 bash-lsp check --hook             PostToolUse hook of the plugin: JSON on stdin; off unless hook.enabled
 bash-lsp fmt [-w] [--root DIR] [--] FILE...   format with the in-process printer
 bash-lsp search [--json] [--root DIR] [--] TEXT   native name matches plus code-index hits
+bash-lsp rename SYMBOL|FILE:LINE:COL NEW [--preview|--apply] [--json] [--root DIR] [--]   rename a function or variable (below)
 bash-lsp mcp [--root DIR]         MCP server on stdio (docs/mcp.md)
 bash-lsp help | --help | -h       usage (also `COMMAND --help`); an unknown flag is exit 2
 bash-lsp status [--root DIR] [--json]
@@ -101,7 +102,7 @@ differs: without `--root` its root is the nearest directory upward from the
 current directory that holds `.git` or `.bash-lsp.toml` (the current directory
 if none), and the paths it prints are relative to that root. Forward slashes
 on every OS. Exit codes: 0 success, 1 runtime
-failure, 2 usage error.
+failure, 2 usage error; `rename` also uses 4 for a refusal.
 
 `check` prints the findings of the named files and directories (default `.`), one
 `path:line:col: severity RULE message` line each, or with `--format json` one
@@ -146,6 +147,102 @@ What it does not do:
 - `$[ ... ]` and `for ((;;)) { ... }` are refused: the printer does not keep
   them.
 - Command substitutions in backquotes are printed as `$( )`.
+
+## Rename
+
+`bash-lsp rename SYMBOL NEW` plans the rename of a function; `bash-lsp rename
+FILE:LINE:COL NEW` plans the rename of the function, alias or variable named at
+that position (a local variable is renamed in its function only). Preview is
+the default and writes nothing; `--apply` rewrites the files. The plan lists
+every place that is edited, every place that mentions the name and is left
+alone, and the other symbols of the same name that stay:
+
+```
+$ bash-lsp rename build_release ship
+edit  dyn.sh:4:1  build_release -> ship
+edit  lib/util.sh:4:1  build_release -> ship
+edit  main.sh:3:10  build_release -> ship
+edit  main.sh:6:3  build_release -> ship
+skip  main.sh:8:13  candidate/variable-constant  build_release
+skip  main.sh:9:3  candidate/variable-constant  "$cmd"
+skip  main.sh:10:9  candidate/string-eval  build_release
+other orphan.sh:2:1  different symbol named build_release, not renamed
+```
+
+`edit` sites are the ones the analysis resolved to the symbol. `skip` sites
+mention the name but are never edited: a call through `"$cmd"`, a name inside
+an `eval` or `trap` string, a command word written with quotes or an escape
+(`"f"`, `\f`: reason `inexact-name`). Each shows how the analysis resolved it,
+why it is left alone, and the text there (credentials redacted, then cut to
+200 bytes). `other` lines are declarations of different symbols with the same
+name, which are not touched. `warn` lines say what the analysis could not see
+(a `source` it could not follow, for one). `--json` prints the same plan as
+`{generation, symbol, old, new, edits, excluded, others, warnings, truncated}`
+with 1-based lines and UTF-16 columns, the bytes `preview_rename` returns over
+MCP. Each list is cut at 10,000 records with `"truncated": true`.
+
+Exit codes of `rename`: 0 done, 1 failure (a partial apply included), 2 usage,
+4 refused. A refusal prints `refused: CODE: reason` on standard error, then one
+`site  path:line:col` line for each place the reason is about, and changes
+nothing. With `--json` standard output stays empty on a refusal.
+
+### Apply
+
+`--apply` writes only when every file still holds the bytes the plan was built
+from, and it refuses the whole rename, writing nothing, when any file of the
+plan:
+
+- lies outside the root once links are resolved (`outside-root`);
+- is not a regular file, a symbolic link included (`not-regular-file`);
+- cannot be written by this user (`read-only`);
+- holds a NUL byte (`nul-byte`) or text that is not valid UTF-8 (`invalid-utf8`);
+- differs from the text the plan was built from, because it was edited since the workspace was read (`stale-file`).
+
+Then it writes each new text to a temporary file beside its target (same mode),
+syncs it, checks every file once more, and renames the temporary files over
+their targets in path order. If a temporary file cannot be written, nothing is
+replaced. If a rename fails, the files before it stay replaced, and the error
+prints `written:` and `not written:` with the files of each kind (exit 1);
+temporary files are removed. A change made to a file between the last check and
+its rename is lost, as with `fmt -w`. Line endings are kept: only the bytes of
+the name change. The sites in `skip` are printed after an apply as well, because
+they may still need a hand edit.
+
+### Refusals
+
+Each refusal has a stable code. These are the codes of `refused: CODE: reason`
+(the reason text may be refined; the code is the contract). The same text is
+the `isError` result of `preview_rename`.
+
+| Code | Why | Example |
+|---|---|---|
+| `not-a-symbol` | the name or position is not a function, alias or variable of the workspace (builtins, keywords, external commands, `$1`, environment reads) | `rename echo say` |
+| `candidate-site` | the position is a site that may or may not name the symbol (a `"$cmd"` call, an `eval` string); it is not renamed, so it cannot be the start of a rename | `rename a.sh:2:5 other` on `cmd=greet`, line 2 |
+| `ambiguous-symbol` | the name or position is bound to several symbols, or several functions of the name are equally widely visible, or more than 256 are; rename one by its `path:line:col` | `rename f g` with `f` defined in `a.sh` and `b.sh` |
+| `invalid-name` | the new name is not `[A-Za-z_][A-Za-z0-9_]*` | `rename f 'a b'` |
+| `reserved-name` | the new name is a shell builtin or keyword | `rename f if` |
+| `name-conflict` | the new name is already a name in the scope of the rename, is called as a command in view, is a special shell variable (`IFS`, `RANDOM`, `PATH`...), appears in an `eval` or `trap` string an edited function reaches, or would join the variable to a local that a caller sees under that name. Renaming a special variable is refused too | `rename f g` with `g` defined |
+| `dynamic-scope` | bash resolves a variable by the call stack, so the rename could change which variable a use reads: a global renamed while a function that declares a local of that name reaches a use of it, a local that a callee reads, a prefix assignment (`x=1 cmd`) whose command reads the name, a function that declares the name and makes a call the analysis cannot follow, or a call graph too large to check | `rename a.sh:1:1 y` on `x=1; show() { echo "$x"; }; run() { local x=2; show; }` |
+| `name-reference` | the name is written where the analysis finds no use of it: `unset`, `declare -n`, `export -f`, `type`, `command -v`, `test -v`, `${!name}`, `complete -F`, `PROMPT_COMMAND`, a name passed to a function that takes names, or a word of an `eval` or `trap` string | `rename f g` with `unset -f f` in the file |
+| `recovered-region` | an edit lies in, or after, a region the parser had to repair or could not read, or such a region in view mentions the name; a half-typed buffer is never renamed | `rename f h` with an unterminated `"` before a call of `f` |
+| `skipped-file` | a file in view was skipped for its size and may use the name | `rename f h` with `source ./big.sh`, `big.sh` over `[limits] max_file_bytes` |
+| `too-many-sites` | more than 100,000 sites to edit or confirm by hand | `rename f h` with 100,001 calls of `f` |
+| `no-op` | the new name is the old name | `rename f f` |
+
+`--apply` adds six codes, listed under Apply: `stale-file`, `not-regular-file`,
+`outside-root`, `read-only`, `nul-byte` and `invalid-utf8`. They print in the
+same `refused:` form with exit 4; `preview_rename` never writes and never
+raises them.
+
+`inexact-name` is not a refusal: it is the reason of a `skip` line, a site
+whose text is not exactly the name (`"f"`, `\f`, `f""`). Bash runs the
+function, but a textual edit would have to rewrite the quoting; the site is
+left for you.
+
+What a rename does not prove: a name chosen at run time (`"$cmd"`, `eval`,
+`trap` strings), a function called from a file the workspace does not hold, and
+code that sources a file chosen at run time are outside what the analysis can
+see; the `skip` and `warn` lines name the ones it noticed.
 
 ## JSON records
 

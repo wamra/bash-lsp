@@ -21,7 +21,7 @@ const (
 
 // The tools. All read the workspace; none writes a file or starts a program
 // of the workspace (search_code starts the user's code-index, see
-// query.Search). Every path-like argument goes through query.CheckInside,
+// query.Search; preview_rename plans a rename and never applies it). Every path-like argument goes through query.CheckInside,
 // which resolves symlinks, before anything else is done with it.
 func init() {
 	str := func(desc string) map[string]any {
@@ -81,6 +81,10 @@ func init() {
 		Description: "List the native findings (syntax, sources, commands, scope, unused names, bash version, dialect) of files; ShellCheck is not run here.",
 		InputSchema: obj(map[string]any{"paths": paths}),
 		Call:        tool(getDiagnostics)})
+	Register(Tool{Name: "preview_rename",
+		Description: "Preview the rename of a function or variable: the edits, the sites left alone and why, other symbols of the same name that stay. Nothing is written. A refusal comes as an error whose text starts with refused: and a stable code." + spec,
+		InputSchema: obj(map[string]any{"symbol": str("The function or the variable under path:line:col."), "new_name": str("The new name.")}, "symbol", "new_name"),
+		Call:        tool(previewRename)})
 }
 
 // tool adapts a function of the session and the raw arguments to a Tool.Call.
@@ -291,4 +295,21 @@ func getDiagnostics(_ context.Context, s *Session, args json.RawMessage) (any, e
 	}
 	opt := analysis.DiagOptions{Roots: []string{s.root}, Target: s.cfg.Target, Disabled: s.cfg.Disabled, Severity: s.cfg.Severity}
 	return query.Diagnostics(s.snap, s.root, a.Paths, opt, query.MaxResults), nil
+}
+
+func previewRename(_ context.Context, s *Session, args json.RawMessage) (any, error) {
+	var a struct {
+		Symbol  string `json:"symbol"`
+		NewName string `json:"new_name"`
+	}
+	if err := decode(args, &a); err != nil {
+		return nil, err
+	}
+	if err := symbolArg(s, "symbol", a.Symbol); err != nil {
+		return nil, err
+	}
+	if err := text("new_name", a.NewName, false); err != nil {
+		return nil, err
+	}
+	return query.PreviewRename(s.snap, s.root, a.Symbol, a.NewName, query.MaxResults)
 }

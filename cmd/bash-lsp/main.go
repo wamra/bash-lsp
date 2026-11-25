@@ -25,9 +25,10 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
-const usage = "usage: bash-lsp [serve|version|ast FILE [--json]|symbols [PATH...] [--json]|doctor [PATH]|check [paths] [--format text|json] [--shellcheck auto|off] [--fail-on error|warning|info|hint] [--root DIR]|fmt [-w] FILE...|extract [--root DIR] [--list-file FILE]|status|callers|callees|refs|impact|trace|unresolved|cycles|search TEXT|mcp]"
+const usage = "usage: bash-lsp [serve|version|ast FILE [--json]|symbols [PATH...] [--json]|doctor [PATH]|check [paths] [--format text|json] [--shellcheck auto|off] [--fail-on error|warning|info|hint] [--root DIR]|fmt [-w] FILE...|extract [--root DIR] [--list-file FILE]|status|callers|callees|refs|impact|trace|unresolved|cycles|search TEXT|rename SYMBOL NEW [--apply]|mcp]"
 
-// Exit codes: 0 success, 1 runtime failure, 2 usage error.
+// Exit codes: 0 success, 1 runtime failure, 2 usage error, 4 a rename that was
+// refused (check keeps 3 for its own runtime failures).
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	// No arguments means serve: editors start the binary bare.
 	if len(args) == 0 {
@@ -79,6 +80,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return cmdExtract(args[1:], stdout, stderr)
 	case "search":
 		return cmdSearch(args[1:], stdout, stderr)
+	case "rename":
+		return cmdRename(args[1:], stdout, stderr)
 	case "mcp":
 		return cmdMCP(args[1:], stdin, stdout, stderr)
 	case "status", "callers", "callees", "refs", "impact", "trace", "unresolved", "cycles":
@@ -98,6 +101,8 @@ func helpText(cmd string) string {
 		return fmtHelp
 	case "search":
 		return searchUsage
+	case "rename":
+		return renameUsage
 	case "mcp":
 		return mcpUsage
 	case "status", "callers", "callees", "refs", "impact", "trace", "unresolved", "cycles":
