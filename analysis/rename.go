@@ -39,6 +39,10 @@ type RenamePlan struct {
 type RenameRefusal struct {
 	Code, Reason string
 	Sites        []Location
+	// NameIndependent is true when no other new name would have been
+	// accepted: the refusal is about the symbol or the text around its sites,
+	// not about the name asked for.
+	NameIndependent bool
 }
 
 func (r *RenameRefusal) Error() string { return "rename refused (" + r.Code + "): " + r.Reason }
@@ -156,6 +160,7 @@ func (s *Snapshot) noteRenameCapAt(c renameCap, path string, line int) {
 // refuse makes a refusal, listing the sites in order, each place once, at
 // most maxRefusalSites of them.
 func (s *Snapshot) refuse(code, reason string, sites []Location) *RenameRefusal {
+	independent := nameIndependentRefusal(code, reason)
 	slices.SortStableFunc(sites, locCmp)
 	sites = slices.CompactFunc(sites, func(a, b Location) bool {
 		return a.Path == b.Path && a.Range.Start.Offset == b.Range.Start.Offset
@@ -165,7 +170,19 @@ func (s *Snapshot) refuse(code, reason string, sites []Location) *RenameRefusal 
 		s.noteRenameCapAt(capSites, sites[0].Path, sites[0].Range.Start.Line)
 		sites = sites[:maxRefusalSites]
 	}
-	return &RenameRefusal{Code: code, Reason: reason, Sites: sites}
+	return &RenameRefusal{Code: code, Reason: reason, Sites: sites, NameIndependent: independent}
+}
+
+// nameIndependentRefusal says whether a refusal would be the same for every
+// valid new name.
+func nameIndependentRefusal(code, reason string) bool {
+	switch code {
+	case RefuseRecovered, RefuseSkippedFile, RefuseDynamicScope, RefuseNameReference:
+		return true
+	case RefuseConflict:
+		return reason == reasonSpecialSource
+	}
+	return false
 }
 
 // renameSite is the place under a cursor that names the symbol to rename.

@@ -491,7 +491,7 @@ func TestInitializeCapabilities(t *testing.T) {
 		`"diagnosticProvider":{"interFileDependencies":true,"workspaceDiagnostics":false},"documentFormattingProvider":true,` +
 		`"documentHighlightProvider":true,"documentLinkProvider":{"resolveProvider":false},` +
 		`"documentRangeFormattingProvider":true,"documentSymbolProvider":true,"foldingRangeProvider":true,"hoverProvider":true,"implementationProvider":true,"inlayHintProvider":true,` +
-		`"positionEncoding":"utf-16","referencesProvider":true,"renameProvider":{"prepareProvider":true},"selectionRangeProvider":true,` +
+		`"positionEncoding":"utf-16","referencesProvider":true,"renameProvider":true,"selectionRangeProvider":true,` +
 		`"semanticTokensProvider":{"full":{"delta":true},"legend":{"tokenModifiers":["declaration","readonly","modification","defaultLibrary","local","exported","array","associative","integer","nameref","environment","external","unresolved"],"tokenTypes":["function","variable","parameter","macro"]},"range":true},` +
 		`"signatureHelpProvider":{"retriggerCharacters":[" "],"triggerCharacters":[" "]},` +
 		`"textDocumentSync":{"change":2,"openClose":true,"save":{"includeText":false}},` +

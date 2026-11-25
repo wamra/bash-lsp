@@ -348,7 +348,11 @@ func (s *server) initialize(raw json.RawMessage) (any, *rpcError) {
 	if len(s.roots) > 0 {
 		go s.pathProfile() // read while the client sends `initialized` and the folders are walked
 	}
-	return initializeResult{Capabilities: capabilities(), ServerInfo: serverInfo{Name: "bash-lsp", Version: s.version}}, nil
+	caps := capabilities()
+	if s.ccaps.RenamePrepare {
+		caps["renameProvider"] = map[string]any{"prepareProvider": true}
+	}
+	return initializeResult{Capabilities: caps, ServerInfo: serverInfo{Name: "bash-lsp", Version: s.version}}, nil
 }
 
 // clientCaps are the client capabilities the handlers consult, read once at

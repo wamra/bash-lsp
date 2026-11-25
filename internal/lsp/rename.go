@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"unicode/utf8"
 
@@ -41,6 +42,12 @@ const (
 	// redaction. maxRenameMessage bounds a refusal message.
 	maxRenameText    = 200
 	maxRenameMessage = 1000
+	// maxRenameNote bounds the whole text of the annotation or the message.
+	maxRenameNote = 4096
+
+	// codeLineBreaks is the stable code of the refusal for text with a bare
+	// CR line break.
+	codeLineBreaks = "unsupported-line-breaks"
 )
 
 type renameParams struct {
@@ -148,6 +155,27 @@ func (s *server) refuseRequest(code, reason string, sites []Location, dataCode s
 	return deferred{}, nil
 }
 
+// hasBareCR reports whether b has a CR that is not followed by LF. LSP counts
+// such a CR as a line break, the positions of the analysis do not.
+func hasBareCR(b []byte) bool {
+	for i := 0; ; {
+		j := bytes.IndexByte(b[i:], '\r')
+		if j < 0 {
+			return false
+		}
+		i += j + 1
+		if i >= len(b) || b[i] != '\n' {
+			return true
+		}
+	}
+}
+
+// lineBreakRefusal answers a rename that would need positions in a file with
+// bare CR line breaks.
+func (s *server) lineBreakRefusal(path string) (any, *rpcError) {
+	return s.refuseRequest(codeLineBreaks, s.relPath(path)+" has a bare CR line break, which the positions of this server do not support yet; convert it to LF or CRLF", nil, codeLineBreaks)
+}
+
 func (s *server) prepareRename(raw json.RawMessage) (any, *rpcError) {
 	var p textDocumentPositionParams
 	if rerr := decode(raw, &p); rerr != nil {
@@ -160,12 +188,23 @@ func (s *server) prepareRename(raw json.RawMessage) (any, *rpcError) {
 	if !ok {
 		return s.refuseRequest(analysis.RefuseNotSymbol, "the document is not part of the workspace", nil, analysis.RefuseNotSymbol)
 	}
+	if hasBareCR(fileOf(snap, path).Src) {
+		return s.lineBreakRefusal(path)
+	}
 	rng, name, err := snap.PrepareRename(path, off)
 	if err != nil {
 		return s.failRequest(snap, err)
 	}
-	if err := probeRename(snap, path, off); err != nil {
+	plan, err := probeRename(snap, path, off)
+	if err != nil {
 		return s.failRequest(snap, err)
+	}
+	if plan != nil {
+		for _, e := range plan.Edits {
+			if hasBareCR(fileOf(snap, e.Path).Src) {
+				return s.lineBreakRefusal(e.Path)
+			}
+		}
 	}
 	r := s.rangeIn(converters{}, snap, path, rng)
 	if !s.caps().RenamePrepare {
@@ -174,32 +213,54 @@ func (s *server) prepareRename(raw json.RawMessage) (any, *rpcError) {
 	return prepareRenameResult{Range: r, Placeholder: redact.String(name)}, nil
 }
 
-// probeName is a valid name nothing is likely to use: a rename to it fails
-// only for reasons that no other name would change.
+// probeName is a valid name that a workspace is unlikely to use. A workspace
+// that does use it can make the probe fail on a name conflict, which hides
+// the refusals the probe looks for: prepareRename then accepts and rename
+// decides.
 const probeName = "bash_lsp_rename_probe"
 
-// probeRename plans a rename of the symbol at the cursor to probeName and
-// returns the refusals no new name can cure: the ones about the symbol or the
-// text around its sites (half-typed regions, skipped files, dynamic scope,
+// probeRename plans a rename of the symbol at the cursor to probeName. It
+// returns the plan, or the refusals no new name can cure (the engine marks
+// them NameIndependent: half-typed regions, skipped files, dynamic scope,
 // names given to eval, unset, declare -n and the like, shell-special
-// variables). Refusals about the new name (conflicts, invalid, reserved) do
-// not count, and neither does a plan that succeeds.
-func probeRename(snap *analysis.Snapshot, path string, off int) error {
-	_, err := snap.PlanRename(path, off, probeName)
+// variables). Refusals about the new name do not count: the plan is then nil.
+func probeRename(snap *analysis.Snapshot, path string, off int) (*analysis.RenamePlan, error) {
+	plan, err := snap.PlanRename(path, off, probeName)
+	if err == nil {
+		return plan, nil
+	}
 	var ref *analysis.RenameRefusal
-	if !errors.As(err, &ref) {
-		return nil
+	if errors.As(err, &ref) && !ref.NameIndependent {
+		return nil, nil
 	}
-	switch ref.Code {
-	case analysis.RefuseRecovered, analysis.RefuseSkippedFile, analysis.RefuseDynamicScope, analysis.RefuseNameReference:
-		return err
-	case analysis.RefuseConflict:
-		if strings.HasPrefix(ref.Reason, "renaming a shell-special variable") {
-			return err
-		}
-	}
-	return nil
+	return nil, err
 }
+
+// currentText is the text the client has of path: the open document's, else
+// the file on disk. stale is true when it is not the text of the snapshot (the
+// document moved on, the snapshot lags, the file changed on disk, or it cannot
+// be read). The snapshot of an open document equals its text; a closed file
+// is read once, after a stat that spares the read when the size differs.
+func (s *server) currentText(snap *analysis.Snapshot, path string) (text []byte, stale bool) {
+	f := fileOf(snap, path)
+	if f == nil {
+		return nil, true
+	}
+	if d := s.docs[path]; d != nil {
+		return d.text, !bytes.Equal(f.Src, d.text)
+	}
+	fi, err := os.Stat(path)
+	if err != nil || fi.Size() != int64(len(f.Src)) {
+		return nil, true
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, true
+	}
+	return b, !bytes.Equal(f.Src, b)
+}
+
+var errContentModified = &rpcError{codeContentModified, "a file changed after the workspace was analysed; try the rename again"}
 
 func (s *server) rename(raw json.RawMessage) (any, *rpcError) {
 	var p renameParams
@@ -213,20 +274,32 @@ func (s *server) rename(raw json.RawMessage) (any, *rpcError) {
 	if !ok {
 		return s.refuseRequest(analysis.RefuseNotSymbol, "the document is not part of the workspace", nil, analysis.RefuseNotSymbol)
 	}
-	asked := s.docs[path]
-	askedVersion := 0
-	if asked != nil {
-		askedVersion = asked.version
+	// The handler runs on the loop, so no didChange comes between the cursor
+	// and the answer. What can differ is the snapshot against what the client
+	// has: checkTexts compares every file the answer would edit.
+	texts := map[string][]byte{}
+	if rerr := s.checkText(snap, path, texts); rerr != nil {
+		return nil, rerr
+	}
+	if hasBareCR(texts[path]) {
+		return s.lineBreakRefusal(path)
 	}
 	plan, err := snap.PlanRename(path, off, p.NewName)
 	if err != nil {
 		return s.failRequest(snap, err)
 	}
-	// The plan is of the snapshot. An open document it does not match (the
-	// document moved on, or the snapshot has not caught up) must not get
-	// edits computed for other text.
-	if s.docs[path] != asked || (asked != nil && asked.version != askedVersion) || !s.planIsCurrent(snap, plan) {
-		return nil, &rpcError{codeContentModified, "the document changed while the rename was planned"}
+	for _, e := range plan.Edits {
+		if _, done := texts[e.Path]; done {
+			continue
+		}
+		if rerr := s.checkText(snap, e.Path, texts); rerr != nil {
+			return nil, rerr
+		}
+	}
+	for _, e := range plan.Edits {
+		if hasBareCR(texts[e.Path]) {
+			return s.lineBreakRefusal(e.Path)
+		}
 	}
 	if s.cur != nil && s.isCancelled(idKey(s.curID)) {
 		return nil, cancelledError()
@@ -234,31 +307,22 @@ func (s *server) rename(raw json.RawMessage) (any, *rpcError) {
 	return s.buildRenameEdit(snap, plan), nil
 }
 
-// planIsCurrent reports whether every open document the plan edits has, in the
-// snapshot, the text the client last sent for it.
-func (s *server) planIsCurrent(snap *analysis.Snapshot, plan *analysis.RenamePlan) bool {
-	last := ""
-	for _, e := range plan.Edits {
-		if e.Path == last {
-			continue
-		}
-		last = e.Path
-		d := s.docs[e.Path]
-		if d == nil {
-			continue
-		}
-		if f := fileOf(snap, e.Path); f == nil || !bytes.Equal(f.Src, d.text) {
-			return false
-		}
+// checkText records the client's text of path in texts, or answers
+// ContentModified when it is not the snapshot's.
+func (s *server) checkText(snap *analysis.Snapshot, path string, texts map[string][]byte) *rpcError {
+	text, stale := s.currentText(snap, path)
+	if stale {
+		return errContentModified
 	}
-	return true
+	texts[path] = text
+	return nil
 }
 
 // buildRenameEdit builds the edit of a plan in the form the client supports.
 func (s *server) buildRenameEdit(snap *analysis.Snapshot, plan *analysis.RenamePlan) renameEdit {
 	caps := s.caps()
-	note, label := s.renameNote(snap, plan)
 	annotate := caps.DocumentChanges && caps.ChangeAnnotations && (len(plan.Excluded) > 0 || len(plan.Others) > 0)
+	note, label := s.renameNote(snap, plan)
 	if !annotate && (len(plan.Excluded) > 0 || len(plan.Warnings) > 0) {
 		s.c.notify("window/showMessage", showMessageParams{Type: messageTypeWarning, Message: note})
 	}
@@ -296,42 +360,62 @@ func (s *server) buildRenameEdit(snap *analysis.Snapshot, plan *analysis.RenameP
 	return out
 }
 
-// renameNote lists what the rename left alone: the label ("N sites left
-// unchanged") and the text of the annotation or message. Every string that
-// comes from a source file or from the client is redacted before it is cut.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, one)
+	}
+	return fmt.Sprintf("%d %s", n, many)
+}
+
+// renameNote lists what the rename left alone: the label and the text of the
+// annotation or message. Every string that comes from a source file or from
+// the client is redacted before it is cut, and the whole note once more
+// after it is composed; the note is at most maxRenameNote bytes, with a
+// closing "and N more" line where a list was cut.
 func (s *server) renameNote(snap *analysis.Snapshot, plan *analysis.RenamePlan) (note, label string) {
-	left := len(plan.Excluded) + len(plan.Others)
-	label = fmt.Sprintf("%d sites left unchanged", left)
+	old := redact.String(plan.Old)
+	switch {
+	case len(plan.Excluded) > 0:
+		label = plural(len(plan.Excluded), "site", "sites") + " left unchanged"
+	case len(plan.Others) > 0:
+		label = plural(len(plan.Others), "other symbol", "other symbols") + " named " + old + " not renamed"
+	}
 	var b strings.Builder
-	b.WriteString("bash-lsp rename of " + redact.String(plan.Old) + ":")
-	if left > 0 {
+	b.WriteString("bash-lsp rename of " + old + ":")
+	if label != "" {
 		b.WriteString(" " + label + ".")
 	}
-	if len(plan.Excluded) > 0 {
-		b.WriteString("\nNot proven to name " + redact.String(plan.Old) + ", left as they are:")
-		for i, x := range plan.Excluded {
-			if i == maxRenameListed {
-				fmt.Fprintf(&b, "\n  and %d more", len(plan.Excluded)-i)
-				break
+	list := func(title string, n int, line func(i int) string) {
+		b.WriteString("\n" + title)
+		for i := 0; i < n; i++ {
+			l := line(i)
+			if i == maxRenameListed || b.Len()+len(l)+48 > maxRenameNote {
+				fmt.Fprintf(&b, "\n  and %d more", n-i)
+				return
 			}
-			fmt.Fprintf(&b, "\n  %s:%d (%s, %s) %s", s.relPath(x.Loc.Path), x.Loc.Range.Start.Line, x.Res, x.Reason,
-				oneLine(outward(x.Text, maxRenameText)))
+			b.WriteString("\n  " + l)
 		}
+	}
+	if len(plan.Excluded) > 0 {
+		list("Not proven to name "+old+", left as they are:", len(plan.Excluded), func(i int) string {
+			x := plan.Excluded[i]
+			return fmt.Sprintf("%s:%d (%s, %s) %s", s.relPath(x.Loc.Path), x.Loc.Range.Start.Line, x.Res, x.Reason,
+				oneLine(outward(x.Text, maxRenameText)))
+		})
 	}
 	if len(plan.Others) > 0 {
-		b.WriteString("\nOther symbols named " + redact.String(plan.Old) + ", not renamed:")
-		for i, l := range plan.Others {
-			if i == maxRenameListed {
-				fmt.Fprintf(&b, "\n  and %d more", len(plan.Others)-i)
-				break
-			}
-			fmt.Fprintf(&b, "\n  %s:%d", s.relPath(l.Path), l.Range.Start.Line)
-		}
+		list(plural(len(plan.Others), "other symbol", "other symbols")+" named "+old+", not renamed:", len(plan.Others), func(i int) string {
+			return fmt.Sprintf("%s:%d", s.relPath(plan.Others[i].Path), plan.Others[i].Range.Start.Line)
+		})
 	}
 	for _, w := range plan.Warnings {
+		if b.Len()+len(w) > maxRenameNote-48 {
+			b.WriteString("\nWarning: more warnings not shown")
+			break
+		}
 		b.WriteString("\nWarning: " + outward(w, maxRenameMessage))
 	}
-	return redact.String(b.String()), label
+	return cutText(redact.String(b.String()), maxRenameNote), label
 }
 
 // oneLine puts a source excerpt on one line.

@@ -269,7 +269,7 @@ func TestRenameAnnotatedWhenExcluded(t *testing.T) {
 	if !ok || len(res.ChangeAnnotations) != 1 {
 		t.Fatalf("annotations %+v", res.ChangeAnnotations)
 	}
-	if !a.NeedsConfirmation || !strings.HasSuffix(a.Label, "sites left unchanged") || a.Label != "4 sites left unchanged" {
+	if !a.NeedsConfirmation || !strings.HasSuffix(a.Label, "sites left unchanged") || a.Label != "3 sites left unchanged" {
 		t.Fatalf("annotation %+v", a)
 	}
 	for _, want := range []string{"main.sh:9", "main.sh:10", "main.sh:8", "orphan.sh:2"} {
@@ -438,7 +438,7 @@ func TestRenameOutwardTextIsRedacted(t *testing.T) {
 			Text:   "a_fn " + secret + "\ntoken=hunter2hunter2"}},
 		Warnings: []string{"exported: " + secret}}
 	note, label := s.renameNote(nil, plan)
-	if label != "1 sites left unchanged" {
+	if label != "1 site left unchanged" {
 		t.Fatalf("label %q", label)
 	}
 	if strings.Contains(note, secret) || strings.Contains(note, "hunter2") || strings.Count(note, "[redacted]") < 3 {
@@ -474,9 +474,21 @@ func TestRenameUnknownDocument(t *testing.T) {
 }
 
 func TestRenameCapability(t *testing.T) {
-	got, _ := json.Marshal(capabilities()["renameProvider"])
-	if string(got) != `{"prepareProvider":true}` {
-		t.Fatalf("renameProvider = %s", got)
+	init := func(params string) string {
+		got, rerr := newServer(strings.NewReader(""), nil, nil, "t").initialize(json.RawMessage(params))
+		if rerr != nil {
+			t.Fatal(rerr)
+		}
+		b, _ := json.Marshal(got.(initializeResult).Capabilities["renameProvider"])
+		return string(b)
+	}
+	if got := init(`{"capabilities":{"textDocument":{"rename":{"prepareSupport":true}}}}`); got != `{"prepareProvider":true}` {
+		t.Fatalf("with prepareSupport: %s", got)
+	}
+	for _, p := range []string{`{"capabilities":{}}`, `{"capabilities":{"textDocument":{"rename":{"prepareSupport":false}}}}`, `{"capabilities":{"textDocument":{"rename":{}}}}`} {
+		if got := init(p); got != `true` {
+			t.Fatalf("%s: %s", p, got)
+		}
 	}
 }
 
