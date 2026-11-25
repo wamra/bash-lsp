@@ -44,3 +44,28 @@ func TestApplyChangesSequential(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestApplyChangeLoneCR(t *testing.T) {
+	r := func(sl, sc, el, ec int) *Range {
+		return &Range{Position{sl, sc}, Position{el, ec}}
+	}
+	tests := []struct {
+		name string
+		text string
+		ch   contentChange
+		want string
+	}{
+		{"edit on the line after a lone CR", "ab\rcd\r", contentChange{Range: r(1, 0, 1, 1), Text: "X"}, "ab\rXd\r"},
+		{"column past line end clamps before a lone CR", "ab\rcd", contentChange{Range: r(0, 99, 0, 99), Text: "X"}, "abX\rcd"},
+		{"delete across a lone CR", "ab\rcd", contentChange{Range: r(0, 2, 1, 0), Text: ""}, "abcd"},
+		{"insert on the empty line after a trailing CR", "a\r", contentChange{Range: r(1, 0, 1, 0), Text: "b"}, "a\rb"},
+		{"mixed breaks", "a\nb\r\nc\rd", contentChange{Range: r(3, 0, 3, 1), Text: "Z"}, "a\nb\r\nc\rZ"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := string(applyChange([]byte(tc.text), tc.ch)); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

@@ -692,9 +692,9 @@ func sourceLine(src []byte, off int) string {
 	if off < 0 || off > len(src) {
 		return ""
 	}
-	start := bytes.LastIndexByte(src[:off], '\n') + 1
+	start := bytes.LastIndexAny(src[:off], "\r\n") + 1
 	end := len(src)
-	if i := bytes.IndexByte(src[off:], '\n'); i >= 0 {
+	if i := bytes.IndexAny(src[off:], "\r\n"); i >= 0 {
 		end = off + i
 	}
 	line := bytes.TrimSpace(src[start:end])
