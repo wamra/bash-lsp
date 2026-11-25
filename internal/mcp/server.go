@@ -77,7 +77,7 @@ var registry struct {
 }
 
 // Register adds t to the tools the server offers, or replaces the tool of
-// the same name. tools.go registers the ten tools of the server; another
+// the same name. tools.go registers the eleven tools of the server; another
 // package can add its own the same way.
 func Register(t Tool) {
 	registry.mu.Lock()

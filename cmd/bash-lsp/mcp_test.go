@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -100,5 +102,54 @@ func TestMCPCommandServes(t *testing.T) {
 	}
 	if code := run([]string{"mcp", "--root", corpus + "/nope"}, strings.NewReader(""), &out, &errb); code != 1 {
 		t.Errorf("missing root: exit %d", code)
+	}
+}
+
+// preview_rename and `rename --json` print the same bytes.
+func TestMCPPreviewRenameParity(t *testing.T) {
+	for _, c := range []struct {
+		spec, name string
+	}{{"build_release", "ship"}, {"main.sh:5:9", "nm"}} {
+		got, isErr := mcpText(t, corpus, "preview_rename", map[string]any{"symbol": c.spec, "new_name": c.name})
+		want := runOK(t, "rename", c.spec, c.name, "--json", "--root", corpus)
+		if isErr || got != want {
+			t.Errorf("%s: MCP and CLI differ (isError %v)\n--- MCP\n%s--- CLI\n%s", c.spec, isErr, got, want)
+		}
+		var doc struct{ Generation int }
+		mustJSON(t, got, &doc)
+		if doc.Generation != 1 {
+			t.Errorf("generation %d", doc.Generation)
+		}
+	}
+	// a refusal is an error result with the CLI's refusal text
+	got, isErr := mcpText(t, corpus, "preview_rename", map[string]any{"symbol": "build_release", "new_name": "log"})
+	code, _, errs := runCode(t, "rename", "build_release", "log", "--root", corpus)
+	if !isErr || code != 4 || got+"\n" != errs || !strings.HasPrefix(got, "refused: name-conflict: ") {
+		t.Errorf("refusal: MCP %q (isError %v), CLI exit %d %q", got, isErr, code, errs)
+	}
+}
+
+func TestMCPPreviewRenameRedacts(t *testing.T) {
+	root := t.TempDir()
+	const tok = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+	src := tok + "() { :; }\n\"" + tok + "\"\n" + tok + "\n"
+	if err := os.WriteFile(filepath.Join(root, "a.sh"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, isErr := mcpText(t, root, "preview_rename", map[string]any{"symbol": tok, "new_name": "h"})
+	if isErr {
+		t.Fatal(got)
+	}
+	if strings.Contains(got, "ghp_") || strings.Contains(got, tok[:24]) {
+		t.Errorf("secret in the answer:\n%s", got)
+	}
+	var doc struct{ Excluded []struct{ Text string } }
+	mustJSON(t, got, &doc)
+	if len(doc.Excluded) != 1 || doc.Excluded[0].Text == "" {
+		t.Fatalf("excluded:\n%s", got)
+	}
+	// and it is the CLI's bytes
+	if want := runOK(t, "rename", tok, "h", "--json", "--root", root); got != want {
+		t.Errorf("MCP and CLI differ\n%s\n%s", got, want)
 	}
 }
