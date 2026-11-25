@@ -451,6 +451,7 @@ func TestCompletionLatencyBig(t *testing.T) {
 		c.openText(name+".sh", text)
 		c.waitDiag(name + ".sh")
 		var ds []time.Duration
+		var lastItems []compItem
 		for i := 0; i < 15; i++ {
 			start := time.Now()
 			l, _ := c.complete(name+".sh", p)
@@ -458,9 +459,13 @@ func TestCompletionLatencyBig(t *testing.T) {
 			if len(l.Items) == 0 {
 				t.Fatalf("%s: no items", name)
 			}
+			lastItems = l.Items
 		}
 		sort.Slice(ds, func(i, j int) bool { return ds[i] < ds[j] })
-		t.Logf("%s: median %v, max %v", name, ds[len(ds)/2], ds[len(ds)-1])
+		t.Logf("%s: %d items, median %v, max %v", name, len(lastItems), ds[len(ds)/2], ds[len(ds)-1])
+		if name == "command-empty" && len(lastItems) != 1000 {
+			t.Errorf("%s: %d items, want the full 1000 this timing is about", name, len(lastItems))
+		}
 		if ds[len(ds)/2] > 250*time.Millisecond {
 			t.Errorf("%s: median %v", name, ds[len(ds)/2])
 		}
