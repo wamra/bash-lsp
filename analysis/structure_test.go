@@ -69,7 +69,7 @@ func TestFoldsOnLoneCRText(t *testing.T) {
 
 func TestFoldsUnknownPath(t *testing.T) {
 	q := buildMem(t, map[string]string{"a.sh": "x=1\n"})
-	if q.s.Folds("/nope") != nil || q.s.SelectionChain("/nope", 0) != nil || q.s.Highlights("/nope", 0) != nil || q.s.Links("/nope") != nil {
+	if q.s.Folds("/nope") != nil || q.s.SelectionChain("/nope", 0) != nil || hlOf(q.s, "/nope", 0) != nil || lkOf(q.s, "/nope") != nil {
 		t.Fatal("unknown path must answer nothing")
 	}
 }
@@ -120,7 +120,7 @@ func TestHighlightsLocalName(t *testing.T) {
 	q := buildCorpus(t)
 	p, off := q.at("main.sh", `local name="$1"`, 0, 6)
 	var got []string
-	for _, h := range q.s.Highlights(p, off) {
+	for _, h := range hlOf(q.s, p, off) {
 		got = append(got, fmt.Sprintf("%d:%v", h.Range.Start.Line, h.Write))
 	}
 	if want := "5:true 6:false 7:false"; strings.Join(got, " ") != want {
@@ -129,14 +129,14 @@ func TestHighlightsLocalName(t *testing.T) {
 	// from a read, the same set; the other function's local is a different symbol
 	p, off = q.at("main.sh", `build_release "$name"`, 0, 17)
 	var again []string
-	for _, h := range q.s.Highlights(p, off) {
+	for _, h := range hlOf(q.s, p, off) {
 		again = append(again, fmt.Sprintf("%d:%v", h.Range.Start.Line, h.Write))
 	}
 	if strings.Join(again, " ") != strings.Join(got, " ") {
 		t.Fatalf("from a read: %v", again)
 	}
 	p, off = q.at("main.sh", `local name=zzz`, 0, 6)
-	for _, h := range q.s.Highlights(p, off) {
+	for _, h := range hlOf(q.s, p, off) {
 		if h.Range.Start.Line < 14 {
 			t.Fatalf("other(): highlight in deploy at line %d", h.Range.Start.Line)
 		}
@@ -147,13 +147,13 @@ func TestHighlightsFunctionCallsAreReads(t *testing.T) {
 	q := buildMem(t, map[string]string{"a.sh": "f() { :; }\nf\nf\n"})
 	p, off := q.at("a.sh", "f() {", 0, 0)
 	var got []string
-	for _, h := range q.s.Highlights(p, off) {
+	for _, h := range hlOf(q.s, p, off) {
 		got = append(got, fmt.Sprintf("%d:%v", h.Range.Start.Line, h.Write))
 	}
 	if want := "1:true 2:false 3:false"; strings.Join(got, " ") != want {
 		t.Fatalf("highlights %v, want %s", got, want)
 	}
-	if hs := q.s.Highlights(p, 100000); len(hs) != 0 {
+	if hs := hlOf(q.s, p, 100000); len(hs) != 0 {
 		t.Fatalf("nothing under the cursor: %v", hs)
 	}
 }
@@ -168,7 +168,7 @@ func linkStrs(q *qworld, ls []Link) []string {
 
 func TestAC09DocumentLink(t *testing.T) {
 	q := buildCorpus(t)
-	got := linkStrs(q, q.s.Links(q.abs("dyn.sh")))
+	got := linkStrs(q, lkOf(q.s, q.abs("dyn.sh")))
 	found := false
 	for _, g := range got {
 		if g == "3:lib/util.sh|source → lib/util.sh" {
@@ -179,7 +179,7 @@ func TestAC09DocumentLink(t *testing.T) {
 		t.Fatalf("links of dyn.sh: %v", got)
 	}
 	// the link covers the path word
-	for _, l := range q.s.Links(q.abs("dyn.sh")) {
+	for _, l := range lkOf(q.s, q.abs("dyn.sh")) {
 		if l.Range.Start.Line == 3 && text(q.src("dyn.sh"), l.Range) != `"$HERE/lib/util.sh"` {
 			t.Fatalf("link range %q", text(q.src("dyn.sh"), l.Range))
 		}
@@ -195,7 +195,7 @@ func TestLinksGlobLoaderGivesNone(t *testing.T) {
 	if got := q.s.SourceEdges(q.abs("main.sh")); len(got) != 1 || len(got[0].Targets) != 2 {
 		t.Fatalf("setup: the loader should have two targets: %+v", got)
 	}
-	if got := linkStrs(q, q.s.Links(q.abs("main.sh"))); len(got) != 0 {
+	if got := linkStrs(q, lkOf(q.s, q.abs("main.sh"))); len(got) != 0 {
 		t.Fatalf("a glob loader got links: %v", got)
 	}
 }
@@ -215,7 +215,7 @@ func TestShebang(t *testing.T) {
 		if !ok || l.Target != want || text(q.src(f), l.Range) != want || l.Range.Start.Line != 1 {
 			t.Fatalf("%s: %+v %v", f, l, ok)
 		}
-		if got := q.s.Links(q.abs(f)); len(got) != 0 {
+		if got := lkOf(q.s, q.abs(f)); len(got) != 0 {
 			t.Fatalf("%s: Links holds the shebang: %+v", f, got)
 		}
 	}
@@ -231,7 +231,7 @@ func TestShebang(t *testing.T) {
 
 func TestLinksInvokedFile(t *testing.T) {
 	q := buildMem(t, map[string]string{"run.sh": "./tool.sh arg\n", "tool.sh": "echo hi\n"})
-	got := linkStrs(q, q.s.Links(q.abs("run.sh")))
+	got := linkStrs(q, lkOf(q.s, q.abs("run.sh")))
 	if len(got) != 1 || got[0] != "1:tool.sh|invokes → tool.sh" {
 		t.Fatalf("links: %v (%s)", got, filepath.Base(q.root))
 	}
@@ -245,12 +245,12 @@ func TestHighlightsStayInTheFile(t *testing.T) {
 	})
 	src := string(q.src("a.sh"))
 	off := strings.LastIndex(src, "f")
-	got := q.s.Highlights(q.abs("a.sh"), off)
+	got := hlOf(q.s, q.abs("a.sh"), off)
 	if len(got) != 1 || got[0].Range.Start.Offset != off {
 		t.Fatalf("highlights in a.sh: %+v, want only the call at %d (the declaration is in lib.sh, the other calls in b.sh)", got, off)
 	}
 	// The same symbol from b.sh: its own two uses.
-	if got := q.s.Highlights(q.abs("b.sh"), strings.Index(string(q.src("b.sh")), "f\n")); len(got) != 2 {
+	if got := hlOf(q.s, q.abs("b.sh"), strings.Index(string(q.src("b.sh")), "f\n")); len(got) != 2 {
 		t.Fatalf("highlights in b.sh: %+v", got)
 	}
 }
@@ -258,7 +258,7 @@ func TestHighlightsStayInTheFile(t *testing.T) {
 func TestHighlightsSkipCandidateAndDynamicSites(t *testing.T) {
 	src := "f() { :; }\nf\ncmd=f\n$cmd\n\"$cmd\"\neval \"f\"\n"
 	q := buildMem(t, map[string]string{"a.sh": src})
-	got := q.s.Highlights(q.abs("a.sh"), 0)
+	got := hlOf(q.s, q.abs("a.sh"), 0)
 	var lines []int
 	for _, h := range got {
 		lines = append(lines, h.Range.Start.Line)
@@ -278,7 +278,7 @@ func TestLinksSkipDynamicSites(t *testing.T) {
 		"main.sh": "x=./t.sh\nsource \"$x\"\ncmd=./t.sh\n$cmd\nsource ./missing.sh\n",
 		"t.sh":    "echo hi\n",
 	})
-	if got := linkStrs(q, q.s.Links(q.abs("main.sh"))); len(got) != 0 {
+	if got := linkStrs(q, lkOf(q.s, q.abs("main.sh"))); len(got) != 0 {
 		t.Fatalf("dynamic, candidate or unresolved sites got links: %v", got)
 	}
 }
@@ -293,8 +293,72 @@ func TestShebangAndSourceLinkOrder(t *testing.T) {
 	if !ok {
 		t.Fatal("no shebang")
 	}
-	ls := q.s.Links(q.abs("a.sh"))
+	ls := lkOf(q.s, q.abs("a.sh"))
 	if len(ls) != 1 || ls[0].Range.Start.Offset <= sb.Range.Start.Offset {
 		t.Fatalf("source link %+v does not come after the shebang %+v", ls, sb)
+	}
+}
+
+func hlOf(s *Snapshot, path string, off int) []Highlight {
+	h, _ := s.Highlights(path, off)
+	return h
+}
+
+func lkOf(s *Snapshot, path string) []Link {
+	l, _ := s.Links(path)
+	return l
+}
+
+// A symbol with more occurrences than maxHighlights is cut to that many, the
+// one under the cursor among them wherever it stands, and the cut is reported.
+func TestHighlightsCapped(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("f() { :; }\n")
+	for i := 0; i < maxHighlights+500; i++ {
+		b.WriteString("f\n")
+	}
+	src := b.String()
+	q := buildMem(t, map[string]string{"a.sh": src})
+	p := q.abs("a.sh")
+	for _, at := range []int{0, len(src) - 2} { // the declaration, the last call
+		hs, cut := q.s.Highlights(p, at)
+		if len(hs) != maxHighlights || !cut {
+			t.Fatalf("cursor at %d: %d highlights, cut %v, want %d and a cut", at, len(hs), cut, maxHighlights)
+		}
+		found := false
+		for i, h := range hs {
+			if i > 0 && h.Range.Start.Offset <= hs[i-1].Range.Start.Offset {
+				t.Fatalf("not in source order at %d", i)
+			}
+			found = found || h.Range.Contains(at)
+		}
+		if !found {
+			t.Errorf("cursor at %d: its own occurrence was cut", at)
+		}
+	}
+	// exactly maxHighlights occurrences is not a cut
+	q = buildMem(t, map[string]string{"a.sh": "f() { :; }\n" + strings.Repeat("f\n", maxHighlights-1)})
+	if hs, cut := q.s.Highlights(q.abs("a.sh"), 0); len(hs) != maxHighlights || cut {
+		t.Fatalf("%d highlights, cut %v at the limit", len(hs), cut)
+	}
+}
+
+// More than maxLinks links are cut to the first maxLinks, in source order.
+func TestLinksCapped(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < maxLinks+500; i++ {
+		b.WriteString(". ./lib.sh\n")
+	}
+	q := buildMem(t, map[string]string{"a.sh": b.String(), "lib.sh": ":\n"})
+	ls, cut := q.s.Links(q.abs("a.sh"))
+	if len(ls) != maxLinks || !cut {
+		t.Fatalf("%d links, cut %v, want %d and a cut", len(ls), cut, maxLinks)
+	}
+	if ls[0].Range.Start.Line != 1 || ls[maxLinks-1].Range.Start.Line != maxLinks {
+		t.Fatalf("not the first %d: lines %d..%d", maxLinks, ls[0].Range.Start.Line, ls[maxLinks-1].Range.Start.Line)
+	}
+	q = buildMem(t, map[string]string{"a.sh": strings.Repeat(". ./lib.sh\n", maxLinks), "lib.sh": ":\n"})
+	if ls, cut := q.s.Links(q.abs("a.sh")); len(ls) != maxLinks || cut {
+		t.Fatalf("%d links, cut %v at the limit", len(ls), cut)
 	}
 }

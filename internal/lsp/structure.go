@@ -148,6 +148,10 @@ func (s *server) foldingRange(raw json.RawMessage) (any, *rpcError) {
 	return foldingRanges(lspFolds(f, snap.Folds(path)), s.caps()), nil
 }
 
+// cutNotice tells the client, once per session, that an answer was cut at its
+// bound.
+func (s *server) cutNotice(msg string) { s.logMessageOnce(messageTypeInfo, msg) }
+
 func (s *server) selectionRange(raw json.RawMessage) (any, *rpcError) {
 	var p selectionRangeParams
 	if rerr := decode(raw, &p); rerr != nil {
@@ -192,7 +196,10 @@ func (s *server) documentHighlight(raw json.RawMessage) (any, *rpcError) {
 	if rerr != nil || !ok {
 		return nil, rerr
 	}
-	hs := snap.Highlights(path, off)
+	hs, cut := snap.Highlights(path, off)
+	if cut {
+		s.cutNotice("documentHighlight: the symbol has more occurrences in this file than one answer holds; the rest are left out")
+	}
 	if len(hs) == 0 {
 		return nil, nil
 	}
@@ -221,7 +228,10 @@ func (s *server) documentLink(raw json.RawMessage) (any, *rpcError) {
 		return nil, rerr
 	}
 	snap := be.Snapshot()
-	links := snap.Links(path)
+	links, cut := snap.Links(path)
+	if cut {
+		s.cutNotice("documentLink: the file has more links than one answer holds; the rest are left out")
+	}
 	cs := converters{}
 	out := make([]documentLink, 0, len(links)+1)
 	// The shebang interpreter: one stat of the exact path on the first line,

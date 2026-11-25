@@ -159,6 +159,13 @@ func wholeLine(src []byte, offset int) bool {
 // maxSelectionDepth is the most levels SelectionChain returns.
 const maxSelectionDepth = 128
 
+// maxHighlights is the most occurrences Highlights returns, and maxLinks the
+// most links Links returns.
+const (
+	maxHighlights = 5000
+	maxLinks      = 5000
+)
+
 // SelectionChain returns the nested ranges around offset of path, innermost
 // first, each strictly containing the one before: the name or word part, the
 // word, the command, the statement, the enclosing blocks, the function and the
@@ -225,41 +232,62 @@ type Highlight struct {
 
 // Highlights returns, in source order, the declarations of the symbol under
 // the cursor in path and the uses in path that resolve to it (a use bound only
-// as a candidate is left out, as are uses whose text is not the name).
-func (s *Snapshot) Highlights(path string, offset int) []Highlight {
+// as a candidate is left out, as are uses whose text is not the name). At most
+// maxHighlights come back, the one under the cursor among them; cut is true
+// when there were more.
+func (s *Snapshot) Highlights(path string, offset int) (out []Highlight, cut bool) {
 	h, file, ok := s.at(path, offset)
 	if !ok {
-		return nil
+		return nil, false
 	}
 	byStart := map[int]Highlight{}
-	put := func(r tree.Range, write bool) {
-		if old, seen := byStart[r.Start.Offset]; seen {
+	put := func(r tree.Range, write bool) bool {
+		old, seen := byStart[r.Start.Offset]
+		if !seen && len(byStart) >= maxHighlights {
+			return false
+		}
+		if seen {
 			write = write || old.Write
 			if old.Range.End.Offset > r.End.Offset {
 				r = old.Range
 			}
 		}
 		byStart[r.Start.Offset] = Highlight{Range: r, Write: write}
+		return true
 	}
+	// the occurrence under the cursor goes in first, so the cap cannot drop it
+	if h.decl != nil {
+		put(h.decl.NameRange, true)
+	}
+	for _, b := range h.binds {
+		if b.File == path && b.Res == Resolved && b.Use.NamesTarget() {
+			put(b.Use.Range, b.Use.Kind == UseVarWrite)
+		}
+	}
+syms:
 	for _, sym := range s.hitSyms(h) {
 		for _, d := range sym.Decls {
-			if s.declFile[d] == file {
-				put(d.NameRange, true)
+			if s.declFile[d] == file && !put(d.NameRange, true) {
+				cut = true
+				break syms
 			}
 		}
 		for _, b := range s.bySym[sym] {
 			if b.File != path || b.Res != Resolved || !b.Use.NamesTarget() {
 				continue
 			}
-			put(b.Use.Range, b.Use.Kind == UseVarWrite)
+			if !put(b.Use.Range, b.Use.Kind == UseVarWrite) {
+				cut = true
+				break syms
+			}
 		}
 	}
-	out := make([]Highlight, 0, len(byStart))
+	out = make([]Highlight, 0, len(byStart))
 	for _, hl := range byStart {
 		out = append(out, hl)
 	}
 	sort.Slice(out, func(a, b int) bool { return out[a].Range.Start.Offset < out[b].Range.Start.Offset })
-	return out
+	return out, cut
 }
 
 // Link is a clickable span of a file. Target is an absolute path.
@@ -272,16 +300,20 @@ type Link struct {
 // Links returns the links of path in source order: each `source` or `.` word
 // with exactly one target and each executed workspace file. A `source` with
 // several targets (a glob loader) or none gives no link. The shebang is not
-// here: Shebang names it and the caller checks that the file exists.
-func (s *Snapshot) Links(path string) []Link {
+// here: Shebang names it. At most maxLinks come back, the first in source
+// order; cut is true when there were more.
+func (s *Snapshot) Links(path string) (out []Link, cut bool) {
 	file, ok := s.idx[path]
 	if !ok {
-		return nil
+		return nil, false
 	}
-	var out []Link
 	for _, se := range s.edges[file] {
 		if se.Status != SourceResolved || len(se.Targets) != 1 {
 			continue
+		}
+		if len(out) >= maxLinks {
+			cut = true
+			break
 		}
 		r := se.Ref.Range
 		if se.Ref.Word != nil {
@@ -289,15 +321,23 @@ func (s *Snapshot) Links(path string) []Link {
 		}
 		out = append(out, Link{Range: r, Target: se.Targets[0], Tooltip: "source → " + s.rel(se.Targets[0])})
 	}
+	invokes := 0
 	for k := s.recAt[file]; k < s.recAt[file+1]; k++ {
 		if s.recs[k].rel != RelInvokes {
 			continue
+		}
+		if invokes++; invokes > maxLinks {
+			cut = true
+			break
 		}
 		e := s.edgeOf(file, &s.recs[k])
 		out = append(out, Link{Range: e.Site.Range, Target: e.ToFile, Tooltip: "invokes → " + s.rel(e.ToFile)})
 	}
 	sort.SliceStable(out, func(a, b int) bool { return out[a].Range.Start.Offset < out[b].Range.Start.Offset })
-	return out
+	if len(out) > maxLinks {
+		out, cut = out[:maxLinks], true
+	}
+	return out, cut
 }
 
 // Shebang returns the interpreter of the `#!` first line of path as a link

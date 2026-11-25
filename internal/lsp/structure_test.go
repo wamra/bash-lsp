@@ -323,3 +323,36 @@ func TestFoldingRangeCountsLoneCRLines(t *testing.T) {
 		})
 	}
 }
+
+// documentHighlight and documentLink answer at most 5,000 entries and say so
+// once per session, however many requests are cut.
+func TestHighlightAndLinkAreCappedAndSayOnce(t *testing.T) {
+	ws := t.TempDir()
+	writeFile(t, ws, "a.sh", "f() { :; }\n"+strings.Repeat("f\n", 5500))
+	writeFile(t, ws, "b.sh", strings.Repeat(". ./a.sh\n", 5500))
+	c := client(t, ws)
+	c.open("a.sh")
+	c.open("b.sh")
+	for i := 0; i < 2; i++ {
+		if hs := c.highlights("a.sh", Position{0, 0}); len(hs) != 5000 {
+			t.Fatalf("%d highlights, want 5000", len(hs))
+		}
+		raw := c.call("textDocument/documentLink", map[string]any{"textDocument": map[string]any{"uri": c.uri("b.sh")}})
+		var ls []documentLink
+		if err := json.Unmarshal(raw, &ls); err != nil || len(ls) != 5000 {
+			t.Fatalf("%d links (%v), want 5000", len(ls), err)
+		}
+	}
+	c.waitLog("documentHighlight")
+	c.waitLog("documentLink")
+	if n := len(c.logsContaining("documentHighlight")) + len(c.logsContaining("documentLink")); n != 2 {
+		t.Fatalf("%d notices, want one each: %q", n, c.logMsgs)
+	}
+	// a cut-free answer says nothing
+	c2 := client(t, copyCorpus(t))
+	c2.open("main.sh")
+	c2.highlights("main.sh", c2.pos("main.sh", `local name="$1"`, 6))
+	if l := c2.logsContaining("documentHighlight"); len(l) != 0 {
+		t.Fatalf("notice without a cut: %q", l)
+	}
+}
