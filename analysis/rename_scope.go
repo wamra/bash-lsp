@@ -288,11 +288,11 @@ func (s *Snapshot) forEachCall(in bitset, visit func(f int, ff *FileFacts, n *tr
 }
 
 // dynamicCallNodes returns the graph nodes of in that run code the call graph
-// sources are the nodes that source a file whose path is built at run time and
-// found nowhere: its code is not in the view.
 // cannot name: calls through a variable or a parameter that no constant
 // resolves, eval of such a string, dynamic sources, and `command` or `builtin`
-// followed by an expansion.
+// followed by an expansion. sources are the nodes that source a file whose path
+// is built at run time, with no literal file name at its end, and found
+// nowhere: its code is not in the view.
 func (s *Snapshot) dynamicCallNodes(in bitset) (calls, sources map[Node]bool) {
 	out := map[Node]bool{}
 	sources = map[Node]bool{}
@@ -308,8 +308,8 @@ func (s *Snapshot) dynamicCallNodes(in bitset) (calls, sources map[Node]bool) {
 				continue
 			}
 			text := ""
-			if se.Ref.Word != nil {
-				text = s.siteText(f, se.Ref.Word.Range)
+			if w := sourcePathWord(se.Ref, func(n *tree.Node) string { return s.siteText(f, n.Range) }); w != nil {
+				text = s.siteText(f, w.Range)
 			}
 			if text == "" || strings.ContainsAny(text, "$`") && !literalTail(text) {
 				sources[at.at(f, se.Ref.Range.Start.Offset)] = true
@@ -905,11 +905,54 @@ func (s *Snapshot) noteTestV(src []byte, n *tree.Node, note func(k refKind, strs
 	}
 }
 
+// sourcePathWord returns the word of a source command that names the file:
+// the first word after the command that is not an option (`--`, `-p`).
+func sourcePathWord(ref SourceRef, text func(*tree.Node) string) *tree.Node {
+	if ref.Node == nil {
+		return ref.Word
+	}
+	seenCmd := false
+	for _, c := range ref.Node.Children {
+		if c.Kind != tree.KWord {
+			continue
+		}
+		if !seenCmd {
+			seenCmd = true
+			continue
+		}
+		if !strings.HasPrefix(text(c), "-") {
+			return c
+		}
+	}
+	return ref.Word
+}
+
 // literalTail reports whether the path word text of a source names its file
 // by a literal final component (`"${dir}/utils.sh"`): the directory may be
-// unknown, the file is not wholly chosen at run time.
+// unknown, the file is not wholly chosen at run time. The component starts
+// after the last `/` that lies outside every `${}`, `$()`, `$(())` and
+// backquote, and holds no expansion.
 func literalTail(text string) bool {
-	text = strings.TrimRight(text, `"'`)
-	tail := text[strings.LastIndexByte(text, '/')+1:]
-	return tail != "" && !strings.ContainsAny(tail, "$`")
+	var closers []byte
+	quoted := false // inside a backquote
+	last := -1
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		switch {
+		case c == '`':
+			quoted = !quoted
+		case quoted:
+		case c == '$' && i+1 < len(text) && (text[i+1] == '{' || text[i+1] == '('):
+			closers = append(closers, map[byte]byte{'{': '}', '(': ')'}[text[i+1]])
+			i++
+		case len(closers) > 0 && (c == '(' || c == '{'):
+			closers = append(closers, map[byte]byte{'{': '}', '(': ')'}[c])
+		case len(closers) > 0 && c == closers[len(closers)-1]:
+			closers = closers[:len(closers)-1]
+		case c == '/' && len(closers) == 0:
+			last = i
+		}
+	}
+	tail := strings.Trim(text[last+1:], `"'`)
+	return tail != "" && !strings.ContainsAny(tail, "$`})")
 }
