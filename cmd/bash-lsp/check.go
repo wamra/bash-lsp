@@ -239,7 +239,7 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 		if ff == nil || ff.File == nil {
 			continue
 		}
-		conv := ff.File.NewConverter()
+		conv := ff.File.NewToolConverter()
 		for _, d := range merged {
 			out = append(out, toCheckDiag(t.display, conv, d))
 		}

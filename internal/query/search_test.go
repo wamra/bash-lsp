@@ -162,10 +162,3 @@ func TestIndexDBRefusesLinkedIndexDirectory(t *testing.T) {
 		t.Errorf("plain .Wammy directory: %v", err)
 	}
 }
-
-func TestSourceLineStopsAtLoneCR(t *testing.T) {
-	src := []byte("first\rf() { :; }\rlast\n")
-	if got := sourceLine(src, 8); got != "f() { :; }" {
-		t.Fatalf("got %q", got)
-	}
-}

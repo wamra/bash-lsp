@@ -601,3 +601,20 @@ func TestDoctorHelpLinesAreRedacted(t *testing.T) {
 	}
 	wantLines(t, out, "help: refused ", "man: refused ")
 }
+
+// check prints lines the way the tools do, by "\n" only: a finding after a
+// lone CR is on the line grep -n gives.
+func TestCheckLineAfterLoneCR(t *testing.T) {
+	emptyPath(t)
+	root := t.TempDir()
+	putFile(t, root, "a.sh", "#!/bin/bash\n# a\rb\nlocal x=1\n")
+	t.Chdir(root)
+	_, out, _ := runCode(t, "check", ".")
+	if !strings.HasPrefix(out, "a.sh:3:1: error WB1105 ") {
+		t.Fatalf("text: %q", out)
+	}
+	_, out, _ = runCode(t, "check", "--format", "json", ".")
+	if g := checkJSONOf(t, out).Diagnostics[0]; g.Line != 3 || g.Col != 1 {
+		t.Errorf("json: line %d col %d, want 3 and 1", g.Line, g.Col)
+	}
+}

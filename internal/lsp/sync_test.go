@@ -69,3 +69,34 @@ func TestApplyChangeLoneCR(t *testing.T) {
 		})
 	}
 }
+
+// Incremental edits (sync kind 2) on a buffer with a lone CR: the LSP counts
+// it as a line break, so lines after it are one further on than the tools
+// count them.
+func TestApplyChangeAroundLoneCR(t *testing.T) {
+	text := "echo a\r# mid\rb=1\nrm $b\n"
+	r := func(sl, sc, el, ec int) *Range { return &Range{Position{sl, sc}, Position{el, ec}} }
+	tests := []struct {
+		name string
+		ch   contentChange
+		want string
+	}{
+		{"before the CR", contentChange{Range: r(0, 5, 0, 6), Text: "Z"}, "echo Z\r# mid\rb=1\nrm $b\n"},
+		{"on the line ending in CR", contentChange{Range: r(1, 2, 1, 5), Text: "MID"}, "echo a\r# MID\rb=1\nrm $b\n"},
+		{"after the CR", contentChange{Range: r(2, 0, 2, 1), Text: "c"}, "echo a\r# mid\rc=1\nrm $b\n"},
+		{"two lines after", contentChange{Range: r(3, 3, 3, 5), Text: "$c"}, "echo a\r# mid\rb=1\nrm $c\n"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := string(applyChange([]byte(text), tc.ch)); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+	got := applyChanges([]byte(text), []contentChange{
+		{Range: r(0, 5, 0, 6), Text: "Z"}, {Range: r(2, 0, 2, 1), Text: "c"}, {Range: r(3, 3, 3, 5), Text: "$c"},
+	})
+	if string(got) != "echo Z\r# mid\rc=1\nrm $c\n" {
+		t.Fatalf("sequential: %q", got)
+	}
+}

@@ -2,6 +2,8 @@
 // the standard library.
 package tree
 
+import "sync"
+
 // Pos is a source position. Offset counts bytes from the file start, Line is
 // 1-based, Col is 1-based and counts bytes.
 type Pos struct{ Offset, Line, Col int }
@@ -171,7 +173,10 @@ type File struct {
 	Skipped  string    // non-empty reason when the file was not parsed (e.g. "zsh is not supported yet")
 	Dialect  Dialect   // the dialect the file was parsed as; set by every parse, including a skipped one
 
-	lines []int // byte offset of each line start, built once by NewFile
+	lines []int // byte offset of each "\n"-counted line start, built once by NewFile
+
+	lspOnce sync.Once
+	lsp     []int // LSP line starts (see lspLineStarts), built on first use
 }
 
 // NewFile builds the line index; Root is an empty KFile node spanning Src.

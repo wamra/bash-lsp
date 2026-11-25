@@ -1,6 +1,11 @@
 package tree
 
 import (
+	"bytes"
+	"io/fs"
+	"math/rand"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -39,7 +44,7 @@ func utf16Len(s string) int {
 	return n
 }
 
-func TestLineBreaksFollowLSP(t *testing.T) {
+func TestUTF16ConversionFollowsLSPLines(t *testing.T) {
 	long := strings.Repeat("x😀é", checkpointEvery) // a long line, past several checkpoints
 	cases := map[string]string{
 		"lf":            "a\nb\nc",
@@ -66,11 +71,12 @@ func TestLineBreaksFollowLSP(t *testing.T) {
 				for off := l.start; off <= l.end; {
 					wantChar := utf16Len(text[l.start:off])
 					p := f.PosAt(off)
-					if p.Line != li+1 {
-						t.Fatalf("PosAt(%d).Line = %d, want %d", off, p.Line, li+1)
+					// Pos.Line and Pos.Col count "\n" only, whatever the LSP line is
+					if wl := 1 + strings.Count(text[:off], "\n"); p.Line != wl {
+						t.Fatalf("PosAt(%d).Line = %d, want %d", off, p.Line, wl)
 					}
-					if p.Col != off-l.start+1 {
-						t.Fatalf("PosAt(%d).Col = %d, want %d", off, p.Col, off-l.start+1)
+					if wc := off - (strings.LastIndexByte(text[:off], '\n') + 1) + 1; p.Col != wc {
+						t.Fatalf("PosAt(%d).Col = %d, want %d", off, p.Col, wc)
 					}
 					if gl, gc := f.ToUTF16(p); gl != li || gc != wantChar {
 						t.Fatalf("ToUTF16(%d) = (%d,%d), want (%d,%d)", off, gl, gc, li, wantChar)
@@ -78,8 +84,8 @@ func TestLineBreaksFollowLSP(t *testing.T) {
 					if gl, gc := c.ToUTF16(p); gl != li || gc != wantChar {
 						t.Fatalf("Converter.ToUTF16(%d) = (%d,%d), want (%d,%d)", off, gl, gc, li, wantChar)
 					}
-					if g := f.FromUTF16(li, wantChar); g.Offset != off || g.Line != li+1 {
-						t.Fatalf("FromUTF16(%d,%d) = offset %d line %d, want offset %d line %d", li, wantChar, g.Offset, g.Line, off, li+1)
+					if g := f.FromUTF16(li, wantChar); g.Offset != off {
+						t.Fatalf("FromUTF16(%d,%d) = offset %d, want %d", li, wantChar, g.Offset, off)
 					}
 					if off == l.end {
 						break
@@ -88,8 +94,8 @@ func TestLineBreaksFollowLSP(t *testing.T) {
 					off += size
 				}
 				// a column past the line end clamps to the content end, before the break
-				if g := f.FromUTF16(li, 1<<20); g.Offset != l.end || g.Line != li+1 {
-					t.Fatalf("FromUTF16(%d, huge) = offset %d line %d, want offset %d line %d", li, g.Offset, g.Line, l.end, li+1)
+				if g := f.FromUTF16(li, 1<<20); g.Offset != l.end {
+					t.Fatalf("FromUTF16(%d, huge) = offset %d, want %d", li, g.Offset, l.end)
 				}
 			}
 			// a line past the last clamps to EOF
@@ -98,4 +104,53 @@ func TestLineBreaksFollowLSP(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Without a lone "\r" the two line tables are the same.
+func TestLineTablesAgreeWithoutLoneCR(t *testing.T) {
+	same := func(t *testing.T, name string, src []byte) {
+		a, b := lineStarts(src), lspLineStarts(src)
+		if len(a) != len(b) {
+			t.Fatalf("%s: %d lines vs %d LSP lines", name, len(a), len(b))
+		}
+		for i := range a {
+			if a[i] != b[i] {
+				t.Fatalf("%s: line %d starts at %d vs %d", name, i, a[i], b[i])
+			}
+		}
+	}
+	rnd := rand.New(rand.NewSource(7))
+	alphabet := []string{"a", " ", "é", "😀", "\n", "\r\n", "\n\n", "\xff"}
+	for round := 0; round < 500; round++ {
+		var sb strings.Builder
+		for n := rnd.Intn(60); n > 0; n-- {
+			sb.WriteString(alphabet[rnd.Intn(len(alphabet))])
+		}
+		same(t, "random", []byte(sb.String()))
+	}
+	n := 0
+	filepath.WalkDir("../bench/testdata", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil || bytes.Contains(b, []byte("\r")) && hasLoneCR(b) {
+			return nil
+		}
+		same(t, path, b)
+		n++
+		return nil
+	})
+	if n == 0 {
+		t.Fatal("no files under bench/testdata")
+	}
+}
+
+func hasLoneCR(b []byte) bool {
+	for i, c := range b {
+		if c == '\r' && (i+1 == len(b) || b[i+1] != '\n') {
+			return true
+		}
+	}
+	return false
 }

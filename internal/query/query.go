@@ -192,14 +192,14 @@ func (b *Builder) Rel(p string) string {
 // Pos is a 1-based line and UTF-16 column of p in path.
 func (b *Builder) Pos(path string, p tree.Pos) (line, col int) {
 	if ff := b.snap.Facts(path); ff != nil && ff.File != nil {
-		// one converter per file: File.ToUTF16 scans the line from its start
+		// one converter per file: File.ToolUTF16 scans the line from its start
 		// per call, O(sites x line length) on a long line
 		cv := b.conv[path]
 		if cv == nil {
 			if b.conv == nil {
 				b.conv = map[string]*tree.Converter{}
 			}
-			cv = ff.File.NewConverter()
+			cv = ff.File.NewToolConverter()
 			b.conv[path] = cv
 		}
 		l, ch := cv.ToUTF16(p)
@@ -692,9 +692,9 @@ func sourceLine(src []byte, off int) string {
 	if off < 0 || off > len(src) {
 		return ""
 	}
-	start := bytes.LastIndexAny(src[:off], "\r\n") + 1
+	start := bytes.LastIndexByte(src[:off], '\n') + 1
 	end := len(src)
-	if i := bytes.IndexAny(src[off:], "\r\n"); i >= 0 {
+	if i := bytes.IndexByte(src[off:], '\n'); i >= 0 {
 		end = off + i
 	}
 	line := bytes.TrimSpace(src[start:end])
