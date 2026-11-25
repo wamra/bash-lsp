@@ -269,6 +269,10 @@ func (s *server) handle(m message) (any, *rpcError) {
 		return s.definition(m.Params)
 	case "textDocument/references":
 		return s.references(m.Params)
+	case "textDocument/prepareRename":
+		return s.prepareRename(m.Params)
+	case "textDocument/rename":
+		return s.rename(m.Params)
 	case "textDocument/implementation":
 		return s.implementation(m.Params)
 	case "textDocument/hover":
@@ -344,7 +348,11 @@ func (s *server) initialize(raw json.RawMessage) (any, *rpcError) {
 	if len(s.roots) > 0 {
 		go s.pathProfile() // read while the client sends `initialized` and the folders are walked
 	}
-	return initializeResult{Capabilities: capabilities(), ServerInfo: serverInfo{Name: "bash-lsp", Version: s.version}}, nil
+	caps := capabilities()
+	if s.ccaps.RenamePrepare {
+		caps["renameProvider"] = map[string]any{"prepareProvider": true}
+	}
+	return initializeResult{Capabilities: caps, ServerInfo: serverInfo{Name: "bash-lsp", Version: s.version}}, nil
 }
 
 // clientCaps are the client capabilities the handlers consult, read once at
