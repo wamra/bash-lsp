@@ -995,3 +995,49 @@ func TestCLIRenameRefusesWhenACallerWasNeverRead(t *testing.T) {
 		})
 	}
 }
+
+// The directory of a file is a link to a place outside the root while the new
+// text is staged, and is the real directory again at the last check: the file
+// the check looks at is not the one the staged text would replace, so nothing
+// is written there.
+func TestCLIRenameLastCheckLooksAtTheDestination(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory links need privileges on Windows")
+	}
+	root := corpusCopy(t)
+	before := treeBytes(t, root)
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(outside, "lib"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "lib", "util.sh"), []byte(before["lib/util.sh"]), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := hooks(t)
+	h.afterChecks = func() {
+		if err := os.Rename(filepath.Join(root, "lib"), filepath.Join(root, "lib.real")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(outside, "lib"), filepath.Join(root, "lib")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.afterStaging = func() {
+		if err := os.Remove(filepath.Join(root, "lib")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(filepath.Join(root, "lib.real"), filepath.Join(root, "lib")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, _, errs := runCode(t, "rename", corpusDef, "ship", "--apply", "--root", root)
+	if code == 0 || !strings.Contains(errs, "refused: ") {
+		t.Fatalf("exit %d err %q, want a refusal", code, errs)
+	}
+	if b, _ := os.ReadFile(filepath.Join(outside, "lib", "util.sh")); string(b) != before["lib/util.sh"] {
+		t.Errorf("a file outside the root was written:\n%s", b)
+	}
+	sameTree(t, treeBytes(t, root), before)
+	noTemps(t, root)
+	noTemps(t, outside)
+}
