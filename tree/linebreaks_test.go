@@ -129,8 +129,8 @@ func TestLineTablesAgreeWithoutLoneCR(t *testing.T) {
 		same(t, "random", []byte(sb.String()))
 	}
 	n := 0
-	filepath.WalkDir("../bench/testdata", func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+	filepath.WalkDir("../testdata", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || filepath.Ext(path) != ".sh" {
 			return nil
 		}
 		b, err := os.ReadFile(path)
@@ -142,7 +142,7 @@ func TestLineTablesAgreeWithoutLoneCR(t *testing.T) {
 		return nil
 	})
 	if n == 0 {
-		t.Fatal("no files under bench/testdata")
+		t.Fatal("no shell files under ../testdata")
 	}
 }
 
