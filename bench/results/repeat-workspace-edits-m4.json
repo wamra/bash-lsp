@@ -1,0 +1,833 @@
+{
+ "label": "scale_ws.py, m4 task 11",
+ "date": "2026-11-25T00:42:40-05:00",
+ "commit": "7c1c0b5",
+ "dirty": true,
+ "machine": "Mac Studio Apple M1 Ultra, macOS-26.5.1-arm64-arm-64bit-Mach-O",
+ "cmd": [
+  "uv",
+  "run",
+  "--no-project",
+  "python",
+  "bench/scale_ws.py",
+  "bash-lsp m4",
+  "/private/tmp/bash-lsp/t11-work/ws1000",
+  "--",
+  "/private/tmp/bash-lsp/t11-work/bin/bash-lsp",
+  "serve"
+ ],
+ "n": 30,
+ "runs": [
+  {
+   "name": "bash-lsp m4",
+   "files": 1000,
+   "walk_to_first_answer_ms": 102,
+   "initialize_ms": 4,
+   "workspace_symbol_hits": 2,
+   "definition_found": true,
+   "body_edit_to_definition_ms": [
+    44.4,
+    36.7,
+    43.9,
+    36.2,
+    34.0,
+    40.4
+   ],
+   "body_edit_median_ms": 38.55,
+   "graph_edit_to_definition_ms": [
+    36.9,
+    35.0,
+    34.2,
+    42.2,
+    35.6,
+    33.6
+   ],
+   "graph_edit_median_ms": 35.3,
+   "rss_mb": 421
+  },
+  {
+   "name": "bash-lsp m4",
+   "files": 1000,
+   "walk_to_first_answer_ms": 100,
+   "initialize_ms": 4,
+   "workspace_symbol_hits": 2,
+   "definition_found": true,
+   "body_edit_to_definition_ms": [
+    39.7,
+    39.1,
+    36.2,
+    43.1,
+    35.4,
+    33.0
+   ],
+   "body_edit_median_ms": 37.650000000000006,
+   "graph_edit_to_definition_ms": [
+    40.1,
+    36.1,
+    35.1,
+    33.8,
+    42.7,
+    36.9
+   ],
+   "graph_edit_median_ms": 36.5,
+   "rss_mb": 416
+  },
+  {
+   "name": "bash-lsp m4",
+   "files": 1000,
+   "walk_to_first_answer_ms": 105,
+   "initialize_ms": 4,
+   "workspace_symbol_hits": 2,
+   "definition_found": true,
+   "body_edit_to_definition_ms": [
+    43.3,
+    36.4,
+    36.6,
+    36.7,
+    41.2,
+    35.2
+   ],
+   "body_edit_median_ms": 36.650000000000006,
+   "graph_edit_to_definition_ms": [
+    33.9,
+    41.4,
+    35.7,
+    37.2,
+    38.8,
+    46.7
+   ],
+   "graph_edit_median_ms": 38.0,
+   "rss_mb": 414
+  },
+  {
+   "name": "bash-lsp m4",
+   "files": 1000,
+   "walk_to_first_answer_ms": 108,
+   "initialize_ms": 4,
+   "workspace_symbol_hits": 2,
+   "definition_found": true,
+   "body_edit_to_definition_ms": [
+    43.7,
+    36.6,
+    38.3,
+    35.2,
+    43.2,
+    37.7
+   ],
+   "body_edit_median_ms": 38.0,
+   "graph_edit_to_definition_ms": [
+    33.7,
+    40.9,
+    38.3,
+    40.0,
+    40.1,
+    44.0
+   ],
+   "graph_edit_median_ms": 40.05,
+   "rss_mb": 414
+  },
+  {
+   "name": "bash-lsp m4",
+   "files": 1000,
+   "walk_to_first_answer_ms": 97,
+   "initialize_ms": 4,
+   "workspace_symbol_hits": 2,
+   "definition_found": true,
+   "body_edit_to_definition_ms": [
+    42.9,
+    36.6,
+    35.4,
+    40.3,
+    45.0,
+    36.7
+   ],
+   "body_edit_median_ms": 38.5,
+   "graph_edit_to_definition_ms": [
+    34.0,
+    42.0,
+    35.9,
+    34.2,
+    39.5,
+    35.6
+   ],
+   "graph_edit_median_ms": 35.75,
+   "rss_mb": 404
+  },
+  {
+   "name": "bash-lsp m4",
+   "files": 1000,
+   "walk_to_first_answer_ms": 98,
+   "initialize_ms": 4,
+   "workspace_symbol_hits": 2,
+   "definition_found": true,
+   "body_edit_to_definition_ms": [
+    42.1,
+    39.5,
+    36.1,
+    35.4,
+    42.3,
+    39.7
+   ],
+   "body_edit_median_ms": 39.6,
+   "graph_edit_to_definition_ms": [
+    38.4,
+    47.0,
+    38.9,
+    39.6,
+    40.3,
+    36.8
+   ],
+   "graph_edit_median_ms": 39.25,
+   "rss_mb": 408
+  },
+  {
+   "name": "bash-lsp m4",
+   "files": 1000,
+   "walk_to_first_answer_ms": 98,
+   "initialize_ms": 4,
+   "workspace_symbol_hits": 2,
+   "definition_found": true,
+   "body_edit_to_definition_ms": [
+    44.0,
+    38.5,
+    37.3,
+    35.8,
+    42.3,
+    35.5
+   ],
+   "body_edit_median_ms": 37.9,
+   "graph_edit_to_definition_ms": [
+    34.9,
+    43.7,
+    44.2,
+    40.1,
+    38.5,
+    40.8
+   ],
+   "graph_edit_median_ms": 40.45,
+   "rss_mb": 413
+  },
+  {
+   "name": "bash-lsp m4",
+   "files": 1000,
+   "walk_to_first_answer_ms": 102,
+   "initialize_ms": 4,
+   "workspace_symbol_hits": 2,
+   "definition_found": true,
+   "body_edit_to_definition_ms": [
+    36.3,
+    41.1,
+    37.2,
+    35.8,
+    40.1,
+    47.5
+   ],
+   "body_edit_median_ms": 38.650000000000006,
+   "graph_edit_to_definition_ms": [
+    38.2,
+    38.4,
+    33.6,
+    42.3,
+    35.7,
+    35.1
+   ],
+   "graph_edit_median_ms": 36.95,
+   "rss_mb": 420
+  },
+  {
+   "name": "bash-lsp m4",
+   "files": 1000,
+   "walk_to_first_answer_ms": 105,
+   "initialize_ms": 4,
+   "workspace_symbol_hits": 2,
+   "definition_found": true,
+   "body_edit_to_definition_ms": [
+    44.7,
+    36.6,
+    38.6,
+    41.7,
+    41.2,
+    35.7
+   ],
+   "body_edit_median_ms": 39.900000000000006,
+   "graph_edit_to_definition_ms": [
+    34.8,
+    43.5,
+    36.8,
+    35.0,
+    33.1,
+    40.5
+   ],
+   "graph_edit_median_ms": 35.9,
+   "rss_mb": 412
+  },
+  {
+   "name": "bash-lsp m4",
+   "files": 1000,
+   "walk_to_first_answer_ms": 105,
+   "initialize_ms": 4,
+   "workspace_symbol_hits": 2,
+   "definition_found": true,
+   "body_edit_to_definition_ms": [
+    47.1,
+    39.7,
+    37.9,
+    35.4,
+    42.6,
+    37.1
+   ],
+   "body_edit_median_ms": 38.8,
+   "graph_edit_to_definition_ms": [
+    33.6,
+    41.4,
+    35.0,
+    34.8,
+    33.4,
+    40.3
+   ],
+   "graph_edit_median_ms": 34.9,
+   "rss_mb": 413
+  },
+  {
+   "name": "bash-lsp m4",
+   "files": 1000,
+   "walk_to_first_answer_ms": 99,
+   "initialize_ms": 4,
+   "workspace_symbol_hits": 2,
+   "definition_found": true,
+   "body_edit_to_definition_ms": [
+    38.1,
+    36.5,
+    45.0,
+    38.7,
+    37.1,
+    35.9
+   ],
+   "body_edit_median_ms": 37.6,
+   "graph_edit_to_definition_ms": [
+    44.8,
+    38.4,
+    36.6,
+    43.4,
+    37.5,
+    36.6
+   ],
+   "graph_edit_median_ms": 37.95,
+   "rss_mb": 413
+  },
+  {
+   "name": "bash-lsp m4",
+   "files": 1000,
+   "walk_to_first_answer_ms": 102,
+   "initialize_ms": 4,
+   "workspace_symbol_hits": 2,
+   "definition_found": true,
+   "body_edit_to_definition_ms": [
+    44.0,
+    37.3,
+    37.2,
+    35.3,
+    41.3,
+    35.7
+   ],
+   "body_edit_median_ms": 37.25,
+   "graph_edit_to_definition_ms": [
+    33.4,
+    41.2,
+    39.6,
+    34.7,
+    33.5,
+    42.1
+   ],
+   "graph_edit_median_ms": 37.150000000000006,
+   "rss_mb": 413
+  },
+  {
+   "name": "bash-lsp m4",
+   "files": 1000,
+   "walk_to_first_answer_ms": 97,
+   "initialize_ms": 4,
+   "workspace_symbol_hits": 2,
+   "definition_found": true,
+   "body_edit_to_definition_ms": [
+    42.2,
+    36.2,
+    37.2,
+    35.8,
+    41.2,
+    35.2
+   ],
+   "body_edit_median_ms": 36.7,
+   "graph_edit_to_definition_ms": [
+    35.1,
+    39.5,
+    36.7,
+    39.8,
+    34.5,
+    41.5
+   ],
+   "graph_edit_median_ms": 38.1,
+   "rss_mb": 416
+  },
+  {
+   "name": "bash-lsp m4",
+   "files": 1000,
+   "walk_to_first_answer_ms": 115,
+   "initialize_ms": 4,
+   "workspace_symbol_hits": 2,
+   "definition_found": true,
+   "body_edit_to_definition_ms": [
+    46.2,
+    38.5,
+    36.4,
+    35.7,
+    42.1,
+    35.3
+   ],
+   "body_edit_median_ms": 37.45,
+   "graph_edit_to_definition_ms": [
+    33.1,
+    45.8,
+    38.8,
+    36.9,
+    41.9,
+    43.8
+   ],
+   "graph_edit_median_ms": 40.349999999999994,
+   "rss_mb": 410
+  },
+  {
+   "name": "bash-lsp m4",
+   "files": 1000,
+   "walk_to_first_answer_ms": 97,
+   "initialize_ms": 4,
+   "workspace_symbol_hits": 2,
+   "definition_found": true,
+   "body_edit_to_definition_ms": [
+    36.8,
+    37.7,
+    35.5,
+    43.4,
+    35.1,
+    34.2
+   ],
+   "body_edit_median_ms": 36.15,
+   "graph_edit_to_definition_ms": [
+    33.5,
+    41.1,
+    36.6,
+    33.7,
+    43.6,
+    36.2
+   ],
+   "graph_edit_median_ms": 36.400000000000006,
+   "rss_mb": 420
+  },
+  {
+   "name": "bash-lsp m4",
+   "files": 1000,
+   "walk_to_first_answer_ms": 96,
+   "initialize_ms": 4,
+   "workspace_symbol_hits": 2,
+   "definition_found": true,
+   "body_edit_to_definition_ms": [
+    42.9,
+    37.0,
+    37.5,
+    37.9,
+    43.3,
+    36.2
+   ],
+   "body_edit_median_ms": 37.7,
+   "graph_edit_to_definition_ms": [
+    35.7,
+    39.9,
+    36.4,
+    35.1,
+    36.1,
+    41.6
+   ],
+   "graph_edit_median_ms": 36.25,
+   "rss_mb": 416
+  },
+  {
+   "name": "bash-lsp m4",
+   "files": 1000,
+   "walk_to_first_answer_ms": 99,
+   "initialize_ms": 4,
+   "workspace_symbol_hits": 2,
+   "definition_found": true,
+   "body_edit_to_definition_ms": [
+    42.3,
+    36.6,
+    35.6,
+    39.8,
+    44.7,
+    39.5
+   ],
+   "body_edit_median_ms": 39.65,
+   "graph_edit_to_definition_ms": [
+    37.9,
+    40.9,
+    36.4,
+    34.2,
+    37.0,
+    38.0
+   ],
+   "graph_edit_median_ms": 37.45,
+   "rss_mb": 407
+  },
+  {
+   "name": "bash-lsp m4",
+   "files": 1000,
+   "walk_to_first_answer_ms": 97,
+   "initialize_ms": 4,
+   "workspace_symbol_hits": 2,
+   "definition_found": true,
+   "body_edit_to_definition_ms": [
+    42.1,
+    39.3,
+    39.0,
+    35.9,
+    41.6,
+    36.3
+   ],
+   "body_edit_median_ms": 39.15,
+   "graph_edit_to_definition_ms": [
+    36.0,
+    46.7,
+    39.9,
+    39.3,
+    37.3,
+    41.9
+   ],
+   "graph_edit_median_ms": 39.599999999999994,
+   "rss_mb": 412
+  },
+  {
+   "name": "bash-lsp m4",
+   "files": 1000,
+   "walk_to_first_answer_ms": 101,
+   "initialize_ms": 4,
+   "workspace_symbol_hits": 2,
+   "definition_found": true,
+   "body_edit_to_definition_ms": [
+    35.3,
+    43.1,
+    35.9,
+    33.8,
+    35.6,
+    40.3
+   ],
+   "body_edit_median_ms": 35.75,
+   "graph_edit_to_definition_ms": [
+    34.3,
+    32.9,
+    44.2,
+    36.1,
+    34.3,
+    42.6
+   ],
+   "graph_edit_median_ms": 35.2,
+   "rss_mb": 404
+  },
+  {
+   "name": "bash-lsp m4",
+   "files": 1000,
+   "walk_to_first_answer_ms": 109,
+   "initialize_ms": 4,
+   "workspace_symbol_hits": 2,
+   "definition_found": true,
+   "body_edit_to_definition_ms": [
+    42.8,
+    36.7,
+    38.8,
+    36.1,
+    42.8,
+    38.1
+   ],
+   "body_edit_median_ms": 38.45,
+   "graph_edit_to_definition_ms": [
+    34.6,
+    43.3,
+    36.5,
+    36.2,
+    37.8,
+    40.6
+   ],
+   "graph_edit_median_ms": 37.15,
+   "rss_mb": 413
+  },
+  {
+   "name": "bash-lsp m4",
+   "files": 1000,
+   "walk_to_first_answer_ms": 102,
+   "initialize_ms": 4,
+   "workspace_symbol_hits": 2,
+   "definition_found": true,
+   "body_edit_to_definition_ms": [
+    46.9,
+    39.8,
+    37.3,
+    35.9,
+    43.3,
+    36.1
+   ],
+   "body_edit_median_ms": 38.55,
+   "graph_edit_to_definition_ms": [
+    32.8,
+    40.6,
+    36.2,
+    35.4,
+    33.7,
+    41.3
+   ],
+   "graph_edit_median_ms": 35.8,
+   "rss_mb": 415
+  },
+  {
+   "name": "bash-lsp m4",
+   "files": 1000,
+   "walk_to_first_answer_ms": 98,
+   "initialize_ms": 4,
+   "workspace_symbol_hits": 2,
+   "definition_found": true,
+   "body_edit_to_definition_ms": [
+    42.1,
+    35.9,
+    38.1,
+    35.8,
+    42.6,
+    36.5
+   ],
+   "body_edit_median_ms": 37.3,
+   "graph_edit_to_definition_ms": [
+    33.6,
+    41.5,
+    35.3,
+    35.6,
+    36.8,
+    42.1
+   ],
+   "graph_edit_median_ms": 36.2,
+   "rss_mb": 411
+  },
+  {
+   "name": "bash-lsp m4",
+   "files": 1000,
+   "walk_to_first_answer_ms": 103,
+   "initialize_ms": 4,
+   "workspace_symbol_hits": 2,
+   "definition_found": true,
+   "body_edit_to_definition_ms": [
+    43.8,
+    39.5,
+    37.6,
+    35.5,
+    41.7,
+    35.9
+   ],
+   "body_edit_median_ms": 38.55,
+   "graph_edit_to_definition_ms": [
+    33.4,
+    41.1,
+    36.1,
+    34.3,
+    34.3,
+    44.2
+   ],
+   "graph_edit_median_ms": 35.2,
+   "rss_mb": 413
+  },
+  {
+   "name": "bash-lsp m4",
+   "files": 1000,
+   "walk_to_first_answer_ms": 103,
+   "initialize_ms": 4,
+   "workspace_symbol_hits": 2,
+   "definition_found": true,
+   "body_edit_to_definition_ms": [
+    40.1,
+    36.0,
+    35.8,
+    43.0,
+    35.5,
+    33.6
+   ],
+   "body_edit_median_ms": 35.9,
+   "graph_edit_to_definition_ms": [
+    41.7,
+    35.5,
+    35.2,
+    33.3,
+    39.9,
+    35.6
+   ],
+   "graph_edit_median_ms": 35.55,
+   "rss_mb": 410
+  },
+  {
+   "name": "bash-lsp m4",
+   "files": 1000,
+   "walk_to_first_answer_ms": 101,
+   "initialize_ms": 4,
+   "workspace_symbol_hits": 2,
+   "definition_found": true,
+   "body_edit_to_definition_ms": [
+    47.1,
+    36.0,
+    36.0,
+    36.2,
+    41.8,
+    35.0
+   ],
+   "body_edit_median_ms": 36.1,
+   "graph_edit_to_definition_ms": [
+    34.8,
+    40.6,
+    35.3,
+    35.8,
+    40.4,
+    46.4
+   ],
+   "graph_edit_median_ms": 38.099999999999994,
+   "rss_mb": 422
+  },
+  {
+   "name": "bash-lsp m4",
+   "files": 1000,
+   "walk_to_first_answer_ms": 98,
+   "initialize_ms": 4,
+   "workspace_symbol_hits": 2,
+   "definition_found": true,
+   "body_edit_to_definition_ms": [
+    41.7,
+    36.7,
+    35.9,
+    42.6,
+    36.9,
+    33.8
+   ],
+   "body_edit_median_ms": 36.8,
+   "graph_edit_to_definition_ms": [
+    36.8,
+    40.9,
+    36.0,
+    33.7,
+    42.0,
+    36.0
+   ],
+   "graph_edit_median_ms": 36.4,
+   "rss_mb": 406
+  },
+  {
+   "name": "bash-lsp m4",
+   "files": 1000,
+   "walk_to_first_answer_ms": 113,
+   "initialize_ms": 4,
+   "workspace_symbol_hits": 2,
+   "definition_found": true,
+   "body_edit_to_definition_ms": [
+    43.2,
+    37.1,
+    35.7,
+    35.5,
+    43.6,
+    36.3
+   ],
+   "body_edit_median_ms": 36.7,
+   "graph_edit_to_definition_ms": [
+    33.4,
+    42.4,
+    36.0,
+    34.4,
+    41.1,
+    36.2
+   ],
+   "graph_edit_median_ms": 36.1,
+   "rss_mb": 406
+  },
+  {
+   "name": "bash-lsp m4",
+   "files": 1000,
+   "walk_to_first_answer_ms": 100,
+   "initialize_ms": 4,
+   "workspace_symbol_hits": 2,
+   "definition_found": true,
+   "body_edit_to_definition_ms": [
+    43.2,
+    35.5,
+    36.7,
+    40.6,
+    46.2,
+    38.7
+   ],
+   "body_edit_median_ms": 39.650000000000006,
+   "graph_edit_to_definition_ms": [
+    35.4,
+    41.1,
+    36.5,
+    35.0,
+    34.6,
+    40.2
+   ],
+   "graph_edit_median_ms": 35.95,
+   "rss_mb": 412
+  },
+  {
+   "name": "bash-lsp m4",
+   "files": 1000,
+   "walk_to_first_answer_ms": 99,
+   "initialize_ms": 4,
+   "workspace_symbol_hits": 2,
+   "definition_found": true,
+   "body_edit_to_definition_ms": [
+    42.8,
+    37.8,
+    37.2,
+    35.7,
+    41.2,
+    35.4
+   ],
+   "body_edit_median_ms": 37.5,
+   "graph_edit_to_definition_ms": [
+    37.8,
+    45.0,
+    40.5,
+    36.2,
+    35.8,
+    41.9
+   ],
+   "graph_edit_median_ms": 39.15,
+   "rss_mb": 413
+  },
+  {
+   "name": "bash-lsp m4",
+   "files": 1000,
+   "walk_to_first_answer_ms": 106,
+   "initialize_ms": 4,
+   "workspace_symbol_hits": 2,
+   "definition_found": true,
+   "body_edit_to_definition_ms": [
+    38.7,
+    37.8,
+    37.1,
+    43.3,
+    36.7,
+    33.3
+   ],
+   "body_edit_median_ms": 37.45,
+   "graph_edit_to_definition_ms": [
+    40.8,
+    35.9,
+    36.1,
+    34.9,
+    41.5,
+    35.4
+   ],
+   "graph_edit_median_ms": 36.0,
+   "rss_mb": 416
+  }
+ ],
+ "load_note": "quiet"
+}
