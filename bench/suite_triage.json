@@ -1,0 +1,16 @@
+{
+ "S004": {"class": "product gap", "owner": "analysis (definition resolution)", "fix": "for a call in a straight-line list, resolve to the nearest preceding definition of the same name in that list instead of all definitions; not traced"},
+ "S005": {"class": "product gap", "owner": "analysis (definition resolution)", "fix": "same as S004: the second call must see only the second definition; not traced"},
+ "S008": {"class": "product gap", "owner": "analysis (definition resolution)", "fix": "a call after a preceding unset -f NAME in the same straight-line list has no definition; not traced"},
+ "S031": {"class": "product gap", "owner": "analysis (dynamic-scope edges)", "fix": "definition of a variable read in a function should also return the local of a caller that reaches it; not traced"},
+ "S044": {"class": "product gap", "owner": "analysis (binder scopes)", "fix": "a function defined inside ( ) is not visible after the subshell; not traced"},
+ "S057": {"class": "product gap", "owner": "analysis (source graph)", "fix": "a call before the source line must not resolve to the sourced file's function; not traced"},
+ "S070": {"class": "product gap", "owner": "analysis (eval string edges)", "fix": "eval of a string built from a loop variable over literal words could define gen_one and gen_two; not traced"},
+ "S074": {"class": "product gap", "owner": "analysis (alias edges)", "fix": "an alias defined on the same line does not apply until the next line, so aa resolves to the function aa; not traced"},
+ "S075": {"class": "product gap", "owner": "analysis (alias edges)", "fix": "unalias zz ends the alias, so a later zz resolves to the function zz; not traced"},
+ "S101": {"class": "product gap", "owner": "internal/front/resync.go", "fix": "after an unterminated double quote the rest of the file is quoted text; the server's resync recovers after_q as a function. The resync is an editing-friendly choice, so the owner may rule this one disputed"},
+ "S150": {"class": "product gap", "owner": "internal/front/resync.go", "fix": "same as S101: the last f is inside the unterminated quote and is reported as a reference"},
+ "S112": {"class": "product gap", "owner": "internal/front/syntax/parser.go:799 and diagnostic severity", "fix": "bash -n exits 0 on an unterminated here-document (a warning); the server reports it as severity 1 (WB1001); lower it to a warning"},
+ "S119": {"class": "product gap", "owner": "internal/front/syntax/parser.go", "fix": "the error for an empty then body is reported on line 2 (missing command); bash -n reports line 3 (the fi). The owner may rule the position disputed"},
+ "S120": {"class": "product gap", "owner": "internal/front/syntax/parser.go", "fix": "a stray else produces no diagnostic from the native parser; with shellcheck on, bash-lsp check reports SC1089 on it (checked by hand); the suite runs with shellcheck off as the brief requires"}
+}
