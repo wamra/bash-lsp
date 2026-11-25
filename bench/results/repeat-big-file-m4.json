@@ -1,0 +1,123 @@
+{
+ "label": "scale.py, m4 task 11",
+ "date": "2026-11-25T00:43:23-05:00",
+ "commit": "7c1c0b5",
+ "dirty": true,
+ "machine": "Mac Studio Apple M1 Ultra, macOS-26.5.1-arm64-arm-64bit-Mach-O",
+ "cmd": [
+  "uv",
+  "run",
+  "--no-project",
+  "python",
+  "bench/scale.py",
+  "bash-lsp m4",
+  "/private/tmp/bash-lsp/t11-work/big.sh",
+  "--",
+  "/private/tmp/bash-lsp/t11-work/bin/bash-lsp",
+  "serve"
+ ],
+ "n": 10,
+ "runs": [
+  {
+   "name": "bash-lsp m4",
+   "bytes": 560711,
+   "symbols": 2000,
+   "open_to_symbols_ms": 101,
+   "edit_to_symbols_ms": 88,
+   "definition_ms": 1.9,
+   "definition_found": true,
+   "rss_mb": 159
+  },
+  {
+   "name": "bash-lsp m4",
+   "bytes": 560711,
+   "symbols": 2000,
+   "open_to_symbols_ms": 102,
+   "edit_to_symbols_ms": 90,
+   "definition_ms": 2.1,
+   "definition_found": true,
+   "rss_mb": 159
+  },
+  {
+   "name": "bash-lsp m4",
+   "bytes": 560711,
+   "symbols": 2000,
+   "open_to_symbols_ms": 100,
+   "edit_to_symbols_ms": 89,
+   "definition_ms": 2.0,
+   "definition_found": true,
+   "rss_mb": 157
+  },
+  {
+   "name": "bash-lsp m4",
+   "bytes": 560711,
+   "symbols": 2000,
+   "open_to_symbols_ms": 100,
+   "edit_to_symbols_ms": 88,
+   "definition_ms": 1.9,
+   "definition_found": true,
+   "rss_mb": 159
+  },
+  {
+   "name": "bash-lsp m4",
+   "bytes": 560711,
+   "symbols": 2000,
+   "open_to_symbols_ms": 97,
+   "edit_to_symbols_ms": 88,
+   "definition_ms": 2.0,
+   "definition_found": true,
+   "rss_mb": 159
+  },
+  {
+   "name": "bash-lsp m4",
+   "bytes": 560711,
+   "symbols": 2000,
+   "open_to_symbols_ms": 98,
+   "edit_to_symbols_ms": 89,
+   "definition_ms": 2.0,
+   "definition_found": true,
+   "rss_mb": 159
+  },
+  {
+   "name": "bash-lsp m4",
+   "bytes": 560711,
+   "symbols": 2000,
+   "open_to_symbols_ms": 96,
+   "edit_to_symbols_ms": 88,
+   "definition_ms": 2.5,
+   "definition_found": true,
+   "rss_mb": 156
+  },
+  {
+   "name": "bash-lsp m4",
+   "bytes": 560711,
+   "symbols": 2000,
+   "open_to_symbols_ms": 98,
+   "edit_to_symbols_ms": 88,
+   "definition_ms": 1.9,
+   "definition_found": true,
+   "rss_mb": 157
+  },
+  {
+   "name": "bash-lsp m4",
+   "bytes": 560711,
+   "symbols": 2000,
+   "open_to_symbols_ms": 98,
+   "edit_to_symbols_ms": 88,
+   "definition_ms": 2.0,
+   "definition_found": true,
+   "rss_mb": 159
+  },
+  {
+   "name": "bash-lsp m4",
+   "bytes": 560711,
+   "symbols": 2000,
+   "open_to_symbols_ms": 101,
+   "edit_to_symbols_ms": 93,
+   "definition_ms": 2.1,
+   "definition_found": true,
+   "rss_mb": 159
+  }
+ ],
+ "load_note": "quiet"
+}

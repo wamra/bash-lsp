@@ -88,3 +88,17 @@ func BenchmarkBuildChain1000(b *testing.B) {
 		prev = Build(files, Options{Root: "/ws", Prev: prev}, uint64(i+2))
 	}
 }
+
+// BenchmarkPlanRenameChain1000 plans a rename of a function defined in the
+// middle of the 1,000-file chain (the probe that prepareRename makes and the
+// plan that rename makes), from the cursor on its definition.
+func BenchmarkPlanRenameChain1000(b *testing.B) {
+	s := Build(chainFiles("/ws", 1000, 20), Options{Root: "/ws"}, 1)
+	off := len("#!/usr/bin/env bash\nsource ./s0499.sh\n# Function 500_0.\nf5")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := s.PlanRename("/ws/s0500.sh", off, "bash_lsp_rename_probe"); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
