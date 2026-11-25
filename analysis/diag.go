@@ -345,8 +345,9 @@ type fileMentions struct {
 // those files over (carryDiag), so an edit rescans only the edited file.
 type diagState struct {
 	capMu  sync.Mutex
-	capped map[int]int       // file -> findings Diagnostics cut past maxFindings (LimitsHit)
-	runLim map[int]runLimits // file -> search budgets the last Diagnostics run passed (LimitsHit)
+	capped map[int]int         // file -> findings Diagnostics cut past maxFindings (LimitsHit)
+	runLim map[int]runLimits   // file -> search budgets the last Diagnostics run passed (LimitsHit)
+	renLim map[int]*renameLims // file -> rename bounds met on this snapshot (LimitsHit)
 
 	pathOnce  sync.Once
 	pathFiles bitset // files that assign PATH (WB1102)

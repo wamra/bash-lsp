@@ -1022,6 +1022,11 @@ func (z nulIndex) endsWith(src []byte, s, e int, v string) bool {
 // unless a NUL lies inside the name (nulName).
 func (l *lowerer) name(value string, a, b syntax.Pos) (string, tree.Range) {
 	r := l.rng(a, b)
+	if r.Start.Offset == 0 && l.base.Offset == 0 && strings.HasPrefix(value, "\ufeff") && bytes.HasPrefix(l.f.Src, []byte("\xef\xbb\xbf")) {
+		// the byte order mark at the start of the file is not part of the first name
+		r.Start = l.f.PosAt(len("\xef\xbb\xbf"))
+		value = value[len("\xef\xbb\xbf"):]
+	}
 	if l.nul != nil && r.Start.Offset < r.End.Offset && r.End.Offset <= len(l.f.Src) {
 		name, end := l.nulName(value, r.Start.Offset, r.End.Offset)
 		return name, tree.Range{Start: r.Start, End: l.f.PosAt(end)}

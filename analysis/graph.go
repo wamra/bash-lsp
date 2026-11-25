@@ -186,24 +186,25 @@ func (s *Snapshot) Lookup(spec string) ([]Node, error) {
 	return out, nil
 }
 
-// lookupPosition handles "path:line:col". ok is false when spec has no such
-// shape or names no file of the snapshot (then it is tried as path or name);
-// a line or column outside the file is an error naming spec.
-func (s *Snapshot) lookupPosition(spec string) (nodes []Node, ok bool, err error) {
+// Position reads spec as "path:line:col" (1-based, the column in UTF-16
+// units, as Lookup reads it) and returns the file of the snapshot and the byte
+// offset it names. ok is false when spec has no such shape or names no file of
+// the snapshot; a line or column outside the file is an error naming spec.
+func (s *Snapshot) Position(spec string) (path string, offset int, ok bool, err error) {
 	i := strings.LastIndexByte(spec, ':')
 	if i < 0 {
-		return nil, false, nil
+		return "", 0, false, nil
 	}
 	col, err1 := strconv.Atoi(spec[i+1:])
 	rest := spec[:i]
 	j := strings.LastIndexByte(rest, ':')
 	if err1 != nil || j < 0 {
-		return nil, false, nil
+		return "", 0, false, nil
 	}
 	line, err2 := strconv.Atoi(rest[j+1:])
-	path, ok := s.resolvePath(rest[:j])
+	path, ok = s.resolvePath(rest[:j])
 	if err2 != nil || !ok || line < 1 || col < 1 {
-		return nil, false, nil
+		return "", 0, false, nil
 	}
 	file := s.idx[path]
 	src := s.facts[file].File.Src
@@ -211,19 +212,19 @@ func (s *Snapshot) lookupPosition(spec string) (nodes []Node, ok bool, err error
 	for l < line {
 		k := slices.Index(src[off:], '\n')
 		if k < 0 {
-			return nil, true, fmt.Errorf("analysis: line %d of %q is past the end of the file", line, spec)
+			return "", 0, true, fmt.Errorf("analysis: line %d of %q is past the end of the file", line, spec)
 		}
 		off += k + 1
 		l++
 	}
 	if line > 1 && off == len(src) { // the empty "line" after a final newline
-		return nil, true, fmt.Errorf("analysis: line %d of %q is past the end of the file", line, spec)
+		return "", 0, true, fmt.Errorf("analysis: line %d of %q is past the end of the file", line, spec)
 	}
 	lineStart := off
 	f := s.facts[file].File
 	p := f.FromUTF16(line-1, col-1) // clamps a column past the line end
 	if _, ch := f.ToUTF16(p); ch != col-1 {
-		return nil, true, fmt.Errorf("analysis: column %d of %q is not a position of the line", col, spec)
+		return "", 0, true, fmt.Errorf("analysis: column %d of %q is not a position of the line", col, spec)
 	}
 	off = p.Offset
 	atEnd := off >= len(src) || src[off] == '\n' || (src[off] == '\r' && off+1 < len(src) && src[off+1] == '\n')
@@ -232,6 +233,16 @@ func (s *Snapshot) lookupPosition(spec string) (nodes []Node, ok bool, err error
 	}
 	if off >= len(src) {
 		off = max(len(src)-1, 0)
+	}
+	return path, off, true, nil
+}
+
+// lookupPosition handles "path:line:col" for Lookup: the function named at
+// the position, else the function around it, else the file.
+func (s *Snapshot) lookupPosition(spec string) (nodes []Node, ok bool, err error) {
+	path, off, ok, err := s.Position(spec)
+	if !ok || err != nil {
+		return nil, ok, err
 	}
 	if sym, ok := s.SymbolAt(path, off); ok && sym.Kind == DeclFunction {
 		var out []Node

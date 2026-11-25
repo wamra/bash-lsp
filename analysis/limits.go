@@ -89,6 +89,11 @@ func limitFormat(name string) string {
 //     returns. That bound depends on the settings the findings were computed
 //     with, so it is listed for the files Diagnostics has been asked about on
 //     this snapshot, with the options of the call that cut them;
+//   - rename others, sites, text, by-name and reach caps: renames that listed
+//     only the first declarations of same-named symbols, sites of a refusal,
+//     bytes of an excluded site's text, refused a name of too many functions,
+//     or stopped a dynamic-scope check at its call-graph bound; listed, like
+//     the findings cap, for the files the renames touched;
 //   - caller-local search and version-guard search: WB1401 proofs dropped and
 //     bash-version checks left undecided because a search passed its budget;
 //     listed, like the findings cap, for the files Diagnostics has been asked
@@ -149,6 +154,13 @@ func (s *Snapshot) LimitsHit() []string {
 		}
 		if r.guard.n > 0 {
 			add(file, r.guard.line, limitFormat("version-guard-search"), r.guard.n)
+		}
+	}
+	for file, l := range s.renLim {
+		for c, n := range l {
+			if n.n > 0 {
+				add(file, n.line, renameCapFormats[c], n.n, renameCapBound(renameCap(c)))
+			}
 		}
 	}
 	s.capMu.Unlock()
