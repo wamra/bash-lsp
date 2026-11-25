@@ -660,8 +660,8 @@ func (s *Snapshot) incompleteWarnings(old string, files []int, union bitset) []s
 				continue
 			}
 			text := ""
-			if se.Ref.Word != nil {
-				text = s.siteText(f, se.Ref.Word.Range)
+			if w := sourcePathWord(se.Ref, func(n *tree.Node) string { return s.siteText(f, n.Range) }); w != nil {
+				text = s.siteText(f, w.Range)
 			}
 			if text == "" || strings.ContainsAny(text, "$`") {
 				dynamic = true

@@ -115,3 +115,51 @@ func TestRenameDynamicSourceNeedsNoLiteralTail(t *testing.T) {
 		}
 	}
 }
+
+func TestRenameDynamicSourceTailOutsideExpansions(t *testing.T) {
+	src := func(path string) map[string]string {
+		return map[string]string{"a.sh": "f() {\n  local n=3\n  " + path + "\n}\n", "lib.sh": "echo \"$n\"\n"}
+	}
+	for _, path := range []string{
+		`. "${1:-/etc/profile}"`,
+		`. "${dir:-/etc}"`,
+		`. "${1:-/dev/null}"`,
+		`. "$(find /opt -name x)"`,
+		`. $(cmd /x)`,
+		"source -- \"$1\"",
+		". \"$d/`echo x`\"",
+		". \"$dir/\"",
+		`. "${dir}/${name}"`,
+	} {
+		t.Run(path, func(t *testing.T) {
+			r := refusesMem(t, src(path), RefuseDynamicScope, "a.sh", "local n=3", 6, "w")
+			if r.Reason != reasonDynamicSource {
+				t.Errorf("reason %q", r.Reason)
+			}
+		})
+	}
+	for _, path := range []string{`. "$d/x.sh"`, `. "${d:-/etc}/x.sh"`, `source -- "$d/x.sh"`, `. "$(dirname "$0")/x.sh"`} {
+		p := planOK(t, src(path), "a.sh", "local n=3", 6, "w")
+		found := false
+		for _, w := range p.Warnings {
+			found = found || strings.Contains(w, "dynamic source")
+		}
+		if !found {
+			t.Errorf("%s: warnings %q", path, p.Warnings)
+		}
+	}
+	// A directive that says where the file is (or that there is none) settles the source.
+	planOK(t, src("# shellcheck source=/dev/null\n  . \"$1\""), "a.sh", "local n=3", 6, "w")
+}
+
+func TestRenameDynamicRefusalReasons(t *testing.T) {
+	r := refusesMem(t, map[string]string{"a.sh": "retry() {\n  local n=3\n  \"$@\"\n}\ng() { echo \"$n\"; }\n"}, RefuseDynamicScope, "a.sh", "local n=3", 6, "w")
+	if r.Reason != reasonDynamicCall {
+		t.Fatalf("reason %q", r.Reason)
+	}
+	// The new-name direction names a capture, not a scope.
+	r = refusesMem(t, map[string]string{"a.sh": "retry() {\n  local w=3\n  \"$@\"\n}\ng() { x=1; }\nx=2\n"}, RefuseConflict, "a.sh", "x=2", 0, "w")
+	if r.Reason != reasonDynamicCapture {
+		t.Fatalf("reason %q", r.Reason)
+	}
+}
