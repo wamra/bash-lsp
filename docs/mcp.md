@@ -1,6 +1,6 @@
 # MCP server and `search`
 
-`bash-lsp mcp [--root DIR]` serves the query engine to an MCP client over standard input and output. It is read-only: the ten tools below read the workspace and nothing else. `bash-lsp search [--json] [--root DIR] [--] TEXT` is the same search as the `search_code` tool, from the command line.
+`bash-lsp mcp [--root DIR]` serves the query engine to an MCP client over standard input and output. It is read-only: the eleven tools below read the workspace and nothing else (`preview_rename` plans a rename and never applies it). `bash-lsp search [--json] [--root DIR] [--] TEXT` is the same search as the `search_code` tool, from the command line.
 
 ## Running it
 
@@ -22,10 +22,11 @@ Standard output carries JSON-RPC messages, one per line, and nothing else. Log l
 | `get_index_status` | none | generation, file counts by dialect, skipped files, limits met |
 | `search_code` | `text` | native name matches plus code-index full-text hits |
 | `get_diagnostics` | `paths` (optional) | native findings; ShellCheck is not run here. Fields are `results`, `end_line` and `end_col`; `bash-lsp check --format json` prints `diagnostics`, `endLine`, `endCol` and `fixes` instead |
+| `preview_rename` | `symbol`, `new_name` | the plan of a rename: `edits`, `excluded` (sites left alone, with how they resolved, why, and their text redacted and cut to 200 bytes), `others`, `warnings`. A refusal is an `isError` result whose text starts `refused: CODE: reason` followed by `site  path:line:col` lines; the codes are in the README section "Rename". Files an apply would refuse for a local reason show as `apply-would-refuse: CODE: file` warnings. It never writes: applying is `bash-lsp rename --apply` |
 
 A symbol is a function name, a root-relative file path, or `path:line:col` with a UTF-16 column, as the other answers print positions. A name defined in several files is refused with the list of `path:line:col` specs that tell the definitions apart.
 
-The graph answers are the documents the command line prints with `--json`, from the same encoder (`internal/query`): the same question gives the same bytes on both (`TestAC20`). `get_callers` on `lib/util.sh:4:1` equals `bash-lsp callers lib/util.sh:4:1 --json`. The text content of a result is that document.
+The graph answers are the documents the command line prints with `--json`, from the same encoder (`internal/query`): the same question gives the same bytes on both (`TestAC20`). `get_callers` on `lib/util.sh:4:1` equals `bash-lsp callers lib/util.sh:4:1 --json`; `preview_rename` with `build_release` and `ship` equals `bash-lsp rename build_release ship --json` (`TestMCPPreviewRenameParity`). The text content of a result is that document.
 
 Another package adds a tool by calling `mcp.Register`; a tool reaches the refreshed snapshot, the root and the settings through `mcp.SessionFrom(ctx)`.
 

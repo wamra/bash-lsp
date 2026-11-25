@@ -141,12 +141,15 @@ func TestToolsList(t *testing.T) {
 			t.Errorf("%v: not marked read-only: %v", tl["name"], tl["annotations"])
 		}
 	}
-	want := "find_symbol find_references get_callers get_callees trace_dependency analyze_impact list_unresolved get_index_status search_code get_diagnostics"
+	want := "find_symbol find_references get_callers get_callees trace_dependency analyze_impact list_unresolved get_index_status search_code get_diagnostics preview_rename"
 	if got := strings.Join(names, " "); got != want {
 		t.Fatalf("tools\n got %s\nwant %s", got, want)
 	}
 	for _, n := range names {
 		for _, bad := range []string{"write", "exec", "run", "rename", "delete", "edit", "shell"} {
+			if n == "preview_rename" {
+				continue // a preview: it plans and never writes (TestMCPPreviewRenameWritesNothing)
+			}
 			if strings.Contains(n, bad) {
 				t.Errorf("tool %s looks like a write or exec tool", n)
 			}
@@ -255,6 +258,7 @@ func TestMCPRootEscape(t *testing.T) {
 			{"trace_dependency", map[string]any{"from": "in.sh", "to": e}},
 			{"list_unresolved", map[string]any{"paths": []string{"in.sh", e}}},
 			{"get_diagnostics", map[string]any{"paths": []string{e}}},
+			{"preview_rename", map[string]any{"symbol": e, "new_name": "zz"}},
 		} {
 			id++
 			in = append(in, call(id, c.tool, c.args))
@@ -400,7 +404,7 @@ func TestMCPShapesOfMessages(t *testing.T) {
 		{"params null", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":null}`, 1, `1`},
 		{"call without name", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}`, 1, `1`},
 		{"call name not a string", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":[1]}}`, 1, `1`},
-		{"unknown tool", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"preview_rename","arguments":{}}}`, 1, `1`},
+		{"unknown tool", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"no_such_tool","arguments":{}}}`, 1, `1`},
 		{"arguments a string", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"find_symbol","arguments":"x"}}`, 1, `1`},
 		{"arguments an array", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"find_symbol","arguments":[]}}`, 1, `1`},
 		{"missing required argument", call(1, "get_callers", map[string]any{}), 1, `1`},
@@ -690,6 +694,39 @@ func TestMCPRedactsBeforeClipping(t *testing.T) {
 	for _, r := range s.replies(t) {
 		if e, ok := r["error"].(map[string]any); ok && len(e["message"].(string)) > maxMsgBytes {
 			t.Errorf("message of %d bytes", len(e["message"].(string)))
+		}
+	}
+}
+
+func TestMCPPreviewRenameWritesNothing(t *testing.T) {
+	files := map[string]string{"a.sh": "f() { :; }\nf\ncmd=f\n\"$cmd\"\n", "b.sh": "source ./a.sh\nf\n"}
+	root := workspaceRoot(t, files)
+	rs := serve(t, root, config.Settings{},
+		call(1, "preview_rename", map[string]any{"symbol": "f", "new_name": "h"}),
+		call(2, "preview_rename", map[string]any{"symbol": "f", "new_name": "if"}),
+		call(3, "preview_rename", map[string]any{"symbol": "f"}),
+		call(4, "preview_rename", map[string]any{"symbol": "f", "new_name": "h", "apply": true}),
+		call(5, "preview_rename", map[string]any{"symbol": "", "new_name": "h"}),
+		call(6, "preview_rename", map[string]any{"symbol": "a.sh:2:1", "new_name": strings.Repeat("x", 5000)}),
+		call(7, "preview_rename", map[string]any{"symbol": "f", "new_name": "h\x00"}),
+		call(8, "preview_rename", map[string]any{"symbol": "f\x00", "new_name": "h"}),
+		call(9, "preview_rename", map[string]any{"symbol": strings.Repeat("f", 5000), "new_name": "h"}),
+		call(10, "preview_rename", map[string]any{"symbol": "f", "new_name": ""}),
+	).replies(t)
+	if tr := result(t, rs[0]); tr.IsError || len(tr.Doc["edits"].([]any)) != 3 || len(tr.Doc["excluded"].([]any)) != 2 || tr.Doc["generation"] == nil {
+		t.Errorf("preview: %v %s", tr.IsError, tr.Text)
+	}
+	if tr := result(t, rs[1]); !tr.IsError || !strings.HasPrefix(tr.Text, "refused: reserved-name: ") {
+		t.Errorf("refusal: %v %s", tr.IsError, tr.Text)
+	}
+	for i := 2; i < len(rs); i++ {
+		if tr := result(t, rs[i]); !tr.IsError {
+			t.Errorf("call %d accepted: %s", i+1, tr.Text)
+		}
+	}
+	for name, text := range files {
+		if b, _ := os.ReadFile(filepath.Join(root, name)); string(b) != text {
+			t.Errorf("%s changed", name)
 		}
 	}
 }
