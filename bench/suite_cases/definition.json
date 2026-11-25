@@ -1,0 +1,374 @@
+[
+ {
+  "id": "S001",
+  "category": "definition",
+  "tier": "gating",
+  "file": "defs/basic.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "greet world",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "defs/basic.sh",
+     4
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 textDocument/definition: a call resolves to the function defined with name() syntax. bash manual, SIMPLE COMMAND EXPANSION: \"the first word is taken to be the name of the command\"; COMMAND EXECUTION: \"If there exists a shell function by that name, that function is invoked\". the first word is the command name, looked up as a function first."
+ },
+ {
+  "id": "S002",
+  "category": "definition",
+  "tier": "gating",
+  "file": "defs/basic.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "  farewell \"$1\"",
+   "occ": 0,
+   "delta": 2
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "defs/basic.sh",
+     8
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 textDocument/definition: call inside another function resolves to the definition made with the function keyword and no parentheses. bash manual, SHELL GRAMMAR, Shell Function Definitions: both forms define a function."
+ },
+ {
+  "id": "S003",
+  "category": "definition",
+  "tier": "gating",
+  "file": "defs/basic.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "shout world",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "defs/basic.sh",
+     12
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, SHELL GRAMMAR, Shell Function Definitions: 'function name ()' is the combined form."
+ },
+ {
+  "id": "S004",
+  "category": "definition",
+  "tier": "gating",
+  "file": "defs/redef.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "pick",
+   "occ": 1,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "defs/redef.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "Sequential execution (bash manual, SHELL GRAMMAR, Lists): the definition command runs before the call that follows it, so the first call sees the first definition only."
+ },
+ {
+  "id": "S005",
+  "category": "definition",
+  "tier": "gating",
+  "file": "defs/redef.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "pick",
+   "occ": 3,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "defs/redef.sh",
+     4
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "Sequential execution (Lists): the second definition command has run before the second call and replaced the first, so only it is in effect."
+ },
+ {
+  "id": "S006",
+  "category": "definition",
+  "tier": "gating",
+  "file": "defs/nested.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "  inner",
+   "occ": 1,
+   "delta": 2
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "defs/nested.sh",
+     3
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "Sequential execution (Lists): the definition inside outer runs when outer's body runs, before the call that follows it."
+ },
+ {
+  "id": "S007",
+  "category": "definition",
+  "tier": "gating",
+  "file": "defs/nested.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "inner",
+   "occ": 3,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "defs/nested.sh",
+     3
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, FUNCTIONS: 'Function names and definitions may be listed with the -f option to the declare' and removed with unset -f, with no scope qualifier; the table is shell-wide, so after outer has run inner is callable at top level."
+ },
+ {
+  "id": "S008",
+  "category": "definition",
+  "tier": "gating",
+  "file": "defs/unset.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "tmp",
+   "occ": 3,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "empty": true
+  },
+  "oracle": "manual",
+  "why": "bash manual, SHELL BUILTIN COMMANDS, unset: 'unset -f' removes the function, so the last call has no definition."
+ },
+ {
+  "id": "S009",
+  "category": "definition",
+  "tier": "gating",
+  "file": "defs/shadow.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "cd /tmp",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "defs/shadow.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, COMMAND EXECUTION: 'If there exists a shell function by that name, that function is invoked' before builtins are searched."
+ },
+ {
+  "id": "S010",
+  "category": "definition",
+  "tier": "gating",
+  "file": "defs/shadow.sh",
+  "method": "textDocument/references",
+  "at": {
+   "needle": "cd() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "context": {
+    "includeDeclaration": true
+   }
+  },
+  "expect": {
+   "includes": [
+    [
+     "defs/shadow.sh",
+     2
+    ],
+    [
+     "defs/shadow.sh",
+     3
+    ]
+   ],
+   "excludes": [
+    [
+     "defs/shadow.sh",
+     4
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, SHELL BUILTIN COMMANDS, builtin: 'Execute the specified shell builtin', so 'builtin cd /' calls the builtin and not the function; the plain call 'cd /tmp' is a reference."
+ },
+ {
+  "id": "S011",
+  "category": "definition",
+  "tier": "gating",
+  "file": "defs/shadow.sh",
+  "method": "textDocument/references",
+  "at": {
+   "needle": "cd() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "context": {
+    "includeDeclaration": true
+   }
+  },
+  "expect": {
+   "includes": [
+    [
+     "defs/shadow.sh",
+     2
+    ],
+    [
+     "defs/shadow.sh",
+     3
+    ]
+   ],
+   "excludes": [
+    [
+     "defs/shadow.sh",
+     5
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, SHELL BUILTIN COMMANDS, command: 'Run command with args suppressing the normal shell function lookup'; the plain call 'cd /tmp' is a reference."
+ },
+ {
+  "id": "S012",
+  "category": "definition",
+  "tier": "gating",
+  "file": "defs/branches.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "impl",
+   "occ": 2,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "includes_any": [
+    [
+     "defs/branches.sh",
+     3
+    ],
+    [
+     "defs/branches.sh",
+     5
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, SHELL GRAMMAR, Compound Commands, if: only one branch runs, chosen by $FAST at run time, so either definition can be the one in effect; one of the two must be offered."
+ },
+ {
+  "id": "S013",
+  "category": "definition",
+  "tier": "gating",
+  "file": "defs/dup_a.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "twin",
+   "occ": 1,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "defs/dup_a.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, source: only commands executed in a shell define functions; this file does not source dup_b.sh, so that shell never has the other twin."
+ },
+ {
+  "id": "S014",
+  "category": "definition",
+  "tier": "gating",
+  "file": "defs/dup_b.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "twin",
+   "occ": 1,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "defs/dup_b.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "Same as the sibling file: dup_a.sh is never sourced here."
+ },
+ {
+  "id": "S015",
+  "category": "definition",
+  "tier": "gating",
+  "file": "defs/vars.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "\"$LIMIT\"",
+   "occ": 0,
+   "delta": 2
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "defs/vars.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, PARAMETERS: a variable is set by assignment; LIMIT has one assignment, so the read inside a function binds to it."
+ }
+]

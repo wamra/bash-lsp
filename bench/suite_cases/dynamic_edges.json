@@ -1,0 +1,402 @@
+[
+ {
+  "id": "S065",
+  "category": "dynamic edges",
+  "tier": "gating",
+  "file": "dyn/trap.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "'cleanup'",
+   "occ": 0,
+   "delta": 1
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "dyn/trap.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, SHELL BUILTIN COMMANDS, trap: the argument is a command that is 'read and executed' on the signal, so cleanup is a call."
+ },
+ {
+  "id": "S066",
+  "category": "dynamic edges",
+  "tier": "gating",
+  "file": "dyn/trap.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "on_int INT",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "dyn/trap.sh",
+     3
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, trap: an unquoted one-word command is the same kind of string."
+ },
+ {
+  "id": "S067",
+  "category": "dynamic edges",
+  "tier": "gating",
+  "file": "dyn/trap.sh",
+  "method": "textDocument/references",
+  "at": {
+   "needle": "cleanup() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "context": {
+    "includeDeclaration": true
+   }
+  },
+  "expect": {
+   "locations": [
+    [
+     "dyn/trap.sh",
+     2
+    ],
+    [
+     "dyn/trap.sh",
+     4
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, trap: the trap string calls cleanup, so it is a reference."
+ },
+ {
+  "id": "S068",
+  "category": "dynamic edges",
+  "tier": "gating",
+  "file": "dyn/eval.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "dyn_call arg",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "dyn/eval.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, SHELL BUILTIN COMMANDS, eval: the arguments are read and executed as a command."
+ },
+ {
+  "id": "S069",
+  "category": "dynamic edges",
+  "tier": "gating",
+  "file": "dyn/eval.sh",
+  "method": "textDocument/references",
+  "at": {
+   "needle": "dyn_call() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "context": {
+    "includeDeclaration": true
+   }
+  },
+  "expect": {
+   "locations": [
+    [
+     "dyn/eval.sh",
+     2
+    ],
+    [
+     "dyn/eval.sh",
+     3
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, eval: the string runs dyn_call."
+ },
+ {
+  "id": "S070",
+  "category": "dynamic edges",
+  "tier": "gating",
+  "file": "dyn/eval.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "gen_one",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "includes": [
+    [
+     "dyn/eval.sh",
+     5
+    ]
+   ]
+  },
+  "oracle": "bash-trace",
+  "why": "bash manual, eval: for n=one the string defines gen_one, so the eval line is where it comes from."
+ },
+ {
+  "id": "S071",
+  "category": "dynamic edges",
+  "tier": "gating",
+  "file": "dyn/cmdvar.sh",
+  "method": "textDocument/references",
+  "at": {
+   "needle": "handler() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "context": {
+    "includeDeclaration": true
+   }
+  },
+  "expect": {
+   "includes": [
+    [
+     "dyn/cmdvar.sh",
+     2
+    ]
+   ],
+   "includes_any": [
+    [
+     "dyn/cmdvar.sh",
+     3
+    ],
+    [
+     "dyn/cmdvar.sh",
+     4
+    ]
+   ]
+  },
+  "oracle": "bash-trace",
+  "why": "bash manual, SIMPLE COMMAND EXPANSION: \"the first word is taken to be the name of the command\"; COMMAND EXECUTION: \"If there exists a shell function by that name, that function is invoked\". after expansion the word \"$cmd\" is handler, which is looked up as a function; the reference is the call or the assignment that feeds it."
+ },
+ {
+  "id": "S072",
+  "category": "dynamic edges",
+  "tier": "design",
+  "file": "dyn/alias.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "gs",
+   "occ": 1,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "includes": [
+    [
+     "dyn/alias.sh",
+     3
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, ALIASES: the first word of a simple command is replaced by the alias text, so the call runs status_all (shopt expand_aliases is on in the file)."
+ },
+ {
+  "id": "S073",
+  "category": "dynamic edges",
+  "tier": "design",
+  "file": "dyn/alias.sh",
+  "method": "textDocument/references",
+  "at": {
+   "needle": "status_all() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "context": {
+    "includeDeclaration": true
+   }
+  },
+  "expect": {
+   "includes": [
+    [
+     "dyn/alias.sh",
+     3
+    ],
+    [
+     "dyn/alias.sh",
+     6
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, ALIASES: the alias body names the function."
+ },
+ {
+  "id": "S074",
+  "category": "dynamic edges",
+  "tier": "gating",
+  "file": "dyn/alias.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "; aa",
+   "occ": 0,
+   "delta": 2
+  },
+  "params": {},
+  "expect": {
+   "includes": [
+    [
+     "dyn/alias.sh",
+     4
+    ]
+   ],
+   "excludes": [
+    [
+     "dyn/alias.sh",
+     3
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, ALIASES: 'an alias definition appearing on the same line as another command does not take effect until the next line of input is read', so this aa is the function aa and not status_all."
+ },
+ {
+  "id": "S075",
+  "category": "dynamic edges",
+  "tier": "gating",
+  "file": "dyn/alias.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "zz",
+   "occ": 4,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "includes": [
+    [
+     "dyn/alias.sh",
+     5
+    ]
+   ],
+   "excludes": [
+    [
+     "dyn/alias.sh",
+     3
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, SHELL BUILTIN COMMANDS, unalias: 'Remove each name from the list of defined aliases', so after the unalias line zz is the function zz and not status_all."
+ },
+ {
+  "id": "S076",
+  "category": "dynamic edges",
+  "tier": "gating",
+  "file": "dyn/command.sh",
+  "method": "textDocument/references",
+  "at": {
+   "needle": "handler() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "context": {
+    "includeDeclaration": true
+   }
+  },
+  "expect": {
+   "includes": [
+    [
+     "dyn/command.sh",
+     2
+    ],
+    [
+     "dyn/command.sh",
+     5
+    ]
+   ],
+   "excludes": [
+    [
+     "dyn/command.sh",
+     3
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, SHELL BUILTIN COMMANDS, command: 'suppressing the normal shell function lookup', so 'command handler' is not a call of the function; the plain call is."
+ },
+ {
+  "id": "S077",
+  "category": "dynamic edges",
+  "tier": "gating",
+  "file": "dyn/command.sh",
+  "method": "textDocument/references",
+  "at": {
+   "needle": "handler() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "context": {
+    "includeDeclaration": true
+   }
+  },
+  "expect": {
+   "includes": [
+    [
+     "dyn/command.sh",
+     2
+    ],
+    [
+     "dyn/command.sh",
+     5
+    ]
+   ],
+   "excludes": [
+    [
+     "dyn/command.sh",
+     4
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, FUNCTIONS: 'Functions may be exported so that subshells automatically have them defined with the -f option to the export builtin'; xargs starts a new process and handler is not exported, so 'xargs handler' is not a call of the function; the plain call is."
+ },
+ {
+  "id": "S078",
+  "category": "dynamic edges",
+  "tier": "gating",
+  "file": "dyn/command.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "handler",
+   "occ": 3,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "dyn/command.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, SIMPLE COMMAND EXPANSION: \"the first word is taken to be the name of the command\"; COMMAND EXECUTION: \"If there exists a shell function by that name, that function is invoked\". the plain call, as control for the two cases above."
+ }
+]

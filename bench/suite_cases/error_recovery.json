@@ -1,0 +1,358 @@
+[
+ {
+  "id": "S100",
+  "category": "error recovery",
+  "tier": "design",
+  "file": "err/missing_fi.sh",
+  "method": "textDocument/documentSymbol",
+  "at": {
+   "needle": "#!/bin/bash",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "names_include": [
+    "before_fi",
+    "after_fi"
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash -n fails (missing fi). Both functions are complete, well-formed text; a tolerant server lists them (LSP 3.17 documentSymbol)."
+ },
+ {
+  "id": "S101",
+  "category": "error recovery",
+  "tier": "gating",
+  "file": "err/unterminated_quote.sh",
+  "method": "textDocument/documentSymbol",
+  "at": {
+   "needle": "#!/bin/bash",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "names_exclude": [
+    "after_q"
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, QUOTING: after the unterminated double quote the rest of the file is quoted text, so after_q is not a function."
+ },
+ {
+  "id": "S102",
+  "category": "error recovery",
+  "tier": "design",
+  "file": "err/missing_brace.sh",
+  "method": "textDocument/documentSymbol",
+  "at": {
+   "needle": "#!/bin/bash",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "names_include": [
+    "before_b",
+    "broken_fn"
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash -n fails (unexpected end of file); the function before and the unfinished one still have names."
+ },
+ {
+  "id": "S103",
+  "category": "error recovery",
+  "tier": "design",
+  "file": "err/stray_fi.sh",
+  "method": "textDocument/documentSymbol",
+  "at": {
+   "needle": "#!/bin/bash",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "names_include": [
+    "before_s",
+    "after_s"
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash -n fails at the stray fi; the functions on both sides are well formed."
+ },
+ {
+  "id": "S104",
+  "category": "error recovery",
+  "tier": "design",
+  "file": "err/bad_expansion.sh",
+  "method": "textDocument/documentSymbol",
+  "at": {
+   "needle": "#!/bin/bash",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "names_include": [
+    "before_e"
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash -n fails (unterminated ${); the function before the error is still listed."
+ },
+ {
+  "id": "S105",
+  "category": "error recovery",
+  "tier": "design",
+  "file": "err/unclosed_paren.sh",
+  "method": "textDocument/documentSymbol",
+  "at": {
+   "needle": "#!/bin/bash",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "names_include": [
+    "before_p"
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash -n fails (unterminated $( ); the function before the error is still listed."
+ },
+ {
+  "id": "S106",
+  "category": "error recovery",
+  "tier": "design",
+  "file": "err/no_esac.sh",
+  "method": "textDocument/documentSymbol",
+  "at": {
+   "needle": "#!/bin/bash",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "names_include": [
+    "before_c"
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash -n fails (case without esac); the function before the error is still listed."
+ },
+ {
+  "id": "S107",
+  "category": "error recovery",
+  "tier": "gating",
+  "file": "err/use.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "ok_fn",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "err/lib_broken.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "bash-trace",
+  "why": "bash manual, source: the library is read line by line and executed as it goes, so ok_fn is defined before the syntax error at line 4 is reached."
+ },
+ {
+  "id": "S108",
+  "category": "error recovery",
+  "tier": "gating",
+  "file": "err/lib_broken.sh",
+  "method": "textDocument/references",
+  "at": {
+   "needle": "ok_fn() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "context": {
+    "includeDeclaration": true
+   }
+  },
+  "expect": {
+   "locations": [
+    [
+     "err/lib_broken.sh",
+     2
+    ],
+    [
+     "err/lib_broken.sh",
+     3
+    ],
+    [
+     "err/use.sh",
+     4
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 textDocument/references: the call before the syntax error and the call in the sourcing script are both references."
+ },
+ {
+  "id": "S109",
+  "category": "error recovery",
+  "tier": "gating",
+  "file": "err/garbage.sh",
+  "method": "textDocument/documentSymbol",
+  "at": {
+   "needle": "fi",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "names_exact": []
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 documentSymbol: a file of stray tokens has no symbols; the answer is an empty list, not an error."
+ },
+ {
+  "id": "S146",
+  "category": "error recovery",
+  "tier": "gating",
+  "file": "err/call_before_quote.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "early",
+   "occ": 1,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "err/call_before_quote.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "bash-trace",
+  "why": "bash manual, FUNCTIONS: the text before the unterminated quote is a complete definition and a call; the definition resolves although the file fails bash -n."
+ },
+ {
+  "id": "S147",
+  "category": "error recovery",
+  "tier": "gating",
+  "file": "err/call_before_fi.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "steady",
+   "occ": 1,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "err/call_before_fi.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "bash-trace",
+  "why": "The definition and the call precede the stray fi; the call resolves to the definition although the file fails bash -n."
+ },
+ {
+  "id": "S148",
+  "category": "error recovery",
+  "tier": "gating",
+  "file": "err/var_before.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "\"$x\"",
+   "occ": 0,
+   "delta": 2
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "err/var_before.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "bash-trace",
+  "why": "bash manual, PARAMETERS: the assignment and the read precede the unterminated ${y; the read binds to the assignment."
+ },
+ {
+  "id": "S149",
+  "category": "error recovery",
+  "tier": "gating",
+  "file": "err/var_before.sh",
+  "method": "textDocument/references",
+  "at": {
+   "needle": "x=1",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "context": {
+    "includeDeclaration": true
+   }
+  },
+  "expect": {
+   "includes": [
+    [
+     "err/var_before.sh",
+     2
+    ],
+    [
+     "err/var_before.sh",
+     3
+    ]
+   ]
+  },
+  "oracle": "bash-trace",
+  "why": "LSP 3.17 references: the assignment and the read before the syntax error are references."
+ },
+ {
+  "id": "S150",
+  "category": "error recovery",
+  "tier": "gating",
+  "file": "err/ref_swallow.sh",
+  "method": "textDocument/references",
+  "at": {
+   "needle": "f() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "context": {
+    "includeDeclaration": true
+   }
+  },
+  "expect": {
+   "includes": [
+    [
+     "err/ref_swallow.sh",
+     2
+    ],
+    [
+     "err/ref_swallow.sh",
+     3
+    ]
+   ],
+   "excludes": [
+    [
+     "err/ref_swallow.sh",
+     5
+    ]
+   ]
+  },
+  "oracle": "bash-trace",
+  "why": "bash manual, QUOTING: the last f is inside the unterminated double quote, so it is text and not a call; the earlier call is."
+ }
+]

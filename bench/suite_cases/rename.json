@@ -1,0 +1,214 @@
+[
+ {
+  "id": "S124",
+  "category": "rename",
+  "tier": "gating",
+  "file": "rename/fn.sh",
+  "method": "textDocument/rename",
+  "at": {
+   "needle": "compute() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "newName": "calc"
+  },
+  "expect": {
+   "edit_lines": [
+    [
+     "rename/fn.sh",
+     2
+    ],
+    [
+     "rename/fn.sh",
+     3
+    ],
+    [
+     "rename/fn.sh",
+     4
+    ],
+    [
+     "rename/fn.sh",
+     5
+    ]
+   ],
+   "file": "rename/fn.sh"
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 textDocument/rename: the declaration and each call change. bash manual, SIMPLE COMMAND EXPANSION: \"the first word is taken to be the name of the command\"; COMMAND EXECUTION: \"If there exists a shell function by that name, that function is invoked\". "
+ },
+ {
+  "id": "S125",
+  "category": "rename",
+  "tier": "gating",
+  "file": "rename/scoped.sh",
+  "method": "textDocument/rename",
+  "at": {
+   "needle": "local v=2",
+   "occ": 0,
+   "delta": 6
+  },
+  "params": {
+   "newName": "w"
+  },
+  "expect": {
+   "edit_lines": [
+    4,
+    5
+   ],
+   "file": "rename/scoped.sh"
+  },
+  "oracle": "manual",
+  "why": "bash manual, local: the local v exists only in f, so only its declaration and read change; the global v and g's read keep their name."
+ },
+ {
+  "id": "S126",
+  "category": "rename",
+  "tier": "gating",
+  "file": "rename/scoped.sh",
+  "method": "textDocument/rename",
+  "at": {
+   "needle": "v=1",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "newName": "w"
+  },
+  "expect": {
+   "edit_lines": [
+    2,
+    8,
+    12
+   ],
+   "file": "rename/scoped.sh"
+  },
+  "oracle": "manual",
+  "why": "bash manual, local: the global v is read by g and at top level; f's local shadows it inside f only, so lines 4 and 5 stay."
+ },
+ {
+  "id": "S127",
+  "category": "rename",
+  "tier": "gating",
+  "file": "rename/lib.sh",
+  "method": "textDocument/rename",
+  "at": {
+   "needle": "shared_fn() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "newName": "common_fn"
+  },
+  "expect": {
+   "edits": [
+    [
+     "rename/lib.sh",
+     2
+    ],
+    [
+     "rename/user.sh",
+     4
+    ],
+    [
+     "rename/user.sh",
+     6
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, source: user.sh runs lib.sh in its own shell; the definition and both calls change, and the file name in the source line does not."
+ },
+ {
+  "id": "S128",
+  "category": "rename",
+  "tier": "gating",
+  "file": "refs/mentions.sh",
+  "method": "textDocument/rename",
+  "at": {
+   "needle": "hello() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "newName": "hi"
+  },
+  "expect": {
+   "edit_lines": [
+    2,
+    3,
+    8
+   ],
+   "file": "refs/mentions.sh"
+  },
+  "oracle": "manual",
+  "why": "bash manual, SIMPLE COMMAND EXPANSION: \"the first word is taken to be the name of the command\"; COMMAND EXECUTION: \"If there exists a shell function by that name, that function is invoked\". the word hello in echo, the comment, the quoted string and the printf argument is text, not the function, so those lines are untouched."
+ },
+ {
+  "id": "S129",
+  "category": "rename",
+  "tier": "gating",
+  "file": "refs/varforms.sh",
+  "method": "textDocument/rename",
+  "at": {
+   "needle": "name=a",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "newName": "title"
+  },
+  "expect": {
+   "edit_lines": [
+    2,
+    3,
+    4,
+    6
+   ],
+   "excludes_lines": [
+    5
+   ],
+   "file": "refs/varforms.sh"
+  },
+  "oracle": "manual",
+  "why": "bash manual, PARAMETERS: every form of $name changes; name_x is another variable."
+ },
+ {
+  "id": "S130",
+  "category": "rename",
+  "tier": "gating",
+  "file": "rename/fn.sh",
+  "method": "textDocument/prepareRename",
+  "at": {
+   "needle": "echo 1",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "null_or_error": true
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 textDocument/prepareRename: null when there is nothing to rename; echo is a builtin, defined nowhere in the workspace (bash manual, SHELL BUILTIN COMMANDS)."
+ },
+ {
+  "id": "S131",
+  "category": "rename",
+  "tier": "gating",
+  "file": "rename/scoped.sh",
+  "method": "textDocument/rename",
+  "at": {
+   "needle": "v=1",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "newName": "1bad"
+  },
+  "expect": {
+   "null_or_error": true
+  },
+  "oracle": "manual",
+  "why": "bash manual, DEFINITIONS, name: a variable name begins with a letter or underscore, so 1bad is not a valid name and the rename is refused."
+ }
+]

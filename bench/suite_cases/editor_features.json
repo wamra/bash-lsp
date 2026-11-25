@@ -1,0 +1,313 @@
+[
+ {
+  "id": "S132",
+  "category": "editor features",
+  "tier": "gating",
+  "file": "defs/vars.sh",
+  "method": "textDocument/documentHighlight",
+  "at": {
+   "needle": "count=0",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "lines": [
+    3,
+    5,
+    6,
+    9
+   ],
+   "file": "defs/vars.sh"
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 textDocument/documentHighlight: every occurrence of the symbol in the document (the text count= inside a string is not one, but shares its line with $count)."
+ },
+ {
+  "id": "S133",
+  "category": "editor features",
+  "tier": "gating",
+  "file": "refs/inside.sh",
+  "method": "textDocument/documentHighlight",
+  "at": {
+   "needle": "emit() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "lines": [
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "file": "refs/inside.sh"
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 documentHighlight on a function: the definition and every call."
+ },
+ {
+  "id": "S134",
+  "category": "editor features",
+  "tier": "design",
+  "file": "editor/fold.sh",
+  "method": "textDocument/foldingRange",
+  "at": {
+   "needle": "multi() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "fold_start_lines_include": [
+    3,
+    7,
+    12,
+    15
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 textDocument/foldingRange: a multi-line function body, if, for and case each fold from their first line."
+ },
+ {
+  "id": "S135",
+  "category": "editor features",
+  "tier": "gating",
+  "file": "editor/fold.sh",
+  "method": "textDocument/foldingRange",
+  "at": {
+   "needle": "one() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "fold_start_lines_exclude": [
+    2
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 FoldingRange: a construct that sits on one line spans no lines, so there is nothing to fold."
+ },
+ {
+  "id": "S136",
+  "category": "editor features",
+  "tier": "design",
+  "file": "editor/links.sh",
+  "method": "textDocument/documentLink",
+  "at": {
+   "needle": "./helper.sh",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "links_include": [
+    {
+     "line": 3,
+     "target_suffix": "editor/helper.sh"
+    },
+    {
+     "line": 4,
+     "target_suffix": "editor/helper.sh"
+    }
+   ],
+   "link_lines_exclude": [
+    5
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 documentLink: source and dot name files; the argument of echo on line 4 is plain text."
+ },
+ {
+  "id": "S137",
+  "category": "editor features",
+  "tier": "gating",
+  "file": "editor/sel.sh",
+  "method": "textDocument/selectionRange",
+  "at": {
+   "needle": "date",
+   "occ": 0,
+   "delta": 1
+  },
+  "params": {},
+  "expect": {
+   "all_contain_position": true,
+   "parent_contains_child": true
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 SelectionRange: 'The parent range must contain this range' and the chain starts at the requested position."
+ },
+ {
+  "id": "S138",
+  "category": "editor features",
+  "tier": "gating",
+  "file": "editor/comp.sh",
+  "method": "textDocument/completion",
+  "at": {
+   "needle": "  gre",
+   "occ": 0,
+   "delta": 5
+  },
+  "params": {},
+  "expect": {
+   "labels_include": [
+    "greet_all",
+    "greet_one"
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 textDocument/completion: at a command position the functions of the file whose names start with the typed prefix are offered."
+ },
+ {
+  "id": "S139",
+  "category": "editor features",
+  "tier": "gating",
+  "file": "editor/comp.sh",
+  "method": "textDocument/completion",
+  "at": {
+   "needle": "\"$cou",
+   "occ": 0,
+   "delta": 5
+  },
+  "params": {},
+  "expect": {
+   "labels_include": [
+    "counter"
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 textDocument/completion after $: variables set in the file whose names start with the prefix; counter is a global."
+ },
+ {
+  "id": "S140",
+  "category": "editor features",
+  "tier": "gating",
+  "file": "editor/messy.sh",
+  "method": "textDocument/formatting",
+  "at": {
+   "needle": "f() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "options": {
+    "tabSize": 2,
+    "insertSpaces": true
+   }
+  },
+  "expect": {
+   "preserves_tokens": true,
+   "result_bash_n_exit": 0
+  },
+  "oracle": "bash-n",
+  "why": "LSP 3.17 textDocument/formatting: applying the returned edits must not change the commands (same words in the same order) and the result must pass /bin/bash -n."
+ },
+ {
+  "id": "S151",
+  "category": "editor features",
+  "tier": "gating",
+  "file": "rename/fn.sh",
+  "method": "textDocument/prepareRename",
+  "at": {
+   "needle": "compute() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "prepare_range_text": "compute"
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 textDocument/prepareRename: the result is the range of the string to be renamed, here exactly the name compute."
+ },
+ {
+  "id": "S152",
+  "category": "editor features",
+  "tier": "gating",
+  "file": "rename/scoped.sh",
+  "method": "textDocument/documentHighlight",
+  "at": {
+   "needle": "local v=2",
+   "occ": 0,
+   "delta": 6
+  },
+  "params": {},
+  "expect": {
+   "lines": [
+    4,
+    5
+   ],
+   "file": "rename/scoped.sh"
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 documentHighlight: the local v of f, its declaration and its read; bash manual, local: the global v is another variable."
+ },
+ {
+  "id": "S153",
+  "category": "editor features",
+  "tier": "gating",
+  "file": "refs/varforms.sh",
+  "method": "textDocument/documentHighlight",
+  "at": {
+   "needle": "name+=b",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "lines_include": [
+    2,
+    3
+   ],
+   "file": "refs/varforms.sh"
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 documentHighlight on a variable includes its assignments; bash manual, PARAMETERS: name+= appends to the same variable."
+ },
+ {
+  "id": "S154",
+  "category": "editor features",
+  "tier": "gating",
+  "file": "editor/sel.sh",
+  "method": "textDocument/selectionRange",
+  "at": {
+   "needle": "echo \"$out\"",
+   "occ": 0,
+   "delta": 7
+  },
+  "params": {},
+  "expect": {
+   "all_contain_position": true,
+   "parent_contains_child": true
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 SelectionRange: each parent contains its child and the chain starts at the position."
+ },
+ {
+  "id": "S155",
+  "category": "editor features",
+  "tier": "gating",
+  "file": "defs/basic.sh",
+  "method": "textDocument/formatting",
+  "at": {
+   "needle": "greet() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "options": {
+    "tabSize": 2,
+    "insertSpaces": true
+   }
+  },
+  "expect": {
+   "preserves_tokens": true,
+   "result_bash_n_exit": 0
+  },
+  "oracle": "bash-n",
+  "why": "LSP 3.17 textDocument/formatting: the edits must not change the commands and the result must pass /bin/bash -n (the original does)."
+ }
+]

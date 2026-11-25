@@ -1,0 +1,457 @@
+[
+ {
+  "id": "S045",
+  "category": "source resolution",
+  "tier": "gating",
+  "file": "source/s_static.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "lib_a",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/lib/a.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, SHELL BUILTIN COMMANDS, source: 'Read and execute commands from filename in the current shell environment'. Assumption (not from the manual): the script runs from its own directory, as the header comment of the file says."
+ },
+ {
+  "id": "S046",
+  "category": "source resolution",
+  "tier": "gating",
+  "file": "source/s_static.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "lib_b",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/lib/b.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, source: '.' is a synonym of source. Assumption (not from the manual): the script runs from its own directory, as the header comment of the file says."
+ },
+ {
+  "id": "S047",
+  "category": "source resolution",
+  "tier": "gating",
+  "file": "source/s_static.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "lib_c",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/lib/deep/c.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, source: arguments after filename become positional parameters of the sourced file and do not change which file is read. Assumption (not from the manual): the script runs from its own directory, as the header comment of the file says."
+ },
+ {
+  "id": "S048",
+  "category": "source resolution",
+  "tier": "design",
+  "file": "source/s_static.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "./lib/a.sh",
+   "occ": 0,
+   "delta": 2
+  },
+  "params": {},
+  "expect": {
+   "files": [
+    "source/lib/a.sh"
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 textDocument/definition on the path word of a source command goes to the file named. Assumption (not from the manual): the script runs from its own directory, as the header comment of the file says."
+ },
+ {
+  "id": "S049",
+  "category": "source resolution",
+  "tier": "design",
+  "file": "source/s_static.sh",
+  "method": "textDocument/documentLink",
+  "at": {
+   "needle": "./lib/a.sh",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "links_include": [
+    {
+     "line": 3,
+     "target_suffix": "source/lib/a.sh"
+    },
+    {
+     "line": 4,
+     "target_suffix": "source/lib/b.sh"
+    },
+    {
+     "line": 5,
+     "target_suffix": "source/lib/deep/c.sh"
+    }
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 textDocument/documentLink: a link per file named by a source or dot command. Assumption (not from the manual): the script runs from its own directory, as the header comment of the file says."
+ },
+ {
+  "id": "S050",
+  "category": "source resolution",
+  "tier": "gating",
+  "file": "source/up/inner/user.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "sibling_fn",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/sibling.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "Assumption (not from the manual): the script runs from its own directory; ../../sibling.sh is then source/sibling.sh."
+ },
+ {
+  "id": "S051",
+  "category": "source resolution",
+  "tier": "gating",
+  "file": "source/s_dyn.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "lib_a",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/lib/a.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "bash-trace",
+  "why": "Assumption: the 3.2 manual lists BASH_SOURCE only as source file names matching FUNCNAME and does not promise element 0 at top level; in practice ${BASH_SOURCE[0]} is the script path, so HERE is the script directory and $HERE/lib/a.sh is lib/a.sh."
+ },
+ {
+  "id": "S052",
+  "category": "source resolution",
+  "tier": "gating",
+  "file": "source/s_dollar0.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "lib_b",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/lib/b.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "bash-trace",
+  "why": "bash manual, PARAMETERS, Special Parameters, 0, and Parameter Expansion, ${parameter%word}; assumption (header comment): started as ./s_dollar0.sh, so ${0%/*} is '.'."
+ },
+ {
+  "id": "S053",
+  "category": "source resolution",
+  "tier": "gating",
+  "file": "source/s_var.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "lib_a",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/lib/a.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "bash-trace",
+  "why": "bash manual, PARAMETERS: LIB has the literal value ./lib/a.sh at the source command, so the expansion names lib/a.sh. Assumption (not from the manual): the script runs from its own directory, as the header comment of the file says."
+ },
+ {
+  "id": "S054",
+  "category": "source resolution",
+  "tier": "gating",
+  "file": "source/s_func.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "lib_a",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/lib/a.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "bash-trace",
+  "why": "bash manual, FUNCTIONS: the source inside load runs when load is called, which happens before the call of lib_a. Assumption (not from the manual): the script runs from its own directory, as the header comment of the file says."
+ },
+ {
+  "id": "S055",
+  "category": "source resolution",
+  "tier": "gating",
+  "file": "source/s_cond.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "lib_b",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/lib/b.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "bash-trace",
+  "why": "bash manual, SHELL GRAMMAR, Lists: an AND list 'command1 && command2' runs command2 only if command1 succeeds; lib/b.sh exists, so it is sourced. Assumption (not from the manual): the script runs from its own directory, as the header comment of the file says."
+ },
+ {
+  "id": "S056",
+  "category": "source resolution",
+  "tier": "gating",
+  "file": "source/s_missing.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "missing_fn",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "empty": true
+  },
+  "oracle": "manual",
+  "why": "bash manual, source: the file lib/missing.sh does not exist in the workspace, so nothing defines missing_fn."
+ },
+ {
+  "id": "S057",
+  "category": "source resolution",
+  "tier": "gating",
+  "file": "source/s_order.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "early_fn",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "empty": true
+  },
+  "oracle": "bash-trace",
+  "why": "Sequential execution (Lists): the first call runs before the source command, so early_fn is not defined yet."
+ },
+ {
+  "id": "S058",
+  "category": "source resolution",
+  "tier": "gating",
+  "file": "source/s_order.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "early_fn",
+   "occ": 1,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/lib/early.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "bash-trace",
+  "why": "bash manual, source: 'Read and execute commands from filename in the current shell environment', so after the source command early_fn exists. Assumption (not from the manual): the script runs from its own directory, as the header comment of the file says."
+ },
+ {
+  "id": "S059",
+  "category": "source resolution",
+  "tier": "gating",
+  "file": "source/s_glob.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "plug_one",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/plug/one.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "bash-trace",
+  "why": "bash manual, Compound Commands, for, and Pathname Expansion: ./plug/*.sh matches one.sh and two.sh, and each is sourced by the loop. Assumption (not from the manual): the script runs from its own directory, as the header comment of the file says."
+ },
+ {
+  "id": "S060",
+  "category": "source resolution",
+  "tier": "gating",
+  "file": "source/s_glob.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "plug_two",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/plug/two.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "bash-trace",
+  "why": "Same loop: the second matching file. Assumption (not from the manual): the script runs from its own directory, as the header comment of the file says."
+ },
+ {
+  "id": "S061",
+  "category": "source resolution",
+  "tier": "gating",
+  "file": "source/chain/main.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "chain_two",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/chain/two.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, source: one.sh runs in the current shell, so what it sources is defined for main.sh too. Assumption (not from the manual): the script runs from its own directory, as the header comment of the file says."
+ },
+ {
+  "id": "S062",
+  "category": "source resolution",
+  "tier": "gating",
+  "file": "source/lib/needs.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "  host_hook",
+   "occ": 0,
+   "delta": 2
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/host.sh",
+     3
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, source: the library runs in the sourcing shell, where host.sh defined host_hook before the source command. Assumption (not from the manual): the script runs from its own directory, as the header comment of the file says."
+ },
+ {
+  "id": "S063",
+  "category": "source resolution",
+  "tier": "gating",
+  "file": "source/cyc_b.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "cyc_a;",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/cyc_a.sh",
+     3
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "Static resolution only (the pair has no source guard and is not meant to be executed): each file defines its function and sources the other, so cyc_a in cyc_b.sh resolves to cyc_a.sh. Assumption (not from the manual): the script runs from its own directory, as the header comment of the file says."
+ },
+ {
+  "id": "S064",
+  "category": "source resolution",
+  "tier": "gating",
+  "file": "source/cyc_a.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "cyc_b",
+   "occ": 1,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "source/cyc_b.sh",
+     3
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "Static resolution only: the same cycle seen from the other file. Assumption (not from the manual): the script runs from its own directory, as the header comment of the file says."
+ }
+]

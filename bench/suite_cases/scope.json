@@ -1,0 +1,349 @@
+[
+ {
+  "id": "S029",
+  "category": "scope",
+  "tier": "gating",
+  "file": "scope/local.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "echo \"$x\"",
+   "occ": 0,
+   "delta": 7
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "scope/local.sh",
+     4
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, SHELL BUILTIN COMMANDS, local: a local variable is visible to its function; the read in f sees it."
+ },
+ {
+  "id": "S030",
+  "category": "scope",
+  "tier": "gating",
+  "file": "scope/local.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "echo \"$x\"",
+   "occ": 1,
+   "delta": 7
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "scope/local.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, local: g is called from top level only, so x is the global one."
+ },
+ {
+  "id": "S031",
+  "category": "scope",
+  "tier": "gating",
+  "file": "scope/dynamic.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "echo \"$mode\"",
+   "occ": 0,
+   "delta": 7
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "scope/dynamic.sh",
+     6
+    ],
+    [
+     "scope/dynamic.sh",
+     9
+    ]
+   ]
+  },
+  "oracle": "bash-trace",
+  "why": "bash manual, SHELL BUILTIN COMMANDS, local: 'a visible scope restricted to that function and its children', so reader sees outer's local when called from outer and the global when called from top level (dynamic scope); both bindings are reachable."
+ },
+ {
+  "id": "S032",
+  "category": "scope",
+  "tier": "gating",
+  "file": "scope/dynamic_only.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "echo \"$target\"",
+   "occ": 0,
+   "delta": 7
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "scope/dynamic_only.sh",
+     6
+    ]
+   ]
+  },
+  "oracle": "bash-trace",
+  "why": "bash manual, local: 'a visible scope restricted to that function and its children'; show is called only from deploy, whose local target is the only binding that can be live."
+ },
+ {
+  "id": "S033",
+  "category": "scope",
+  "tier": "gating",
+  "file": "scope/subshell.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "echo \"$a\" )",
+   "occ": 0,
+   "delta": 7
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "scope/subshell.sh",
+     3
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, COMMAND EXECUTION ENVIRONMENT: 'Command substitution, commands grouped with parentheses, and asynchronous commands are invoked in a subshell environment that is a duplicate of the shell environment'; inside it the innermost assignment wins."
+ },
+ {
+  "id": "S034",
+  "category": "scope",
+  "tier": "gating",
+  "file": "scope/subshell.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "echo \"$a\"",
+   "occ": 1,
+   "delta": 7
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "scope/subshell.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, COMMAND EXECUTION ENVIRONMENT: 'Changes made to the subshell environment cannot affect the shell's execution environment.'"
+ },
+ {
+  "id": "S035",
+  "category": "scope",
+  "tier": "gating",
+  "file": "scope/escape.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "${inner:-unset}",
+   "occ": 0,
+   "delta": 2
+  },
+  "params": {},
+  "expect": {
+   "empty": true
+  },
+  "oracle": "manual",
+  "why": "bash manual, COMMAND EXECUTION ENVIRONMENT: an assignment made inside ( ) never reaches the parent shell, so the read outside has no definition."
+ },
+ {
+  "id": "S036",
+  "category": "scope",
+  "tier": "gating",
+  "file": "scope/escape.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "${w:-unset}",
+   "occ": 0,
+   "delta": 2
+  },
+  "params": {},
+  "expect": {
+   "empty": true
+  },
+  "oracle": "manual",
+  "why": "bash manual, EXPANSION, Command Substitution: the command runs in a subshell; w does not escape."
+ },
+ {
+  "id": "S037",
+  "category": "scope",
+  "tier": "gating",
+  "file": "scope/fnlocal_subshell.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "echo \"$a\"",
+   "occ": 0,
+   "delta": 7
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "scope/fnlocal_subshell.sh",
+     3
+    ]
+   ]
+  },
+  "oracle": "bash-trace",
+  "why": "bash manual, CEE: ( a=5 ) changes a copy in the subshell; the read after it sees the function's local."
+ },
+ {
+  "id": "S038",
+  "category": "scope",
+  "tier": "gating",
+  "file": "scope/pipeline.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "\"$x\"",
+   "occ": 0,
+   "delta": 2
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "scope/pipeline.sh",
+     2
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, SHELL GRAMMAR, Pipelines: each stage runs in its own subshell; the read inside the while stage binds to the read in the same stage."
+ },
+ {
+  "id": "S039",
+  "category": "scope",
+  "tier": "gating",
+  "file": "scope/pipeline.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "${z:-none}",
+   "occ": 0,
+   "delta": 2
+  },
+  "params": {},
+  "expect": {
+   "empty": true
+  },
+  "oracle": "bash-trace",
+  "why": "bash manual, SHELL GRAMMAR, Pipelines: 'Each command in a pipeline is executed as a separate process (i.e., in a subshell).' The 3.2 manual lists no lastpipe option, so 'echo hi | read z' leaves z unset in the parent."
+ },
+ {
+  "id": "S040",
+  "category": "scope",
+  "tier": "gating",
+  "file": "scope/pipeline.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "echo \"$n\"",
+   "occ": 0,
+   "delta": 7
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "scope/pipeline.sh",
+     5
+    ]
+   ]
+  },
+  "oracle": "bash-trace",
+  "why": "bash manual, Pipelines: each command runs as a separate process (i.e., in a subshell); the increment happens in the last stage and is lost, so the read after the pipeline binds to n=0 only."
+ },
+ {
+  "id": "S041",
+  "category": "scope",
+  "tier": "gating",
+  "file": "scope/procsub.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "${p:-none}",
+   "occ": 0,
+   "delta": 2
+  },
+  "params": {},
+  "expect": {
+   "empty": true
+  },
+  "oracle": "manual",
+  "why": "bash manual, EXPANSION, Process Substitution runs the list as a separate process; COMMAND EXECUTION ENVIRONMENT: 'Changes made to the subshell environment cannot affect the shell's execution environment.' p does not escape."
+ },
+ {
+  "id": "S042",
+  "category": "scope",
+  "tier": "gating",
+  "file": "scope/procsub.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "echo \"$b\"",
+   "occ": 0,
+   "delta": 7
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "scope/procsub.sh",
+     4
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, SHELL GRAMMAR, Compound Commands, '{ list; }': executed in the current shell environment, not a subshell."
+ },
+ {
+  "id": "S043",
+  "category": "scope",
+  "tier": "gating",
+  "file": "scope/procsub.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "echo \"$c\"",
+   "occ": 0,
+   "delta": 7
+  },
+  "params": {},
+  "expect": {
+   "locations": [
+    [
+     "scope/procsub.sh",
+     6
+    ]
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, Compound Commands, if: the body runs in the current shell."
+ },
+ {
+  "id": "S044",
+  "category": "scope",
+  "tier": "gating",
+  "file": "scope/s5.sh",
+  "method": "textDocument/definition",
+  "at": {
+   "needle": "helper",
+   "occ": 1,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "empty": true
+  },
+  "oracle": "bash-trace",
+  "why": "bash manual, COMMAND EXECUTION ENVIRONMENT: a function defined inside ( ) exists only in that subshell, so the call in the parent has no definition (true bash semantics, whatever a static tool chooses to model)."
+ }
+]

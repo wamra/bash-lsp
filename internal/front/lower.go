@@ -265,6 +265,24 @@ func (l *lowerer) group(list []*syntax.Stmt) *tree.Node {
 	return l.mk(tree.KBlock, syntax.Pos{}, syntax.Pos{}, l.stmts(list)...)
 }
 
+// groupBefore is group for the body of an if clause. When the body is the one
+// statement the parser invented (nothing between `then` or `else` and the
+// next keyword), `missing command` is reported at that keyword, the token
+// `bash -n` names, instead of where the body should have started.
+func (l *lowerer) groupBefore(list []*syntax.Stmt, next syntax.Pos) *tree.Node {
+	first := len(l.errs)
+	n := l.group(list)
+	if len(list) == 1 && list[0].Position.IsRecovered() && next.IsValid() && !next.IsRecovered() {
+		at := l.pos(next)
+		for i := first; i < len(l.errs); i++ {
+			if l.errs[i].Msg == "missing command" {
+				l.errs[i].Range = tree.Range{Start: at, End: at}
+			}
+		}
+	}
+	return n
+}
+
 func (l *lowerer) stmt(s *syntax.Stmt) *tree.Node {
 	l.enter()
 	n := l.stmt1(s)
@@ -273,6 +291,7 @@ func (l *lowerer) stmt(s *syntax.Stmt) *tree.Node {
 }
 
 func (l *lowerer) stmt1(s *syntax.Stmt) *tree.Node {
+	l.strayElse(s)
 	var kids []*tree.Node
 	if s.Cmd != nil {
 		kids = append(kids, l.command(s.Cmd))
@@ -470,12 +489,16 @@ func (l *lowerer) ifClause(c *syntax.IfClause, top bool) *tree.Node {
 }
 
 func (l *lowerer) ifClause1(c *syntax.IfClause, top bool) *tree.Node {
-	kids := []*tree.Node{l.group(c.Cond), l.group(c.Then)}
+	next := c.FiPos // the keyword that ends the then-body
+	if c.Else != nil {
+		next = c.Else.Position
+	}
+	kids := []*tree.Node{l.group(c.Cond), l.groupBefore(c.Then, next)}
 	if e := c.Else; e != nil {
 		if e.ThenPos.IsValid() || e.ThenPos.IsRecovered() { // elif
 			kids = append(kids, l.ifClause(e, false))
 		} else { // plain else
-			kids = append(kids, l.group(e.Then))
+			kids = append(kids, l.groupBefore(e.Then, e.FiPos))
 		}
 	}
 	n := l.mk(tree.KIf, c.Position, c.End(), kids...)
@@ -1076,4 +1099,25 @@ func (l *lowerer) nulSourceName(value string, s, e int) (string, int) {
 		return string(text), e
 	}
 	return value, e
+}
+
+// strayElse reports `else` where a command is expected. The parser takes it
+// for a command word; every `else` that belongs to an `if` is consumed by the
+// if clause, so one that reaches a statement is one `bash -n` rejects.
+func (l *lowerer) strayElse(s *syntax.Stmt) {
+	c, ok := s.Cmd.(*syntax.CallExpr)
+	if !ok || len(c.Assigns) > 0 || len(c.Args) == 0 {
+		return
+	}
+	lit, ok := plainLit(c.Args[0])
+	if !ok || lit.Value != "else" {
+		return
+	}
+	for _, r := range s.Redirs {
+		if r.Pos().Offset() < lit.ValuePos.Offset() { // after a redirection `else` is a word
+			return
+		}
+	}
+	at := l.pos(lit.ValuePos)
+	l.errs = append(l.errs, tree.SyntaxError{Range: tree.Range{Start: at, End: l.pos(lit.ValueEnd)}, Msg: "`else` can only be used in an `if`"})
 }
