@@ -107,6 +107,10 @@ func (s *server) completion(raw json.RawMessage) (any, *rpcError) {
 	}
 	uri := p.TextDocument.URI
 	empty := completionList{Items: []completionItem{}}
+	if redact.Changes(uri) { // every item carries the URI: checked once, and the whole answer stays empty
+		s.log.Printf("completion: document URI looks like a secret; nothing offered")
+		return empty, nil
+	}
 	snap, path, off, ok, rerr := s.cursor(uri, p.Position)
 	if rerr != nil || !ok {
 		return empty, rerr
@@ -120,9 +124,11 @@ func (s *server) completion(raw json.RawMessage) (any, *rpcError) {
 	out := completionList{Items: make([]completionItem, 0, len(items))}
 	cs := converters{}
 	seen := map[string]bool{}
+	dropped := 0
 	add := func(it completionItem, gated bool) {
 		if !outwardSafe(it) {
-			return // never rewrite a field: an item that holds a secret is left out
+			dropped++ // never rewrite a field: an item that holds a secret is left out
+			return
 		}
 		g := 0
 		if gated {
@@ -170,18 +176,21 @@ func (s *server) completion(raw json.RawMessage) (any, *rpcError) {
 			}
 		}
 	}
+	if dropped > 0 {
+		s.log.Printf("completion: left out %d item(s) that look like secrets", dropped)
+	}
 	out.IsIncomplete = incomplete
 	return out, nil
 }
 
 // outwardSafe reports whether every text an item sends, the data included, is
-// unchanged by redaction. Redacting in place would put the mark into the
+// unchanged by redaction. The document URI is checked once per request. Redacting in place would put the mark into the
 // user's buffer and leave the raw text in another field, so such an item is
 // dropped instead.
 func outwardSafe(it completionItem) bool {
 	texts := []string{it.Label, it.Detail, it.TextEdit.NewText, it.SortText}
 	if d, ok := it.Data.(completionData); ok {
-		texts = append(texts, d.URI, d.Label, d.Kind)
+		texts = append(texts, d.Label, d.Kind)
 	}
 	for _, t := range texts {
 		if redact.Changes(t) {
