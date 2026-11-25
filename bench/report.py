@@ -1,13 +1,16 @@
-import json, sys
+import json, os, sys
 
 CATEGORIES = ["definition", "references", "scope", "source resolution", "dynamic edges", "call hierarchy",
               "symbols and hover", "error recovery", "diagnostics", "rename", "editor features"]
 
 
-def suite_doc(result_file, triage_file, truth_hash, result_hash):
+def suite_doc(result_file, triage_file, truth_hash, result_hash, m4=None):
     """docs/benchmark.md from a suite result file plus the triage of its failures.
 
     Usage (from the repository root):
+      uv run --no-project python bench/report.py --m4 --bash-lsp RESULT --triage TRIAGE --truth HASH \\
+          --result-commit HASH --competitors bls=FILE[,name=FILE] --settings SETTINGS.json \\
+          --oracle bench/results/oracle-trace.json --not-run 'shuck=why;;bashd=why' [--notes 'name=text;;..'] > docs/benchmark.md
       uv run --no-project python bench/report.py --suite bench/results/suite-bash-lsp-m4.json \
           bench/suite_triage.json TRUTH_HASH RESULT_HASH > docs/benchmark.md
     """
@@ -43,8 +46,26 @@ def suite_doc(result_file, triage_file, truth_hash, result_hash):
     w("- The corpus (`bench/testdata/corpus2`) and every expectation were written by an agent, from the bash manual "
       "and the LSP 3.17 typings, before any server output was seen. No human has audited them.")
     w("- One machine, macOS only. Linux and Windows are not measured.")
-    w("- bash-lsp only. The competing servers are not run on this suite yet (Task 14), and the `bash -n` and "
-      "`bash-trace` oracles are cross-checked only in Task 14.")
+    if m4 is None:
+        w("- bash-lsp only. The competing servers are not run on this suite yet (Task 14), and the `bash -n` and "
+          "`bash-trace` oracles are cross-checked only in Task 14.")
+    else:
+        w("- Competitors: only binaries already installed on this Mac were run; `shuck` and `bashd` are not "
+          "installed, so they were not run. bash-language-server ran with its default settings and, for each "
+          "failing case, with every setting its own config names (see the settings review).")
+        w("- The run oracle (`bench/oracle_trace.py`) decides only what a run of the corpus script can show: which "
+          "definition a call ran, what a variable held, whether a sourced file's function was defined at the call. "
+          "It skips every script that fails its trace guard, and most cases are not of a kind a run decides.")
+        w("- Linux and Windows are pending: no competitor or oracle result exists for them.")
+        w("- ShellCheck is on for bash-language-server (its default, ShellCheck 0.11.0 on PATH) and off for bash-lsp "
+          "(`bench/config-shellcheck-off.toml`), so the diagnostics rows compare a server that wraps ShellCheck with "
+          "native findings. shfmt is not installed, so bash-language-server's formatting returns no edits and "
+          "S140 and S155 pass with 0 edits.")
+        w("- \"n/a\" (not offered) is decided mechanically from the capabilities a server advertises in `initialize`. "
+          "bash-language-server's README lists scope-based jump to declaration and find references under \"To be "
+          "implemented\", which is where its scope failures come from. A failing case whose detail reads "
+          "\"unconsumed expect keys ... (runner bug)\" failed because the server returned an empty or error "
+          "response before the checker read the case's keys; that is the runner's text, not a harness bug.")
     w("- The server runs with shellcheck disabled (`bench/config-shellcheck-off.toml`), so diagnostics are the native ones.")
     w("- Each case runs on a fresh server over a fresh copy of the corpus; the file is opened and the harness waits 2 s "
       "before asking. Latency-sensitive failures were re-run with 6 s and stayed failing.")
@@ -69,8 +90,183 @@ def suite_doc(result_file, triage_file, truth_hash, result_hash):
         t = tri[k]
         w("| %s | %s | %s | %s | %s | %s |" % (k, suite[k]["tier"], suite[k]["category"], t["class"], t["owner"], t["fix"]))
     w("")
+    if m4 is not None:
+        m4_sections(w, r, suite, m4)
     return "\n".join(out)
 
+
+CAP = {"textDocument/definition": "definitionProvider", "textDocument/references": "referencesProvider",
+       "textDocument/documentHighlight": "documentHighlightProvider",
+       "textDocument/prepareCallHierarchy": "callHierarchyProvider", "callHierarchy/incomingCalls": "callHierarchyProvider",
+       "callHierarchy/outgoingCalls": "callHierarchyProvider", "textDocument/documentSymbol": "documentSymbolProvider",
+       "workspace/symbol": "workspaceSymbolProvider", "textDocument/hover": "hoverProvider",
+       "textDocument/completion": "completionProvider", "textDocument/rename": "renameProvider",
+       "textDocument/prepareRename": "renameProvider", "textDocument/foldingRange": "foldingRangeProvider",
+       "textDocument/documentLink": "documentLinkProvider", "textDocument/selectionRange": "selectionRangeProvider",
+       "textDocument/formatting": "documentFormattingProvider"}
+
+
+def verdict(res, caps, v):
+    """pass / fail / not offered. A method the server did not advertise in `initialize` is not offered, not a fail.
+    Diagnostics are pushed, so they have no capability and always count."""
+    key = CAP.get(v["method"])
+    if key is not None and not caps.get(key):
+        return "n/a"
+    return "pass" if v["pass"] else "fail"
+
+
+def tally(res, caps):
+    t = {}
+    for k, v in res.items():
+        if k.startswith("S"):
+            t.setdefault((v["category"], v["tier"]), []).append(verdict(res, caps, v))
+    return t
+
+
+def m4_sections(w, wb, wb_suite, m4):
+    comps = m4["competitors"]  # list of (label, result dict)
+    tools = [("bash-lsp", wb)] + comps
+    tl = [(n, tally(r["results"], r["caps"])) for n, r in tools]
+
+    def cell(t, cat, tier):
+        xs = t.get((cat, tier), [])
+        if not xs:
+            return "-"
+        s = "%d / %d" % (xs.count("pass"), len(xs))
+        if xs.count("n/a"):
+            s += " (%d n/a)" % xs.count("n/a")
+        return s
+    w("## Comparison with the installed competitors\n")
+    w("Passed / total per tier. `n/a` counts cases whose method the tool does not advertise in `initialize`: "
+      "\"not offered\", not a failure.\n")
+    head = "| Category |" + "".join(" %s gating | %s design |" % (n, n) for n, _ in tl)
+    w(head)
+    w("|---|" + "---|---|" * len(tl))
+    for c in CATEGORIES:
+        w("| %s |" % c + "".join(" %s | %s |" % (cell(t, c, "gating"), cell(t, c, "design")) for _, t in tl))
+    row = "| **Total** |"
+    for _, t in tl:
+        for tier in ("gating", "design"):
+            xs = [x for (c, ti), v in t.items() if ti == tier for x in v]
+            n = " (%d n/a)" % xs.count("n/a") if xs.count("n/a") else ""
+            row += " **%d / %d%s** |" % (xs.count("pass"), len(xs), n)
+    w(row + "\n")
+    w("The 28 original cases (`bench.py`), passed / 28: " + ", ".join(
+        "%s %d" % (n, sum(v[0] for k, v in r["results"].items() if k.startswith("C"))) for n, r in tools) + ".\n")
+    w("| Tool | Version or settings | Initialise, ms | Memory, MB |")
+    w("|---|---|---|---|")
+    for n, r in tools:
+        w("| %s | %s | %s | %s |" % (n, r.get("note", "-"), r["timings"].get("initialize_ms", "-"), r["timings"].get("rss_mb", "-")))
+    w("")
+    w("Not run: " + "; ".join("`%s` (%s)" % (n, why) for n, why in m4["not_run"]) + ".\n")
+    w("### Competitor failures by case\n")
+    names = [n for n, _ in comps]
+    w("| Case | Tier | Category | " + " | ".join(names) + " |")
+    w("|---|---|---|" + "---|" * len(names))
+    for k in sorted(wb_suite):
+        vs = [verdict(r["results"], r["caps"], r["results"][k]) for _, r in comps]
+        if all(x == "pass" for x in vs):
+            continue
+        w("| %s | %s | %s | %s |" % (k, wb_suite[k]["tier"], wb_suite[k]["category"], " | ".join(vs)))
+    w("")
+    st = m4.get("settings")
+    if st:
+        w("## bash-language-server settings review\n")
+        w(st["intro"] + "\n")
+        w("| Setting | Value | Source | Cases re-run | Fixed | Lost | Note |")
+        w("|---|---|---|---|---|---|---|")
+        for x in st["runs"]:
+            w("| %s | %s | %s | %s | %s | %s | %s |" % (x["setting"], x["value"], x["source"], x["rerun"], x["fixed"] or "none",
+                                                       x["lost"] or "none", x["note"]))
+        w("")
+        w("Not tried: " + "; ".join("%s (%s)" % (a, b) for a, b in st["not_tried"]) + ".\n")
+    o = m4.get("oracle")
+    if o:
+        oracle_section(w, o)
+
+
+def oracle_section(w, o):
+    w("## Run oracle: `bash-trace` and `manual` expectations against real bash\n")
+    w("`bench/oracle_trace.py` copies `corpus2` to a temporary directory and runs each decidable script with "
+      "`env -i PATH=/usr/bin:/bin` under %s%s. A static guard refuses any script that has a command word that is not "
+      "a corpus function or one of `echo printf : true false test [ local declare export unset return source . shift "
+      "set read eval`, any redirection but a here-string, backticks, process substitution, `read` not fed by a "
+      "here-string, a non-literal `eval` or an unresolvable `source`. Result file: `bench/results/oracle-trace.json`.\n"
+      % (o["bash"], " (sandboxed: no network, no writes outside the temporary directory)" if o["sandboxed"] else ""))
+    cs = o["cases"]
+    rows = {}
+    for k, c in cs.items():
+        rows.setdefault(c["oracle"], {}).setdefault(c["status"], []).append(k)
+    w("| Oracle | Cases | Agree | Disagree | Undecided (not a kind a run decides) | Skipped by the guard |")
+    w("|---|---|---|---|---|---|")
+    for orc in ("bash-trace", "manual"):
+        d = rows.get(orc, {})
+        w("| %s | %d | %d | %d | %d | %d |" % (orc, sum(len(v) for v in d.values()), len(d.get("agree", [])),
+                                               len(d.get("disagree", [])), len(d.get("undecided", [])),
+                                               len(d.get("skipped", []))))
+    w("")
+    w("Variable cases are decided by value: the value read at the query site must equal the literal assigned on the "
+      "expected line(s), not that a particular assignment ran. Exact reference sets, call hierarchy, symbols, "
+      "rename, highlights and links are not something a run shows, so those cases are undecided.\n")
+    w("`bash -n` oracle: %d cases carry a `bash_n_exit` or a `bash -n` result check; the suite runner executes "
+      "`/bin/bash -n` on each at run time and refuses the case if the exit does not match. Mismatches in the "
+      "recorded runs: %d.\n" % (o["bash_n_cases"], o["bash_n_mismatches"]))
+    w("Agreement per bash build (the same script and the same checks; 3.2.57 is the one that counts):\n")
+    w("| Build | Agree | Disagree | Undecided |")
+    w("|---|---|---|---|")
+    for v, d in o["counts_by_bash"].items():
+        w("| %s | %d | %d | %d |" % (v.replace("GNU bash, version ", ""), d.get("agree", 0), d.get("disagree", 0), d.get("undecided", 0)))
+    w("")
+    dis = sorted(k for k, c in cs.items() if c["status"] == "disagree")
+    w("### Retired by oracle\n")
+    if not dis:
+        w("None. No case that a run could decide disagrees with its expectation, so no case was retired. A "
+          "disagreement would be listed here with both values and the truth file left as it is.\n")
+    else:
+        w("| Case | Oracle | Expectation | The run |")
+        w("|---|---|---|---|")
+        for k in dis:
+            w("| %s | %s | `%s` | %s |" % (k, cs[k]["oracle"], json.dumps(cs[k]["expect"]), cs[k]["detail"]))
+        w("")
+    w("### Cases the guard skipped\n")
+    w("| Case | Oracle | Script | Reason |")
+    w("|---|---|---|---|")
+    for k in sorted(k for k, c in cs.items() if c["status"] == "skipped" and c["oracle"] == "bash-trace"):
+        w("| %s | bash-trace | %s | %s |" % (k, cs[k]["file"], cs[k]["detail"].replace("guard: ", "").split("; ")[0]))
+    sk = sorted({(c["file"], c["detail"].replace("guard: ", "").split("; ")[0]) for c in cs.values()
+                 if c["status"] == "skipped" and c["oracle"] == "manual"})
+    w("")
+    w("`manual` cases skipped by the guard: %d, over %d scripts (first reason per script in "
+      "`bench/results/oracle-trace.json`, key `guard`).\n" % (sum(1 for c in cs.values() if c["status"] == "skipped" and c["oracle"] == "manual"), len(sk)))
+
+
+if "--m4" in sys.argv:
+    a = sys.argv
+    def opt(k):
+        return a[a.index(k) + 1]
+    comps = []
+    for spec in opt("--competitors").split(","):
+        n, f = spec.split("=")
+        r = json.load(open(f))
+        r["name"] = n
+        comps.append((n, r))
+    notes = dict(x.split("=", 1) for x in opt("--notes").split(";;")) if "--notes" in a else {}
+    for n, r in comps:
+        r["note"] = notes.get(n, "-")
+    wb = json.load(open(opt("--bash-lsp")))
+    wb["note"] = notes.get("bash-lsp", "-")
+    o = json.load(open(opt("--oracle")))
+    cases = []
+    import glob
+    for f in sorted(glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)), "suite_cases", "*.json"))):
+        cases.extend(json.load(open(f)))
+    o["bash_n_cases"] = sum(1 for c in cases if c["oracle"] == "bash-n" or "bash_n_exit" in c["expect"] or "result_bash_n_exit" in c["expect"])
+    o["bash_n_mismatches"] = sum(1 for r in [wb] + [x for _, x in comps] for k, v in r["results"].items()
+                                 if k.startswith("S") and "truth precondition" in v["detail"])
+    m4 = {"competitors": comps, "oracle": o, "settings": json.load(open(opt("--settings"))),
+          "not_run": [x.split("=", 1) for x in opt("--not-run").split(";;")]}
+    sys.stdout.write(suite_doc(opt("--bash-lsp"), opt("--triage"), opt("--truth"), opt("--result-commit"), m4) + "\n")
+    sys.exit(0)
 
 if "--suite" in sys.argv:
     a = sys.argv[sys.argv.index("--suite") + 1:]

@@ -1,0 +1,72 @@
+{
+ "intro": "bash-language-server 5.6.0 (node v23.6.1, ShellCheck 0.11.0 on PATH, shfmt not installed). Its own `--help` names no setting beyond `BASH_IDE_LOG_LEVEL`; its README points to `config.ts`, whose settings are in the bundled `out/config.js` (environment variable in the second column). Each setting was run once, over the suite cases that fail by default (37 cases whose method it advertises; the 18 cases of methods it does not advertise cannot change) and over the 28 originals. Only `INCLUDE_ALL_WORKSPACE_SYMBOLS` was also run over the whole suite, so only its Lost column is a full measurement; for the others \"not measured\" means no passing suite case was re-run. Default result: originals 11 / 28, suite 101 / 155. The tool table above uses the default settings.",
+ "runs": [
+  {
+   "setting": "includeAllWorkspaceSymbols",
+   "value": "`INCLUDE_ALL_WORKSPACE_SYMBOLS=true`",
+   "source": "`config.js`, README",
+   "rerun": "whole suite and the 28",
+   "fixed": "S051 S052 S053 S059 S060 S062, C15 C17",
+   "lost": "S006 S013 S014 S015 S029 S030 S037 S044 S078 S126 S148, C01 C25",
+   "note": "Suite 96 / 155 (default 101), originals 11 / 28 (same total). Net worse: with every workspace symbol in view, names resolve across unrelated files. Result: `suite-bls-includeall-m4.json`."
+  },
+  {
+   "setting": "enableSourceErrorDiagnostics",
+   "value": "`ENABLE_SOURCE_ERROR_DIAGNOSTICS=true`",
+   "source": "`config.js`",
+   "rerun": "37 failing + 28",
+   "fixed": "none",
+   "lost": "originals none; suite not measured",
+   "note": "No change. Diagnostics only. `bls-setting-srcerr-m4.json`."
+  },
+  {
+   "setting": "backgroundAnalysisMaxFiles",
+   "value": "`BACKGROUND_ANALYSIS_MAX_FILES=5000`",
+   "source": "`config.js`",
+   "rerun": "37 failing + 28",
+   "fixed": "none",
+   "lost": "originals none; suite not measured",
+   "note": "No change; the default (500) already exceeds the 96 files of the corpus. `bls-setting-bg5000-m4.json`."
+  },
+  {
+   "setting": "harness settle time (not a bash-language-server setting)",
+   "value": "`BENCH_SETTLE=6` seconds after didOpen, default 2",
+   "source": "`bench/suite.py`",
+   "rerun": "37 failing + 28",
+   "fixed": "none",
+   "lost": "originals none; suite not measured",
+   "note": "Same failures, so they are not latency (background analysis had 6 s). `bls-setting-settle6-m4.json`; `bench.py` does not read BENCH_SETTLE, so the 28 originals are the default run again."
+  },
+  {
+   "setting": "shellcheckPath",
+   "value": "`SHELLCHECK_PATH=` (empty: linting off)",
+   "source": "`config.js`: an empty string disables linting",
+   "rerun": "S112 + 28",
+   "fixed": "S112 (vacuously: no diagnostics are published, so there are no errors)",
+   "lost": "C20 C28 (originals 9 / 28)",
+   "note": "Not a gain: S112 passes only because the server is silent. `bls-setting-scoff-m4.json`."
+  }
+ ],
+ "not_tried": [
+  [
+   "`SHELLCHECK_ARGUMENTS`",
+   "only adds or removes ShellCheck checks; S112 wants no error on a script whose parse error ShellCheck reports, and excluding a code to pass would hide a real error"
+  ],
+  [
+   "`GLOB_PATTERN`",
+   "the default `**/*@(.sh|.inc|.bash|.command)` already matches all 96 corpus files, which all end in `.sh`"
+  ],
+  [
+   "`EXPLAINSHELL_ENDPOINT`",
+   "needs a network server; no network was used"
+  ],
+  [
+   "`SHFMT_*`, `shfmt` path",
+   "shfmt is not installed here, so formatting returns no edits whatever the options (S140 and S155 pass with 0 edits)"
+  ],
+  [
+   "`BASH_IDE_LOG_LEVEL`",
+   "logging only"
+  ]
+ ]
+}

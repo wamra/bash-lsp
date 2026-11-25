@@ -1,0 +1,182 @@
+{
+ "name": "bls",
+ "setting": "scoff",
+ "suite_failing_cases_only": {
+  "S112": {
+   "pass": true,
+   "tier": "gating",
+   "category": "diagnostics",
+   "method": "textDocument/publishDiagnostics",
+   "file": "diag/heredoc_unterminated.sh",
+   "detail": " diags=[]",
+   "ms": 2736
+  }
+ },
+ "originals": {
+  "C13": [
+   false,
+   "first documentSymbol right after didOpen is non-empty",
+   "0 symbols"
+  ],
+  "C01": [
+   true,
+   "definition across a static `source ./lib/util.sh`",
+   "[('lib/util.sh', 4)]"
+  ],
+  "C01d": [
+   false,
+   "definition across `source \"$HERE/lib/util.sh\"` (HERE=$(dirname $0))",
+   "[]"
+  ],
+  "C02": [
+   false,
+   "definition through alias reaches the function",
+   "[] (alias def line 3 also acceptable alongside)"
+  ],
+  "C03": [
+   false,
+   "definition of function named in trap string",
+   "[]"
+  ],
+  "C04": [
+   false,
+   "references exclude same-named function in unrelated orphan.sh",
+   "[('dyn.sh', 4), ('lib/util.sh', 4), ('main.sh', 6), ('orphan.sh', 2), ('orphan.sh', 3)]"
+  ],
+  "C04b": [
+   true,
+   "references include the definition and the direct call",
+   "[('dyn.sh', 4), ('lib/util.sh', 4), ('main.sh', 6), ('orphan.sh', 2), ('orphan.sh', 3)]"
+  ],
+  "C05": [
+   false,
+   "references include the call through alias br",
+   "[('dyn.sh', 4), ('lib/util.sh', 4), ('main.sh', 6), ('orphan.sh', 2), ('orphan.sh', 3)]"
+  ],
+  "C06": [
+   false,
+   "references include cmd=build_release / \"$cmd\"",
+   "[('dyn.sh', 4), ('lib/util.sh', 4), ('main.sh', 6), ('orphan.sh', 2), ('orphan.sh', 3)]"
+  ],
+  "C07": [
+   false,
+   "references include eval \"build_release y\"",
+   "[('dyn.sh', 4), ('lib/util.sh', 4), ('main.sh', 6), ('orphan.sh', 2), ('orphan.sh', 3)]"
+  ],
+  "C08": [
+   false,
+   "references of a local variable stay inside its function",
+   "[('lib/util.sh', 5), ('lib/util.sh', 6), ('main.sh', 5), ('main.sh', 6), ('main.sh', 7), ('main.sh', 14), ('main.sh', 15)]"
+  ],
+  "C09": [
+   false,
+   "prepareCallHierarchy returns an item",
+   "{'__error__': {'code': -32601, 'message': 'Unhandled method textDocument/prepareCallHierarchy'}}"
+  ],
+  "C10": [
+   false,
+   "incoming calls of build_release include deploy",
+   "no item"
+  ],
+  "C11": [
+   false,
+   "outgoing calls of deploy include build_release",
+   "{'__error__': {'code': -32601, 'message': 'Unhandled method textDocument/prepareCallHierarchy'}}"
+  ],
+  "C12": [
+   false,
+   "document symbols are hierarchical (locals nested in function)",
+   "hierarchical=False top=['deploy', 'name', 'cmd', 'other', 'name', 'unquoted', 'f']"
+  ],
+  "C14": [
+   false,
+   "hover at a function definition is non-empty",
+   "null"
+  ],
+  "C14b": [
+   false,
+   "hover shows the doc comment above the function",
+   "null"
+  ],
+  "C24": [
+   true,
+   "rename of a local variable edits only its function",
+   "[('main.sh', 5), ('main.sh', 6), ('main.sh', 7)]"
+  ],
+  "C28": [
+   false,
+   "diagnostic on unquoted `rm $f`",
+   "[]"
+  ],
+  "C29": [
+   true,
+   "source path resolves to lib/util.sh (definition or document link)",
+   "[('lib/util.sh', 1)]"
+  ],
+  "C25": [
+   true,
+   "call inside orphan.sh resolves to its own definition only",
+   "[('orphan.sh', 2)]"
+  ],
+  "C15": [
+   false,
+   "library call resolves to a function defined by the sourcing script",
+   "[]"
+  ],
+  "C16": [
+   true,
+   "references from the script find the call inside the library",
+   "[('app.sh', 3), ('lib/hooks.sh', 4)]"
+  ],
+  "C17": [
+   false,
+   "definition through a glob loader (for f in plugins/*.sh; . \"$f\")",
+   "[]"
+  ],
+  "C22": [
+   true,
+   "workspace symbol finds a function in an unopened file",
+   "['plugin_a']"
+  ],
+  "C18": [
+   true,
+   "missing `fi`: functions before and after are still in symbols",
+   "['before_break', 'after_fi']"
+  ],
+  "C19": [
+   true,
+   "unterminated `${x`: functions before and after are still in symbols",
+   "['before_exp', 'after_exp']"
+  ],
+  "C20": [
+   false,
+   "syntax errors are reported as diagnostics in both broken files",
+   "broken_fi=0 broken_exp=0"
+  ]
+ },
+ "caps": {
+  "definitionProvider": true,
+  "referencesProvider": true,
+  "hoverProvider": true,
+  "documentSymbolProvider": true,
+  "workspaceSymbolProvider": true,
+  "implementationProvider": false,
+  "callHierarchyProvider": false,
+  "renameProvider": true,
+  "documentFormattingProvider": true,
+  "documentRangeFormattingProvider": false,
+  "completionProvider": true,
+  "signatureHelpProvider": false,
+  "codeActionProvider": true,
+  "semanticTokensProvider": false,
+  "foldingRangeProvider": false,
+  "selectionRangeProvider": false,
+  "inlayHintProvider": false,
+  "documentLinkProvider": false,
+  "documentHighlightProvider": true,
+  "diagnosticProvider": false,
+  "codeLensProvider": false,
+  "colorProvider": false
+ },
+ "note": "Only the suite cases that failed by default (and, for scoff, only S112) were re-run; the 28 originals were all re-run."
+}
