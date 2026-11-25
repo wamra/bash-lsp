@@ -254,8 +254,10 @@ func (s *server) codeAction(raw json.RawMessage) (any, *rpcError) {
 	return append(out, s.editorActions(d, p.Range, p.Context.Only)...), nil
 }
 
-// codeActionKinds are the kinds of code action the server offers.
-var codeActionKinds = []string{"quickfix", "refactor.rewrite", "source.fixAll"}
+// codeActionKinds are the kinds of code action the server advertises.
+// source.fixAll is not among them: no fix is Safe yet, so none would ever be
+// produced. fixAllAction answers it when a client asks all the same.
+var codeActionKinds = []string{"quickfix", "refactor.rewrite"}
 
 // editorActions are the code actions that belong to no finding, after the
 // quick fixes of the findings: add a shebang (quickfix), quote the expansion

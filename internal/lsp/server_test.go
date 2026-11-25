@@ -486,7 +486,7 @@ func TestInitializeCapabilities(t *testing.T) {
 	if err := json.Unmarshal(got, &resp); err != nil {
 		t.Fatal(err)
 	}
-	want := `{"callHierarchyProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix","refactor.rewrite","source.fixAll"]},` +
+	want := `{"callHierarchyProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix","refactor.rewrite"]},` +
 		`"completionProvider":{"resolveProvider":true,"triggerCharacters":["$","{","-","/"]},"definitionProvider":true,` +
 		`"diagnosticProvider":{"interFileDependencies":true,"workspaceDiagnostics":false},"documentFormattingProvider":true,` +
 		`"documentHighlightProvider":true,"documentLinkProvider":{"resolveProvider":false},` +

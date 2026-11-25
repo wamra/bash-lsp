@@ -43,7 +43,7 @@ func TestInlayHintCapability(t *testing.T) {
 		t.Fatalf("inlayHintProvider = %v", got)
 	}
 	got, _ := json.Marshal(capabilities()["codeActionProvider"])
-	if string(got) != `{"codeActionKinds":["quickfix","refactor.rewrite","source.fixAll"]}` {
+	if string(got) != `{"codeActionKinds":["quickfix","refactor.rewrite"]}` {
 		t.Fatalf("codeActionProvider = %s", got)
 	}
 }
