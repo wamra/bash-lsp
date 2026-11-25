@@ -910,3 +910,26 @@ func TestCLIRenameRedactsFileNamesInEveryLine(t *testing.T) {
 		}
 	}
 }
+
+// --apply edits by byte span: a file with lone CR, CRLF and CR CR LF breaks
+// and multi-byte text comes out byte-exact, and tool lines count LF only.
+func TestCLIRenameApplyLoneCRIsByteExact(t *testing.T) {
+	root := t.TempDir()
+	if r, err := filepath.EvalSymlinks(root); err == nil {
+		root = r
+	}
+	const src = "# \U0001F600\rb\r\r\nfoo() { :; }\r\necho;\rfoo\r\nx=1;\rfoo\r"
+	if err := os.WriteFile(filepath.Join(root, "a.sh"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := runOK(t, "rename", "foo", "bar", "--apply", "--root", root)
+	// Tool lines: the file has LF at the ends of lines 1 (CR CR LF), 2 (CRLF) and 3 (CRLF).
+	wantLines(t, out, "edit  a.sh:2:1  foo -> bar", "edit  a.sh:3:7  foo -> bar", "edit  a.sh:4:6  foo -> bar")
+	got, err := os.ReadFile(filepath.Join(root, "a.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := strings.ReplaceAll(src, "foo", "bar"); string(got) != want {
+		t.Fatalf("file %q, want %q", got, want)
+	}
+}
