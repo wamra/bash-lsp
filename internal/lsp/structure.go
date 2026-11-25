@@ -2,7 +2,8 @@ package lsp
 
 import (
 	"encoding/json"
-	"os"
+	slashpath "path"
+	"path/filepath"
 	"sort"
 
 	"github.com/wamra/bash-lsp/analysis"
@@ -148,6 +149,13 @@ func (s *server) foldingRange(raw json.RawMessage) (any, *rpcError) {
 	return foldingRanges(lspFolds(f, snap.Folds(path)), s.caps()), nil
 }
 
+// interpreterInProfile reports whether target, a plain slash-form absolute
+// path (analysis.Shebang), is in a directory of the PATH profile. A path that
+// is not absolute on this platform is in none.
+func (s *server) interpreterInProfile(target string) bool {
+	return s.pathProfile().HasDir(filepath.FromSlash(slashpath.Dir(target)))
+}
+
 // cutNotice tells the client, once per session, that an answer was cut at its
 // bound.
 func (s *server) cutNotice(msg string) { s.logMessageOnce(messageTypeInfo, msg) }
@@ -234,12 +242,11 @@ func (s *server) documentLink(raw json.RawMessage) (any, *rpcError) {
 	}
 	cs := converters{}
 	out := make([]documentLink, 0, len(links)+1)
-	// The shebang interpreter: one stat of the exact path on the first line,
-	// a link only for a regular file (or a symlink to one).
-	if l, ok := snap.Shebang(path); ok {
-		if st, err := os.Stat(l.Target); err == nil && st.Mode().IsRegular() {
-			links = append([]analysis.Link{l}, links...)
-		}
+	// The shebang interpreter: the path is the file's text, so it is linked
+	// only when it sits in a directory of the PATH profile this server
+	// already holds. Nothing on the file system is looked at.
+	if l, ok := snap.Shebang(path); ok && s.interpreterInProfile(l.Target) {
+		links = append([]analysis.Link{l}, links...)
 	}
 	for _, l := range links {
 		out = append(out, documentLink{Range: s.rangeIn(cs, snap, path, l.Range), Target: s.uriOf(l.Target), Tooltip: l.Tooltip})

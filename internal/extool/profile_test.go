@@ -536,3 +536,30 @@ func TestProfileNamesHungStatDoesNotBlockLookup(t *testing.T) {
 	close(release)
 	<-done
 }
+
+func TestProfileHoldsTheDirectoriesItRead(t *testing.T) {
+	dir, other := t.TempDir(), t.TempDir()
+	missing := filepath.Join(other, "missing")
+	p := NewProfile([]string{dir, "relative", missing})
+	if !p.HasDir(dir) || !p.HasDir(dir+string(filepath.Separator)) || !p.HasDir(filepath.Join(dir, "sub", "..")) {
+		t.Errorf("HasDir(%q) = false for a directory read", dir)
+	}
+	for _, d := range []string{other, missing, "relative", "", filepath.Join(dir, "sub")} {
+		if p.HasDir(d) {
+			t.Errorf("HasDir(%q) = true", d)
+		}
+	}
+	var nilp *Profile
+	if nilp.HasDir(dir) {
+		t.Error("a nil profile holds a directory")
+	}
+	// it is a set lookup: no file system access, so a directory that has gone since is still held
+	gone := t.TempDir()
+	q := NewProfile([]string{gone})
+	if err := os.Remove(gone); err != nil {
+		t.Fatal(err)
+	}
+	if !q.HasDir(gone) {
+		t.Error("HasDir looked at the file system")
+	}
+}

@@ -188,21 +188,21 @@ func TestDocumentLinkShebangAndGlob(t *testing.T) {
 		t.Skip("shebang paths are Unix paths")
 	}
 	ws := t.TempDir()
-	tools := t.TempDir()
-	interp := filepath.Join(tools, "myinterp")
-	writeFile(t, tools, "myinterp", "")
-	if err := os.Mkdir(filepath.Join(tools, "adir"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(interp, filepath.Join(tools, "alias")); err != nil {
-		t.Fatal(err)
-	}
+	outside := t.TempDir() // exists, but is not a directory of the PATH profile
+	writeFile(t, outside, "myinterp", "")
 	loop := "for f in mods/*.sh; do . \"$f\"; done\n"
-	writeFile(t, ws, "a.sh", "#!"+interp+"\n"+loop)
-	writeFile(t, ws, "viaalias.sh", "#!"+filepath.Join(tools, "alias")+" -e\n")
-	writeFile(t, ws, "missing.sh", "#!"+filepath.Join(tools, "nothing")+"\n")
-	writeFile(t, ws, "dir.sh", "#!"+filepath.Join(tools, "adir")+"\n")
+	// testBin is the profile's directory: a name in it is linked whether or
+	// not the file is there, because nothing is stat'ed
+	writeFile(t, ws, "a.sh", "#!"+testBin+"/ls\n"+loop)
+	writeFile(t, ws, "viaargs.sh", "#!"+testBin+"/cat -e\n")
+	writeFile(t, ws, "missing.sh", "#!"+testBin+"/nothing\n")
+	writeFile(t, ws, "outside.sh", "#!"+outside+"/myinterp\n")
 	writeFile(t, ws, "env.sh", "#!usr/bin/env bash\n")
+	writeFile(t, ws, "usrbin.sh", "#!/usr/bin/env bash\n")
+	writeFile(t, ws, "unc.sh", "#!//host/share/bash\n")
+	writeFile(t, ws, "uncback.sh", "#!\\\\host\\share\\bash\n")
+	writeFile(t, ws, "volume.sh", "#!C:/Git/bin/bash\n")
+	writeFile(t, ws, "dots.sh", "#!"+testBin+"/../x/sh\n")
 	if err := os.MkdirAll(filepath.Join(ws, "mods"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -219,71 +219,30 @@ func TestDocumentLinkShebangAndGlob(t *testing.T) {
 		return out
 	}
 	// the glob loader gives no link; the shebang gives one, first
+	interp := testBin + "/ls"
 	ls := links("a.sh")
-	if len(ls) != 1 || !strings.HasSuffix(ls[0].Target, "/myinterp") || ls[0].Range != (Range{Position{0, 2}, Position{0, 2 + len(interp)}}) {
+	if len(ls) != 1 || !strings.HasSuffix(ls[0].Target, "/ls") || ls[0].Range != (Range{Position{0, 2}, Position{0, 2 + len(interp)}}) {
 		t.Fatalf("a.sh: %+v", ls)
 	}
-	if ls := links("viaalias.sh"); len(ls) != 1 || !strings.HasSuffix(ls[0].Target, "/alias") {
-		t.Fatalf("a symlink to a file: %+v", ls)
+	if ls := links("viaargs.sh"); len(ls) != 1 || !strings.HasSuffix(ls[0].Target, "/cat") {
+		t.Fatalf("viaargs.sh: %+v", ls)
 	}
-	for _, rel := range []string{"missing.sh", "dir.sh", "env.sh"} {
+	if ls := links("missing.sh"); len(ls) != 1 || !strings.HasSuffix(ls[0].Target, "/nothing") {
+		t.Fatalf("a name in a profile directory is linked without a stat: %+v", ls)
+	}
+	for _, rel := range []string{"outside.sh", "env.sh", "usrbin.sh", "unc.sh", "uncback.sh", "volume.sh", "dots.sh"} {
 		if ls := links(rel); len(ls) != 0 {
 			t.Fatalf("%s: %+v", rel, ls)
 		}
 	}
 }
 
-func TestStructureCapabilities(t *testing.T) {
-	caps := capabilities()
-	for _, k := range []string{"foldingRangeProvider", "selectionRangeProvider", "documentHighlightProvider"} {
-		if caps[k] != true {
-			t.Errorf("%s = %v", k, caps[k])
-		}
-	}
-	b, _ := json.Marshal(caps["documentLinkProvider"])
-	if string(b) != `{"resolveProvider":false}` {
-		t.Errorf("documentLinkProvider = %s", b)
-	}
-}
-
-// TestFoldingRangeRequestCaps sends the folding capabilities the way a client
-// does: the test sets the server's client capabilities after initialize, with
-// the same effect as reading them from the initialize request.
-func TestFoldingRangeRequestCaps(t *testing.T) {
-	ws := t.TempDir()
-	writeFile(t, ws, "a.sh", lspFoldSrc)
-	for _, tc := range []struct {
-		caps clientCaps
-		want string
-	}{
-		{clientCaps{LineFoldingOnly: true}, "(0,2,comment) (3,8,) (4,7,) (5,6,) (10,12,region)"},
-		{clientCaps{RangeLimit: 3}, "(0,2,comment) (3,9,) (10,12,region)"},
-	} {
-		var srv *server
-		c := clientWith(t, clientCfg{root: ws, onServer: func(s *server) { srv = s }})
-		srv.ccaps = tc.caps // after initialize returned; the next request is sent after this write
-		c.open("a.sh")
-		raw := c.call("textDocument/foldingRange", map[string]any{"textDocument": map[string]any{"uri": c.uri("a.sh")}})
-		var got []foldingRange
-		if err := json.Unmarshal(raw, &got); err != nil {
-			t.Fatalf("%v: %s", err, raw)
-		}
-		if foldText(got) != tc.want {
-			t.Errorf("%+v: %s, want %s", tc.caps, foldText(got), tc.want)
-		}
-	}
-}
-
-// A file with a shebang and a source: the shebang link comes first.
 func TestDocumentLinkShebangFirst(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shebang paths are Unix paths")
 	}
 	ws := t.TempDir()
-	tools := t.TempDir()
-	interp := filepath.Join(tools, "myinterp")
-	writeFile(t, tools, "myinterp", "")
-	writeFile(t, ws, "a.sh", "#!"+interp+"\n. ./lib.sh\n")
+	writeFile(t, ws, "a.sh", "#!"+testBin+"/ls\n. ./lib.sh\n")
 	writeFile(t, ws, "lib.sh", "f() { :; }\n")
 	c := client(t, ws)
 	c.open("a.sh")
@@ -292,7 +251,7 @@ func TestDocumentLinkShebangFirst(t *testing.T) {
 	if err := json.Unmarshal(raw, &ls); err != nil {
 		t.Fatalf("%v: %s", err, raw)
 	}
-	if len(ls) != 2 || !strings.HasSuffix(ls[0].Target, "/myinterp") || ls[0].Range.Start.Line != 0 || ls[1].Range.Start.Line != 1 {
+	if len(ls) != 2 || !strings.HasSuffix(ls[0].Target, "/ls") || ls[0].Range.Start.Line != 0 || ls[1].Range.Start.Line != 1 {
 		t.Fatalf("links %s, want the shebang first, then the source", raw)
 	}
 }

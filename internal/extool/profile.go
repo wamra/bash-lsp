@@ -74,8 +74,9 @@ var openDir = osOpenDir
 type Profile struct {
 	cands   map[string][]string // name -> the files of that name, in directory order
 	skipped []string
-	dirs    int      // directories given
-	exts    []string // Windows: PATHEXT, lower-cased; nil elsewhere
+	dirs    int             // directories given
+	read    map[string]bool // the directories listed, by dirKey
+	exts    []string        // Windows: PATHEXT, lower-cased; nil elsewhere
 
 	mu     sync.Mutex
 	known  map[string]string // name -> the path of the program, "" when none; filled by Lookup
@@ -94,7 +95,7 @@ type Profile struct {
 // of the three), or on Windows with a PATHEXT extension; a directory, a dangling
 // link or a data file is not.
 func NewProfile(dirs []string) *Profile {
-	p := &Profile{cands: map[string][]string{}, known: map[string]string{}, dirs: len(dirs)}
+	p := &Profile{cands: map[string][]string{}, known: map[string]string{}, dirs: len(dirs), read: map[string]bool{}}
 	if runtime.GOOS == "windows" {
 		p.exts = windowsExts()
 	}
@@ -122,6 +123,7 @@ func NewProfile(dirs []string) *Profile {
 			p.skip(dir, err.Error())
 			continue
 		}
+		p.read[dirKey(dir)] = true
 		for _, n := range res.names {
 			count++
 			p.cands[n.name] = append(p.cands[n.name], n.path)
@@ -238,6 +240,26 @@ func (p *Profile) Lookup(name string) (string, bool) {
 		p.known[name] = path
 	}
 	return path, path != ""
+}
+
+// dirKey is the key of a directory in Profile.read: cleaned, and lower-cased
+// on Windows, where names do not fold case.
+func dirKey(dir string) string {
+	dir = filepath.Clean(dir)
+	if runtime.GOOS == "windows" {
+		dir = strings.ToLower(dir)
+	}
+	return dir
+}
+
+// HasDir reports whether dir is one of the directories the profile listed. It
+// is a lookup in what NewProfile already read: it touches no file system, and
+// a relative or empty dir is never held. Safe on a nil Profile.
+func (p *Profile) HasDir(dir string) bool {
+	if p == nil || dir == "" || !filepath.IsAbs(dir) {
+		return false
+	}
+	return p.read[dirKey(dir)]
 }
 
 // Skipped lists the directories that were not read, as "dir: reason".

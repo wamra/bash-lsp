@@ -1,7 +1,6 @@
 package analysis
 
 import (
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -342,9 +341,10 @@ func (s *Snapshot) Links(path string) (out []Link, cut bool) {
 
 // Shebang returns the interpreter of the `#!` first line of path as a link
 // candidate: its range, the absolute path text as Target, and the tooltip.
-// ok is false when there is no shebang or the interpreter is not an absolute
-// path (`#!/usr/bin/env bash` names `/usr/bin/env` only). It does not look at
-// the file system: the caller checks that Target exists.
+// ok is false when there is no shebang or the interpreter is not a plain
+// absolute path (see interpreterPath; `#!/usr/bin/env bash` names
+// `/usr/bin/env` only). It does not look at the file system, and the path comes
+// from the file's text: the caller decides whether it is safe to point at.
 func (s *Snapshot) Shebang(path string) (Link, bool) {
 	file, ok := s.idx[path]
 	if !ok {
@@ -373,9 +373,33 @@ func (s *Snapshot) Shebang(path string) (Link, bool) {
 		n = len(rest)
 	}
 	interp := rest[:n]
-	if interp == "" || !filepath.IsAbs(interp) {
+	if !interpreterPath(interp) {
 		return Link{}, false
 	}
 	return Link{Range: tree.Range{Start: f.PosAt(start), End: f.PosAt(start + n)}, Target: interp,
-		Tooltip: "interpreter → " + filepath.ToSlash(interp)}, true
+		Tooltip: "interpreter → " + interp}, true
+}
+
+// interpreterPath reports whether p, the interpreter text of a shebang, is a
+// plain absolute path in slash form: one leading slash, no empty or dot
+// segment, no trailing slash, and no backslash, colon or control character. It
+// is a rule on the text alone, the same on every platform: what
+// filepath.IsAbs accepts depends on the platform, and on Windows it accepts
+// `//host/share/x` and `\\host\share\x`, which name a machine the repository
+// chooses, and `C:\x`, which names a volume.
+func interpreterPath(p string) bool {
+	if len(p) < 2 || p[0] != '/' || p[len(p)-1] == '/' {
+		return false
+	}
+	for i := 0; i < len(p); i++ {
+		if c := p[i]; c == '\\' || c == ':' || c < ' ' || c == 0x7f {
+			return false
+		}
+	}
+	for _, seg := range strings.Split(p[1:], "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return false
+		}
+	}
+	return true
 }

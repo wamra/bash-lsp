@@ -201,7 +201,7 @@ func TestLinksGlobLoaderGivesNone(t *testing.T) {
 }
 
 func TestShebang(t *testing.T) {
-	abs := func(p string) string { return filepath.Join(string(filepath.Separator), filepath.FromSlash(p)) }
+	abs := func(p string) string { return "/" + p }
 	q := buildMem(t, map[string]string{
 		"a.sh": "#!" + abs("no/such/sh") + "\nx=1\n",
 		"b.sh": "#! " + abs("no/such/env") + " bash\n",
@@ -284,7 +284,7 @@ func TestLinksSkipDynamicSites(t *testing.T) {
 }
 
 func TestShebangAndSourceLinkOrder(t *testing.T) {
-	abs := filepath.Join(string(filepath.Separator), "no", "such", "sh")
+	abs := "/no/such/sh"
 	q := buildMem(t, map[string]string{
 		"a.sh":   "#!" + abs + "\n. ./lib.sh\n",
 		"lib.sh": "f() { :; }\n",
@@ -360,5 +360,36 @@ func TestLinksCapped(t *testing.T) {
 	q = buildMem(t, map[string]string{"a.sh": strings.Repeat(". ./lib.sh\n", maxLinks), "lib.sh": ":\n"})
 	if ls, cut := q.s.Links(q.abs("a.sh")); len(ls) != maxLinks || cut {
 		t.Fatalf("%d links, cut %v at the limit", len(ls), cut)
+	}
+}
+
+// The shebang interpreter is a link candidate only when it is a plain
+// slash-separated absolute path: no UNC form (two leading separators, either
+// kind), no volume, no backslash, no dot segment. The rule is the same on
+// every platform, so these cases hold on Linux and on Windows alike.
+func TestInterpreterPathRefusesNetworkAndVolumeForms(t *testing.T) {
+	for _, p := range []string{"/bin/sh", "/usr/bin/bash", "/opt/homebrew/bin/bash", "/usr/local/bin/my-tool_2.1"} {
+		if !interpreterPath(p) {
+			t.Errorf("%q is refused", p)
+		}
+	}
+	for _, p := range []string{
+		"", "/", "sh", "bin/sh", "./sh", "/usr/bin/", "/usr//bin/sh",
+		"//host/share/bash", "//host", `\\host\share\bash`, `\\?\C:\bash`, `\\.\pipe\x`, "\\/host/share/bash", "/\\host/share/bash",
+		`C:\Git\bin\bash.exe`, "C:/Git/bin/bash.exe", "c:bash", "/C:/Git/bin/bash", "/c:\\bin\\bash",
+		"/usr/bin/../../tmp/x", "/usr/./bin/sh", "/usr/bin/..", "/bin/sh\x00", "/bin\\sh",
+	} {
+		if interpreterPath(p) {
+			t.Errorf("%q is accepted", p)
+		}
+	}
+}
+
+func TestShebangRefusesNetworkForms(t *testing.T) {
+	for _, first := range []string{"//host/share/bash", `\\host\share\bash`, "C:/bin/bash", "/usr/bin/../x/sh"} {
+		q := buildMem(t, map[string]string{"a.sh": "#!" + first + "\nx=1\n"})
+		if l, ok := q.s.Shebang(q.abs("a.sh")); ok {
+			t.Errorf("#!%s: link candidate %+v", first, l)
+		}
 	}
 }
