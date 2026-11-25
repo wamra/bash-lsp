@@ -2,6 +2,7 @@
  {
   "id": "S079",
   "category": "call hierarchy",
+  "tier": "gating",
   "file": "call/h.sh",
   "method": "textDocument/prepareCallHierarchy",
   "at": {
@@ -21,6 +22,7 @@
  {
   "id": "S080",
   "category": "call hierarchy",
+  "tier": "gating",
   "file": "call/h.sh",
   "method": "textDocument/prepareCallHierarchy",
   "at": {
@@ -40,6 +42,7 @@
  {
   "id": "S081",
   "category": "call hierarchy",
+  "tier": "gating",
   "file": "call/h.sh",
   "method": "callHierarchy/incomingCalls",
   "at": {
@@ -60,6 +63,7 @@
  {
   "id": "S082",
   "category": "call hierarchy",
+  "tier": "gating",
   "file": "call/h.sh",
   "method": "callHierarchy/incomingCalls",
   "at": {
@@ -79,6 +83,7 @@
  {
   "id": "S083",
   "category": "call hierarchy",
+  "tier": "gating",
   "file": "call/h.sh",
   "method": "callHierarchy/outgoingCalls",
   "at": {
@@ -99,6 +104,7 @@
  {
   "id": "S084",
   "category": "call hierarchy",
+  "tier": "gating",
   "file": "call/h.sh",
   "method": "callHierarchy/outgoingCalls",
   "at": {
@@ -118,6 +124,7 @@
  {
   "id": "S085",
   "category": "call hierarchy",
+  "tier": "gating",
   "file": "call/h.sh",
   "method": "callHierarchy/incomingCalls",
   "at": {
@@ -137,6 +144,7 @@
  {
   "id": "S086",
   "category": "call hierarchy",
+  "tier": "gating",
   "file": "call/h.sh",
   "method": "callHierarchy/incomingCalls",
   "at": {
@@ -156,6 +164,7 @@
  {
   "id": "S087",
   "category": "call hierarchy",
+  "tier": "gating",
   "file": "call/h.sh",
   "method": "callHierarchy/outgoingCalls",
   "at": {
@@ -175,6 +184,7 @@
  {
   "id": "S088",
   "category": "call hierarchy",
+  "tier": "gating",
   "file": "call/h.sh",
   "method": "callHierarchy/incomingCalls",
   "at": {
@@ -192,6 +202,7 @@
  {
   "id": "S089",
   "category": "call hierarchy",
+  "tier": "gating",
   "file": "call/xa.sh",
   "method": "callHierarchy/incomingCalls",
   "at": {

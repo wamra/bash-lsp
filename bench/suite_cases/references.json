@@ -2,6 +2,7 @@
  {
   "id": "S016",
   "category": "references",
+  "tier": "gating",
   "file": "defs/basic.sh",
   "method": "textDocument/references",
   "at": {
@@ -31,11 +32,12 @@
    ]
   },
   "oracle": "manual",
-  "why": "LSP 3.17 textDocument/references with includeDeclaration true: the declaration and every call. bash manual, SIMPLE COMMAND EXPANSION: "
+  "why": "LSP 3.17 textDocument/references with includeDeclaration true: the declaration and every call. bash manual, SIMPLE COMMAND EXPANSION: \"the first word is taken to be the name of the command\"; COMMAND EXECUTION: \"If there exists a shell function by that name, that function is invoked\". "
  },
  {
   "id": "S017",
   "category": "references",
+  "tier": "gating",
   "file": "defs/basic.sh",
   "method": "textDocument/references",
   "at": {
@@ -72,6 +74,7 @@
  {
   "id": "S018",
   "category": "references",
+  "tier": "gating",
   "file": "defs/basic.sh",
   "method": "textDocument/references",
   "at": {
@@ -106,6 +109,7 @@
  {
   "id": "S019",
   "category": "references",
+  "tier": "gating",
   "file": "refs/mentions.sh",
   "method": "textDocument/references",
   "at": {
@@ -135,11 +139,12 @@
    ]
   },
   "oracle": "manual",
-  "why": "bash manual, SIMPLE COMMAND EXPANSION: only the first word of a simple command is a command name; 'echo hello', the comment, the quoted string and the printf argument are plain words."
+  "why": "bash manual, SIMPLE COMMAND EXPANSION: \"the first word is taken to be the name of the command\"; COMMAND EXECUTION: \"If there exists a shell function by that name, that function is invoked\". only the first word of a simple command is a command name; 'echo hello', the comment, the quoted string and the printf argument are plain words."
  },
  {
   "id": "S020",
   "category": "references",
+  "tier": "gating",
   "file": "refs/mentions.sh",
   "method": "textDocument/references",
   "at": {
@@ -169,11 +174,12 @@
    ]
   },
   "oracle": "manual",
-  "why": "Same set when asked from a call site. bash manual, SIMPLE COMMAND EXPANSION: "
+  "why": "Same set when asked from a call site. bash manual, SIMPLE COMMAND EXPANSION: \"the first word is taken to be the name of the command\"; COMMAND EXECUTION: \"If there exists a shell function by that name, that function is invoked\". "
  },
  {
   "id": "S021",
   "category": "references",
+  "tier": "gating",
   "file": "refs/varforms.sh",
   "method": "textDocument/references",
   "at": {
@@ -204,6 +210,7 @@
  {
   "id": "S022",
   "category": "references",
+  "tier": "gating",
   "file": "refs/inside.sh",
   "method": "textDocument/references",
   "at": {
@@ -246,6 +253,7 @@
  {
   "id": "S023",
   "category": "references",
+  "tier": "gating",
   "file": "refs/recur.sh",
   "method": "textDocument/references",
   "at": {
@@ -280,6 +288,7 @@
  {
   "id": "S024",
   "category": "references",
+  "tier": "gating",
   "file": "refs/loopvar.sh",
   "method": "textDocument/references",
   "at": {
@@ -307,6 +316,7 @@
  {
   "id": "S025",
   "category": "references",
+  "tier": "gating",
   "file": "defs/vars.sh",
   "method": "textDocument/references",
   "at": {
@@ -337,6 +347,7 @@
  {
   "id": "S026",
   "category": "references",
+  "tier": "gating",
   "file": "refs/lib.sh",
   "method": "textDocument/references",
   "at": {
@@ -357,11 +368,11 @@
     ],
     [
      "refs/main.sh",
-     3
+     4
     ],
     [
      "refs/main.sh",
-     4
+     5
     ]
    ]
   },
@@ -371,6 +382,7 @@
  {
   "id": "S027",
   "category": "references",
+  "tier": "gating",
   "file": "refs/main.sh",
   "method": "textDocument/references",
   "at": {
@@ -391,11 +403,11 @@
     ],
     [
      "refs/main.sh",
-     3
+     4
     ],
     [
      "refs/main.sh",
-     4
+     5
     ]
    ]
   },
@@ -405,6 +417,7 @@
  {
   "id": "S028",
   "category": "references",
+  "tier": "gating",
   "file": "defs/dup_a.sh",
   "method": "textDocument/references",
   "at": {

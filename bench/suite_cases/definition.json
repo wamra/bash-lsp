@@ -2,6 +2,7 @@
  {
   "id": "S001",
   "category": "definition",
+  "tier": "gating",
   "file": "defs/basic.sh",
   "method": "textDocument/definition",
   "at": {
@@ -19,11 +20,12 @@
    ]
   },
   "oracle": "manual",
-  "why": "LSP 3.17 textDocument/definition: a call resolves to the function defined with name() syntax. bash manual, SIMPLE COMMAND EXPANSION: the first word is the command name, looked up as a function first."
+  "why": "LSP 3.17 textDocument/definition: a call resolves to the function defined with name() syntax. bash manual, SIMPLE COMMAND EXPANSION: \"the first word is taken to be the name of the command\"; COMMAND EXECUTION: \"If there exists a shell function by that name, that function is invoked\". the first word is the command name, looked up as a function first."
  },
  {
   "id": "S002",
   "category": "definition",
+  "tier": "gating",
   "file": "defs/basic.sh",
   "method": "textDocument/definition",
   "at": {
@@ -46,6 +48,7 @@
  {
   "id": "S003",
   "category": "definition",
+  "tier": "gating",
   "file": "defs/basic.sh",
   "method": "textDocument/definition",
   "at": {
@@ -68,6 +71,7 @@
  {
   "id": "S004",
   "category": "definition",
+  "tier": "gating",
   "file": "defs/redef.sh",
   "method": "textDocument/definition",
   "at": {
@@ -85,11 +89,12 @@
    ]
   },
   "oracle": "manual",
-  "why": "bash manual, FUNCTIONS: a definition takes effect when the command that defines it is executed, so the first call (line 3) runs the first definition and only that one."
+  "why": "Sequential execution (bash manual, SHELL GRAMMAR, Lists): the definition command runs before the call that follows it, so the first call sees the first definition only."
  },
  {
   "id": "S005",
   "category": "definition",
+  "tier": "gating",
   "file": "defs/redef.sh",
   "method": "textDocument/definition",
   "at": {
@@ -107,11 +112,12 @@
    ]
   },
   "oracle": "manual",
-  "why": "bash manual, FUNCTIONS: the later definition replaces the earlier one; the second call runs only the second definition."
+  "why": "Sequential execution (Lists): the second definition command has run before the second call and replaced the first, so only it is in effect."
  },
  {
   "id": "S006",
   "category": "definition",
+  "tier": "gating",
   "file": "defs/nested.sh",
   "method": "textDocument/definition",
   "at": {
@@ -129,11 +135,12 @@
    ]
   },
   "oracle": "manual",
-  "why": "bash manual, FUNCTIONS: a function defined inside a function body is defined when that body runs; the call after it resolves to it."
+  "why": "Sequential execution (Lists): the definition inside outer runs when outer's body runs, before the call that follows it."
  },
  {
   "id": "S007",
   "category": "definition",
+  "tier": "gating",
   "file": "defs/nested.sh",
   "method": "textDocument/definition",
   "at": {
@@ -151,11 +158,12 @@
    ]
   },
   "oracle": "manual",
-  "why": "bash manual, FUNCTIONS: function names are global: after outer has run, inner is callable at top level."
+  "why": "bash manual, FUNCTIONS: 'Function names and definitions may be listed with the -f option to the declare' and removed with unset -f, with no scope qualifier; the table is shell-wide, so after outer has run inner is callable at top level."
  },
  {
   "id": "S008",
   "category": "definition",
+  "tier": "gating",
   "file": "defs/unset.sh",
   "method": "textDocument/definition",
   "at": {
@@ -173,6 +181,7 @@
  {
   "id": "S009",
   "category": "definition",
+  "tier": "gating",
   "file": "defs/shadow.sh",
   "method": "textDocument/definition",
   "at": {
@@ -190,55 +199,86 @@
    ]
   },
   "oracle": "manual",
-  "why": "bash manual, SIMPLE COMMAND EXPANSION: 'If the name does not contain slashes, the shell attempts to locate it. If there exists a shell function by that name, that function is invoked' before the builtin lookup."
+  "why": "bash manual, COMMAND EXECUTION: 'If there exists a shell function by that name, that function is invoked' before builtins are searched."
  },
  {
   "id": "S010",
   "category": "definition",
+  "tier": "gating",
   "file": "defs/shadow.sh",
-  "method": "textDocument/definition",
+  "method": "textDocument/references",
   "at": {
-   "needle": "builtin cd /",
+   "needle": "cd() {",
    "occ": 0,
-   "delta": 8
+   "delta": 0
   },
-  "params": {},
+  "params": {
+   "context": {
+    "includeDeclaration": true
+   }
+  },
   "expect": {
-   "excludes": [
+   "includes": [
     [
      "defs/shadow.sh",
      2
+    ],
+    [
+     "defs/shadow.sh",
+     3
+    ]
+   ],
+   "excludes": [
+    [
+     "defs/shadow.sh",
+     4
     ]
    ]
   },
   "oracle": "manual",
-  "why": "bash manual, SHELL BUILTIN COMMANDS, builtin: runs the shell builtin and so bypasses a function of the same name."
+  "why": "bash manual, SHELL BUILTIN COMMANDS, builtin: 'Execute the specified shell builtin', so 'builtin cd /' calls the builtin and not the function; the plain call 'cd /tmp' is a reference."
  },
  {
   "id": "S011",
   "category": "definition",
+  "tier": "gating",
   "file": "defs/shadow.sh",
-  "method": "textDocument/definition",
+  "method": "textDocument/references",
   "at": {
-   "needle": "command cd /",
+   "needle": "cd() {",
    "occ": 0,
-   "delta": 8
+   "delta": 0
   },
-  "params": {},
+  "params": {
+   "context": {
+    "includeDeclaration": true
+   }
+  },
   "expect": {
-   "excludes": [
+   "includes": [
     [
      "defs/shadow.sh",
      2
+    ],
+    [
+     "defs/shadow.sh",
+     3
+    ]
+   ],
+   "excludes": [
+    [
+     "defs/shadow.sh",
+     5
     ]
    ]
   },
   "oracle": "manual",
-  "why": "bash manual, SHELL BUILTIN COMMANDS, command: runs the command 'suppressing the normal shell function lookup'."
+  "why": "bash manual, SHELL BUILTIN COMMANDS, command: 'Run command with args suppressing the normal shell function lookup'; the plain call 'cd /tmp' is a reference."
  },
  {
   "id": "S012",
   "category": "definition",
+  "tier": "gating",
   "file": "defs/branches.sh",
   "method": "textDocument/definition",
   "at": {
@@ -248,7 +288,7 @@
   },
   "params": {},
   "expect": {
-   "locations": [
+   "includes_any": [
     [
      "defs/branches.sh",
      3
@@ -260,11 +300,12 @@
    ]
   },
   "oracle": "manual",
-  "why": "bash manual, SHELL GRAMMAR, Compound Commands, if: only one branch runs, and which one depends on $FAST, so both definitions can be the one in effect."
+  "why": "bash manual, SHELL GRAMMAR, Compound Commands, if: only one branch runs, chosen by $FAST at run time, so either definition can be the one in effect; one of the two must be offered."
  },
  {
   "id": "S013",
   "category": "definition",
+  "tier": "gating",
   "file": "defs/dup_a.sh",
   "method": "textDocument/definition",
   "at": {
@@ -282,11 +323,12 @@
    ]
   },
   "oracle": "manual",
-  "why": "bash manual, FUNCTIONS: a script that does not source another one cannot see its functions; the call resolves to the definition in the same file only."
+  "why": "bash manual, source: only commands executed in a shell define functions; this file does not source dup_b.sh, so that shell never has the other twin."
  },
  {
   "id": "S014",
   "category": "definition",
+  "tier": "gating",
   "file": "defs/dup_b.sh",
   "method": "textDocument/definition",
   "at": {
@@ -304,11 +346,12 @@
    ]
   },
   "oracle": "manual",
-  "why": "bash manual, FUNCTIONS: same as the sibling file: the function of the same name in dup_a.sh is not in this shell."
+  "why": "Same as the sibling file: dup_a.sh is never sourced here."
  },
  {
   "id": "S015",
   "category": "definition",
+  "tier": "gating",
   "file": "defs/vars.sh",
   "method": "textDocument/definition",
   "at": {

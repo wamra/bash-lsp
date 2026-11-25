@@ -2,6 +2,7 @@
  {
   "id": "S110",
   "category": "diagnostics",
+  "tier": "gating",
   "file": "diag/clean_misc.sh",
   "method": "textDocument/publishDiagnostics",
   "at": {
@@ -20,6 +21,7 @@
  {
   "id": "S111",
   "category": "diagnostics",
+  "tier": "gating",
   "file": "diag/clean_heredoc.sh",
   "method": "textDocument/publishDiagnostics",
   "at": {
@@ -38,6 +40,7 @@
  {
   "id": "S112",
   "category": "diagnostics",
+  "tier": "gating",
   "file": "diag/heredoc_unterminated.sh",
   "method": "textDocument/publishDiagnostics",
   "at": {
@@ -51,11 +54,12 @@
    "max_errors": 0
   },
   "oracle": "bash-n",
-  "why": "bash only warns about a here-document ended by end of file; truth is the exit status of /bin/bash -n: 0, so no error-severity diagnostic (DiagnosticSeverity.Error is 1, LSP 3.17)."
+  "why": "bash -n exits 0 for a here-document ended by end of file; truth is the exit status of /bin/bash -n: 0, so no error-severity diagnostic (DiagnosticSeverity.Error is 1, LSP 3.17)."
  },
  {
   "id": "S113",
   "category": "diagnostics",
+  "tier": "gating",
   "file": "diag/stray_fi.sh",
   "method": "textDocument/publishDiagnostics",
   "at": {
@@ -77,6 +81,7 @@
  {
   "id": "S114",
   "category": "diagnostics",
+  "tier": "gating",
   "file": "diag/missing_done.sh",
   "method": "textDocument/publishDiagnostics",
   "at": {
@@ -95,6 +100,7 @@
  {
   "id": "S115",
   "category": "diagnostics",
+  "tier": "gating",
   "file": "diag/bad_paren.sh",
   "method": "textDocument/publishDiagnostics",
   "at": {
@@ -116,6 +122,7 @@
  {
   "id": "S116",
   "category": "diagnostics",
+  "tier": "gating",
   "file": "diag/unmatched_quote.sh",
   "method": "textDocument/publishDiagnostics",
   "at": {
@@ -134,6 +141,7 @@
  {
   "id": "S117",
   "category": "diagnostics",
+  "tier": "gating",
   "file": "diag/double_semi.sh",
   "method": "textDocument/publishDiagnostics",
   "at": {
@@ -155,6 +163,7 @@
  {
   "id": "S118",
   "category": "diagnostics",
+  "tier": "gating",
   "file": "diag/bad_redirect.sh",
   "method": "textDocument/publishDiagnostics",
   "at": {
@@ -176,6 +185,7 @@
  {
   "id": "S119",
   "category": "diagnostics",
+  "tier": "gating",
   "file": "diag/empty_then.sh",
   "method": "textDocument/publishDiagnostics",
   "at": {
@@ -197,6 +207,7 @@
  {
   "id": "S120",
   "category": "diagnostics",
+  "tier": "gating",
   "file": "diag/else_alone.sh",
   "method": "textDocument/publishDiagnostics",
   "at": {
@@ -218,6 +229,7 @@
  {
   "id": "S121",
   "category": "diagnostics",
+  "tier": "gating",
   "file": "err/missing_fi.sh",
   "method": "textDocument/publishDiagnostics",
   "at": {
@@ -236,6 +248,7 @@
  {
   "id": "S122",
   "category": "diagnostics",
+  "tier": "gating",
   "file": "err/lib_broken.sh",
   "method": "textDocument/publishDiagnostics",
   "at": {
@@ -257,6 +270,7 @@
  {
   "id": "S123",
   "category": "diagnostics",
+  "tier": "gating",
   "file": "err/use.sh",
   "method": "textDocument/publishDiagnostics",
   "at": {

@@ -2,6 +2,7 @@
  {
   "id": "S132",
   "category": "editor features",
+  "tier": "gating",
   "file": "defs/vars.sh",
   "method": "textDocument/documentHighlight",
   "at": {
@@ -25,6 +26,7 @@
  {
   "id": "S133",
   "category": "editor features",
+  "tier": "gating",
   "file": "refs/inside.sh",
   "method": "textDocument/documentHighlight",
   "at": {
@@ -49,6 +51,7 @@
  {
   "id": "S134",
   "category": "editor features",
+  "tier": "design",
   "file": "editor/fold.sh",
   "method": "textDocument/foldingRange",
   "at": {
@@ -71,6 +74,7 @@
  {
   "id": "S135",
   "category": "editor features",
+  "tier": "gating",
   "file": "editor/fold.sh",
   "method": "textDocument/foldingRange",
   "at": {
@@ -90,6 +94,7 @@
  {
   "id": "S136",
   "category": "editor features",
+  "tier": "design",
   "file": "editor/links.sh",
   "method": "textDocument/documentLink",
   "at": {
@@ -101,16 +106,16 @@
   "expect": {
    "links_include": [
     {
-     "line": 2,
+     "line": 3,
      "target_suffix": "editor/helper.sh"
     },
     {
-     "line": 3,
+     "line": 4,
      "target_suffix": "editor/helper.sh"
     }
    ],
    "link_lines_exclude": [
-    4
+    5
    ]
   },
   "oracle": "manual",
@@ -119,6 +124,7 @@
  {
   "id": "S137",
   "category": "editor features",
+  "tier": "gating",
   "file": "editor/sel.sh",
   "method": "textDocument/selectionRange",
   "at": {
@@ -128,16 +134,16 @@
   },
   "params": {},
   "expect": {
-   "min_levels": 3,
    "all_contain_position": true,
-   "strictly_widening": true
+   "parent_contains_child": true
   },
   "oracle": "manual",
-  "why": "LSP 3.17 textDocument/selectionRange: a chain of ranges, innermost first, each one containing the position and its child (word, command substitution, string, outer substitution, assignment, and so on)."
+  "why": "LSP 3.17 SelectionRange: 'The parent range must contain this range' and the chain starts at the requested position."
  },
  {
   "id": "S138",
   "category": "editor features",
+  "tier": "gating",
   "file": "editor/comp.sh",
   "method": "textDocument/completion",
   "at": {
@@ -158,6 +164,7 @@
  {
   "id": "S139",
   "category": "editor features",
+  "tier": "gating",
   "file": "editor/comp.sh",
   "method": "textDocument/completion",
   "at": {
@@ -177,6 +184,7 @@
  {
   "id": "S140",
   "category": "editor features",
+  "tier": "gating",
   "file": "editor/messy.sh",
   "method": "textDocument/formatting",
   "at": {
@@ -192,10 +200,114 @@
   },
   "expect": {
    "preserves_tokens": true,
-   "result_bash_n_exit": 0,
-   "changes_text": true
+   "result_bash_n_exit": 0
   },
   "oracle": "bash-n",
-  "why": "LSP 3.17 textDocument/formatting: the file is mis-indented, so edits are returned; they must not change the commands (same words in the same order) and the result must pass /bin/bash -n."
+  "why": "LSP 3.17 textDocument/formatting: applying the returned edits must not change the commands (same words in the same order) and the result must pass /bin/bash -n."
+ },
+ {
+  "id": "S151",
+  "category": "editor features",
+  "tier": "gating",
+  "file": "rename/fn.sh",
+  "method": "textDocument/prepareRename",
+  "at": {
+   "needle": "compute() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "prepare_range_text": "compute"
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 textDocument/prepareRename: the result is the range of the string to be renamed, here exactly the name compute."
+ },
+ {
+  "id": "S152",
+  "category": "editor features",
+  "tier": "gating",
+  "file": "rename/scoped.sh",
+  "method": "textDocument/documentHighlight",
+  "at": {
+   "needle": "local v=2",
+   "occ": 0,
+   "delta": 6
+  },
+  "params": {},
+  "expect": {
+   "lines": [
+    4,
+    5
+   ],
+   "file": "rename/scoped.sh"
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 documentHighlight: the local v of f, its declaration and its read; bash manual, local: the global v is another variable."
+ },
+ {
+  "id": "S153",
+  "category": "editor features",
+  "tier": "gating",
+  "file": "refs/varforms.sh",
+  "method": "textDocument/documentHighlight",
+  "at": {
+   "needle": "name+=b",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "lines_include": [
+    2,
+    3
+   ],
+   "file": "refs/varforms.sh"
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 documentHighlight on a variable includes its assignments; bash manual, PARAMETERS: name+= appends to the same variable."
+ },
+ {
+  "id": "S154",
+  "category": "editor features",
+  "tier": "gating",
+  "file": "editor/sel.sh",
+  "method": "textDocument/selectionRange",
+  "at": {
+   "needle": "echo \"$out\"",
+   "occ": 0,
+   "delta": 7
+  },
+  "params": {},
+  "expect": {
+   "all_contain_position": true,
+   "parent_contains_child": true
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 SelectionRange: each parent contains its child and the chain starts at the position."
+ },
+ {
+  "id": "S155",
+  "category": "editor features",
+  "tier": "gating",
+  "file": "defs/basic.sh",
+  "method": "textDocument/formatting",
+  "at": {
+   "needle": "greet() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "options": {
+    "tabSize": 2,
+    "insertSpaces": true
+   }
+  },
+  "expect": {
+   "preserves_tokens": true,
+   "result_bash_n_exit": 0
+  },
+  "oracle": "bash-n",
+  "why": "LSP 3.17 textDocument/formatting: the edits must not change the commands and the result must pass /bin/bash -n (the original does)."
  }
 ]

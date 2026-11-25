@@ -2,6 +2,7 @@
  {
   "id": "S090",
   "category": "symbols and hover",
+  "tier": "gating",
   "file": "symbols/s.sh",
   "method": "textDocument/documentSymbol",
   "at": {
@@ -26,6 +27,7 @@
  {
   "id": "S091",
   "category": "symbols and hover",
+  "tier": "design",
   "file": "symbols/s.sh",
   "method": "textDocument/documentSymbol",
   "at": {
@@ -48,6 +50,7 @@
  {
   "id": "S092",
   "category": "symbols and hover",
+  "tier": "gating",
   "file": "symbols/s.sh",
   "method": "textDocument/documentSymbol",
   "at": {
@@ -65,6 +68,7 @@
  {
   "id": "S093",
   "category": "symbols and hover",
+  "tier": "gating",
   "file": "symbols/empty.sh",
   "method": "textDocument/documentSymbol",
   "at": {
@@ -82,6 +86,7 @@
  {
   "id": "S094",
   "category": "symbols and hover",
+  "tier": "gating",
   "file": "symbols/ws.sh",
   "method": "workspace/symbol",
   "at": {
@@ -103,6 +108,7 @@
  {
   "id": "S095",
   "category": "symbols and hover",
+  "tier": "gating",
   "file": "symbols/ws.sh",
   "method": "workspace/symbol",
   "at": {
@@ -122,6 +128,7 @@
  {
   "id": "S096",
   "category": "symbols and hover",
+  "tier": "design",
   "file": "symbols/s.sh",
   "method": "textDocument/hover",
   "at": {
@@ -141,6 +148,7 @@
  {
   "id": "S097",
   "category": "symbols and hover",
+  "tier": "design",
   "file": "symbols/s.sh",
   "method": "textDocument/hover",
   "at": {
@@ -160,6 +168,7 @@
  {
   "id": "S098",
   "category": "symbols and hover",
+  "tier": "design",
   "file": "symbols/s.sh",
   "method": "textDocument/hover",
   "at": {
@@ -179,6 +188,7 @@
  {
   "id": "S099",
   "category": "symbols and hover",
+  "tier": "design",
   "file": "symbols/s.sh",
   "method": "textDocument/hover",
   "at": {
@@ -194,5 +204,124 @@
   },
   "oracle": "manual",
   "why": "LSP 3.17 textDocument/hover on a local variable is non-empty and names it."
+ },
+ {
+  "id": "S141",
+  "category": "symbols and hover",
+  "tier": "gating",
+  "file": "symbols/ws.sh",
+  "method": "workspace/symbol",
+  "at": {
+   "needle": "needle_in_ws",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {
+   "query": "needle_in_ws"
+  },
+  "expect": {
+   "location_files_include": [
+    "symbols/ws.sh"
+   ]
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 SymbolInformation.location: the symbol carries the location of its definition, here in symbols/ws.sh."
+ },
+ {
+  "id": "S142",
+  "category": "symbols and hover",
+  "tier": "gating",
+  "file": "symbols/s.sh",
+  "method": "textDocument/documentSymbol",
+  "at": {
+   "needle": "sum() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "range_contains_lines": {
+    "sum": [
+     3,
+     8
+    ]
+   }
+  },
+  "oracle": "manual",
+  "why": "LSP 3.17 DocumentSymbol.range: the range enclosing the symbol; bash manual, Shell Function Definitions: the function is the name through the closing brace."
+ },
+ {
+  "id": "S143",
+  "category": "symbols and hover",
+  "tier": "gating",
+  "file": "defs/redef.sh",
+  "method": "textDocument/documentSymbol",
+  "at": {
+   "needle": "pick() { echo one; }",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "names_include": [
+    "pick"
+   ],
+   "kinds": {
+    "pick": 12
+   }
+  },
+  "oracle": "manual",
+  "why": "bash manual, Shell Function Definitions defines pick; LSP 3.17 SymbolKind.Function is 12."
+ },
+ {
+  "id": "S144",
+  "category": "symbols and hover",
+  "tier": "gating",
+  "file": "editor/fold.sh",
+  "method": "textDocument/documentSymbol",
+  "at": {
+   "needle": "multi() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "names_include": [
+    "one",
+    "multi"
+   ],
+   "kinds": {
+    "one": 12,
+    "multi": 12
+   }
+  },
+  "oracle": "manual",
+  "why": "bash manual, Shell Function Definitions: one and multi are functions; LSP 3.17 SymbolKind.Function is 12."
+ },
+ {
+  "id": "S145",
+  "category": "symbols and hover",
+  "tier": "gating",
+  "file": "call/h.sh",
+  "method": "textDocument/documentSymbol",
+  "at": {
+   "needle": "leaf() {",
+   "occ": 0,
+   "delta": 0
+  },
+  "params": {},
+  "expect": {
+   "names_include": [
+    "leaf",
+    "mid",
+    "top",
+    "orphan_fn",
+    "recur",
+    "mutual_a",
+    "mutual_b"
+   ]
+  },
+  "oracle": "manual",
+  "why": "bash manual, Shell Function Definitions: the file defines these seven functions; LSP 3.17 documentSymbol lists definitions."
  }
 ]

@@ -2,6 +2,7 @@
  {
   "id": "S045",
   "category": "source resolution",
+  "tier": "gating",
   "file": "source/s_static.sh",
   "method": "textDocument/definition",
   "at": {
@@ -19,11 +20,12 @@
    ]
   },
   "oracle": "manual",
-  "why": "bash manual, SHELL BUILTIN COMMANDS, source: 'Read and execute commands from filename in the current shell environment'. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+  "why": "bash manual, SHELL BUILTIN COMMANDS, source: 'Read and execute commands from filename in the current shell environment'. Assumption (not from the manual): the script runs from its own directory, as the header comment of the file says."
  },
  {
   "id": "S046",
   "category": "source resolution",
+  "tier": "gating",
   "file": "source/s_static.sh",
   "method": "textDocument/definition",
   "at": {
@@ -41,11 +43,12 @@
    ]
   },
   "oracle": "manual",
-  "why": "bash manual, source: '.' is a synonym of source. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+  "why": "bash manual, source: '.' is a synonym of source. Assumption (not from the manual): the script runs from its own directory, as the header comment of the file says."
  },
  {
   "id": "S047",
   "category": "source resolution",
+  "tier": "gating",
   "file": "source/s_static.sh",
   "method": "textDocument/definition",
   "at": {
@@ -63,11 +66,12 @@
    ]
   },
   "oracle": "manual",
-  "why": "bash manual, source: arguments after filename become positional parameters of the sourced file and do not change which file is read. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+  "why": "bash manual, source: arguments after filename become positional parameters of the sourced file and do not change which file is read. Assumption (not from the manual): the script runs from its own directory, as the header comment of the file says."
  },
  {
   "id": "S048",
   "category": "source resolution",
+  "tier": "design",
   "file": "source/s_static.sh",
   "method": "textDocument/definition",
   "at": {
@@ -82,11 +86,12 @@
    ]
   },
   "oracle": "manual",
-  "why": "LSP 3.17 textDocument/definition on the path word of a source command goes to the file named. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+  "why": "LSP 3.17 textDocument/definition on the path word of a source command goes to the file named. Assumption (not from the manual): the script runs from its own directory, as the header comment of the file says."
  },
  {
   "id": "S049",
   "category": "source resolution",
+  "tier": "design",
   "file": "source/s_static.sh",
   "method": "textDocument/documentLink",
   "at": {
@@ -112,11 +117,12 @@
    ]
   },
   "oracle": "manual",
-  "why": "LSP 3.17 textDocument/documentLink: a link per file named by a source or dot command. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+  "why": "LSP 3.17 textDocument/documentLink: a link per file named by a source or dot command. Assumption (not from the manual): the script runs from its own directory, as the header comment of the file says."
  },
  {
   "id": "S050",
   "category": "source resolution",
+  "tier": "gating",
   "file": "source/up/inner/user.sh",
   "method": "textDocument/definition",
   "at": {
@@ -134,11 +140,12 @@
    ]
   },
   "oracle": "manual",
-  "why": "bash manual, source: a path with '..' is read as written relative to the current directory. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+  "why": "Assumption (not from the manual): the script runs from its own directory; ../../sibling.sh is then source/sibling.sh."
  },
  {
   "id": "S051",
   "category": "source resolution",
+  "tier": "gating",
   "file": "source/s_dyn.sh",
   "method": "textDocument/definition",
   "at": {
@@ -156,11 +163,12 @@
    ]
   },
   "oracle": "bash-trace",
-  "why": "bash manual, PARAMETERS, Shell Variables, BASH_SOURCE: ${BASH_SOURCE[0]} is the script's own path, so HERE is the script directory and $HERE/lib/a.sh is lib/a.sh."
+  "why": "Assumption: the 3.2 manual lists BASH_SOURCE only as source file names matching FUNCNAME and does not promise element 0 at top level; in practice ${BASH_SOURCE[0]} is the script path, so HERE is the script directory and $HERE/lib/a.sh is lib/a.sh."
  },
  {
   "id": "S052",
   "category": "source resolution",
+  "tier": "gating",
   "file": "source/s_dollar0.sh",
   "method": "textDocument/definition",
   "at": {
@@ -178,11 +186,12 @@
    ]
   },
   "oracle": "bash-trace",
-  "why": "bash manual, Special Parameters, 0 and Parameter Expansion, ${parameter%word}: for a script run as ./s_dollar0.sh, ${0%/*} is '.'."
+  "why": "bash manual, PARAMETERS, Special Parameters, 0, and Parameter Expansion, ${parameter%word}; assumption (header comment): started as ./s_dollar0.sh, so ${0%/*} is '.'."
  },
  {
   "id": "S053",
   "category": "source resolution",
+  "tier": "gating",
   "file": "source/s_var.sh",
   "method": "textDocument/definition",
   "at": {
@@ -200,11 +209,12 @@
    ]
   },
   "oracle": "bash-trace",
-  "why": "bash manual, PARAMETERS: LIB has the literal value ./lib/a.sh at the source command, so the expansion names lib/a.sh. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+  "why": "bash manual, PARAMETERS: LIB has the literal value ./lib/a.sh at the source command, so the expansion names lib/a.sh. Assumption (not from the manual): the script runs from its own directory, as the header comment of the file says."
  },
  {
   "id": "S054",
   "category": "source resolution",
+  "tier": "gating",
   "file": "source/s_func.sh",
   "method": "textDocument/definition",
   "at": {
@@ -222,11 +232,12 @@
    ]
   },
   "oracle": "bash-trace",
-  "why": "bash manual, FUNCTIONS: the source inside load runs when load is called, which happens before the call of lib_a. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+  "why": "bash manual, FUNCTIONS: the source inside load runs when load is called, which happens before the call of lib_a. Assumption (not from the manual): the script runs from its own directory, as the header comment of the file says."
  },
  {
   "id": "S055",
   "category": "source resolution",
+  "tier": "gating",
   "file": "source/s_cond.sh",
   "method": "textDocument/definition",
   "at": {
@@ -244,11 +255,12 @@
    ]
   },
   "oracle": "bash-trace",
-  "why": "bash manual, SHELL GRAMMAR, Lists: 'command1 && command2' runs command2 when command1 succeeds; lib/b.sh exists, so it is sourced. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+  "why": "bash manual, SHELL GRAMMAR, Lists: an AND list 'command1 && command2' runs command2 only if command1 succeeds; lib/b.sh exists, so it is sourced. Assumption (not from the manual): the script runs from its own directory, as the header comment of the file says."
  },
  {
   "id": "S056",
   "category": "source resolution",
+  "tier": "gating",
   "file": "source/s_missing.sh",
   "method": "textDocument/definition",
   "at": {
@@ -266,6 +278,7 @@
  {
   "id": "S057",
   "category": "source resolution",
+  "tier": "gating",
   "file": "source/s_order.sh",
   "method": "textDocument/definition",
   "at": {
@@ -278,11 +291,12 @@
    "empty": true
   },
   "oracle": "bash-trace",
-  "why": "bash manual, FUNCTIONS: definitions take effect when executed; the first call runs before the source command, so early_fn is not defined yet."
+  "why": "Sequential execution (Lists): the first call runs before the source command, so early_fn is not defined yet."
  },
  {
   "id": "S058",
   "category": "source resolution",
+  "tier": "gating",
   "file": "source/s_order.sh",
   "method": "textDocument/definition",
   "at": {
@@ -300,11 +314,12 @@
    ]
   },
   "oracle": "bash-trace",
-  "why": "bash manual, source: after the source command ran, the function exists. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+  "why": "bash manual, source: 'Read and execute commands from filename in the current shell environment', so after the source command early_fn exists. Assumption (not from the manual): the script runs from its own directory, as the header comment of the file says."
  },
  {
   "id": "S059",
   "category": "source resolution",
+  "tier": "gating",
   "file": "source/s_glob.sh",
   "method": "textDocument/definition",
   "at": {
@@ -322,11 +337,12 @@
    ]
   },
   "oracle": "bash-trace",
-  "why": "bash manual, Compound Commands, for, and Pathname Expansion: ./plug/*.sh matches one.sh and two.sh, and each is sourced by the loop. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+  "why": "bash manual, Compound Commands, for, and Pathname Expansion: ./plug/*.sh matches one.sh and two.sh, and each is sourced by the loop. Assumption (not from the manual): the script runs from its own directory, as the header comment of the file says."
  },
  {
   "id": "S060",
   "category": "source resolution",
+  "tier": "gating",
   "file": "source/s_glob.sh",
   "method": "textDocument/definition",
   "at": {
@@ -344,11 +360,12 @@
    ]
   },
   "oracle": "bash-trace",
-  "why": "Same loop: the second matching file. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+  "why": "Same loop: the second matching file. Assumption (not from the manual): the script runs from its own directory, as the header comment of the file says."
  },
  {
   "id": "S061",
   "category": "source resolution",
+  "tier": "gating",
   "file": "source/chain/main.sh",
   "method": "textDocument/definition",
   "at": {
@@ -366,11 +383,12 @@
    ]
   },
   "oracle": "manual",
-  "why": "bash manual, source: one.sh runs in the current shell, so what it sources is defined for main.sh too. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+  "why": "bash manual, source: one.sh runs in the current shell, so what it sources is defined for main.sh too. Assumption (not from the manual): the script runs from its own directory, as the header comment of the file says."
  },
  {
   "id": "S062",
   "category": "source resolution",
+  "tier": "gating",
   "file": "source/lib/needs.sh",
   "method": "textDocument/definition",
   "at": {
@@ -383,16 +401,17 @@
    "locations": [
     [
      "source/host.sh",
-     2
+     3
     ]
    ]
   },
   "oracle": "manual",
-  "why": "bash manual, source: the library runs in the sourcing shell, where host.sh defined host_hook before the source command. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+  "why": "bash manual, source: the library runs in the sourcing shell, where host.sh defined host_hook before the source command. Assumption (not from the manual): the script runs from its own directory, as the header comment of the file says."
  },
  {
   "id": "S063",
   "category": "source resolution",
+  "tier": "gating",
   "file": "source/cyc_b.sh",
   "method": "textDocument/definition",
   "at": {
@@ -405,16 +424,17 @@
    "locations": [
     [
      "source/cyc_a.sh",
-     2
+     3
     ]
    ]
   },
   "oracle": "manual",
-  "why": "bash manual, source: with a cycle of source commands every function of both files is still defined in the one shell. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+  "why": "Static resolution only (the pair has no source guard and is not meant to be executed): each file defines its function and sources the other, so cyc_a in cyc_b.sh resolves to cyc_a.sh. Assumption (not from the manual): the script runs from its own directory, as the header comment of the file says."
  },
  {
   "id": "S064",
   "category": "source resolution",
+  "tier": "gating",
   "file": "source/cyc_a.sh",
   "method": "textDocument/definition",
   "at": {
@@ -427,11 +447,11 @@
    "locations": [
     [
      "source/cyc_b.sh",
-     2
+     3
     ]
    ]
   },
   "oracle": "manual",
-  "why": "Same cycle seen from the other file. Relative paths with a slash are read from the current directory (bash manual, source); the case assumes the script is run from its own directory, as its header comment says."
+  "why": "Static resolution only: the same cycle seen from the other file. Assumption (not from the manual): the script runs from its own directory, as the header comment of the file says."
  }
 ]

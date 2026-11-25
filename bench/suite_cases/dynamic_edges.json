@@ -2,6 +2,7 @@
  {
   "id": "S065",
   "category": "dynamic edges",
+  "tier": "gating",
   "file": "dyn/trap.sh",
   "method": "textDocument/definition",
   "at": {
@@ -24,6 +25,7 @@
  {
   "id": "S066",
   "category": "dynamic edges",
+  "tier": "gating",
   "file": "dyn/trap.sh",
   "method": "textDocument/definition",
   "at": {
@@ -46,6 +48,7 @@
  {
   "id": "S067",
   "category": "dynamic edges",
+  "tier": "gating",
   "file": "dyn/trap.sh",
   "method": "textDocument/references",
   "at": {
@@ -76,6 +79,7 @@
  {
   "id": "S068",
   "category": "dynamic edges",
+  "tier": "gating",
   "file": "dyn/eval.sh",
   "method": "textDocument/definition",
   "at": {
@@ -98,6 +102,7 @@
  {
   "id": "S069",
   "category": "dynamic edges",
+  "tier": "gating",
   "file": "dyn/eval.sh",
   "method": "textDocument/references",
   "at": {
@@ -128,6 +133,7 @@
  {
   "id": "S070",
   "category": "dynamic edges",
+  "tier": "gating",
   "file": "dyn/eval.sh",
   "method": "textDocument/definition",
   "at": {
@@ -150,6 +156,7 @@
  {
   "id": "S071",
   "category": "dynamic edges",
+  "tier": "gating",
   "file": "dyn/cmdvar.sh",
   "method": "textDocument/references",
   "at": {
@@ -181,11 +188,12 @@
    ]
   },
   "oracle": "bash-trace",
-  "why": "bash manual, SIMPLE COMMAND EXPANSION: after expansion the word \"$cmd\" is handler, which is looked up as a function; the reference is the call or the assignment that feeds it."
+  "why": "bash manual, SIMPLE COMMAND EXPANSION: \"the first word is taken to be the name of the command\"; COMMAND EXECUTION: \"If there exists a shell function by that name, that function is invoked\". after expansion the word \"$cmd\" is handler, which is looked up as a function; the reference is the call or the assignment that feeds it."
  },
  {
   "id": "S072",
   "category": "dynamic edges",
+  "tier": "design",
   "file": "dyn/alias.sh",
   "method": "textDocument/definition",
   "at": {
@@ -208,6 +216,7 @@
  {
   "id": "S073",
   "category": "dynamic edges",
+  "tier": "design",
   "file": "dyn/alias.sh",
   "method": "textDocument/references",
   "at": {
@@ -228,7 +237,7 @@
     ],
     [
      "dyn/alias.sh",
-     4
+     6
     ]
    ]
   },
@@ -238,6 +247,7 @@
  {
   "id": "S074",
   "category": "dynamic edges",
+  "tier": "gating",
   "file": "dyn/alias.sh",
   "method": "textDocument/definition",
   "at": {
@@ -247,6 +257,12 @@
   },
   "params": {},
   "expect": {
+   "includes": [
+    [
+     "dyn/alias.sh",
+     4
+    ]
+   ],
    "excludes": [
     [
      "dyn/alias.sh",
@@ -255,20 +271,27 @@
    ]
   },
   "oracle": "manual",
-  "why": "bash manual, ALIASES: 'an alias definition appearing on the same line as another command does not take effect until the next line of input is read', so aa here is not status_all."
+  "why": "bash manual, ALIASES: 'an alias definition appearing on the same line as another command does not take effect until the next line of input is read', so this aa is the function aa and not status_all."
  },
  {
   "id": "S075",
   "category": "dynamic edges",
+  "tier": "gating",
   "file": "dyn/alias.sh",
   "method": "textDocument/definition",
   "at": {
    "needle": "zz",
-   "occ": 2,
+   "occ": 4,
    "delta": 0
   },
   "params": {},
   "expect": {
+   "includes": [
+    [
+     "dyn/alias.sh",
+     5
+    ]
+   ],
    "excludes": [
     [
      "dyn/alias.sh",
@@ -277,55 +300,86 @@
    ]
   },
   "oracle": "manual",
-  "why": "bash manual, SHELL BUILTIN COMMANDS, unalias: the alias is removed before this line, so zz is no longer status_all."
+  "why": "bash manual, SHELL BUILTIN COMMANDS, unalias: 'Remove each name from the list of defined aliases', so after the unalias line zz is the function zz and not status_all."
  },
  {
   "id": "S076",
   "category": "dynamic edges",
+  "tier": "gating",
   "file": "dyn/command.sh",
-  "method": "textDocument/definition",
+  "method": "textDocument/references",
   "at": {
-   "needle": "command handler",
+   "needle": "handler() {",
    "occ": 0,
-   "delta": 8
+   "delta": 0
   },
-  "params": {},
+  "params": {
+   "context": {
+    "includeDeclaration": true
+   }
+  },
   "expect": {
-   "excludes": [
+   "includes": [
     [
      "dyn/command.sh",
      2
+    ],
+    [
+     "dyn/command.sh",
+     5
+    ]
+   ],
+   "excludes": [
+    [
+     "dyn/command.sh",
+     3
     ]
    ]
   },
   "oracle": "manual",
-  "why": "bash manual, SHELL BUILTIN COMMANDS, command: 'suppressing the normal shell function lookup'."
+  "why": "bash manual, SHELL BUILTIN COMMANDS, command: 'suppressing the normal shell function lookup', so 'command handler' is not a call of the function; the plain call is."
  },
  {
   "id": "S077",
   "category": "dynamic edges",
+  "tier": "gating",
   "file": "dyn/command.sh",
-  "method": "textDocument/definition",
+  "method": "textDocument/references",
   "at": {
-   "needle": "xargs handler",
+   "needle": "handler() {",
    "occ": 0,
-   "delta": 6
+   "delta": 0
   },
-  "params": {},
+  "params": {
+   "context": {
+    "includeDeclaration": true
+   }
+  },
   "expect": {
-   "excludes": [
+   "includes": [
     [
      "dyn/command.sh",
      2
+    ],
+    [
+     "dyn/command.sh",
+     5
+    ]
+   ],
+   "excludes": [
+    [
+     "dyn/command.sh",
+     4
     ]
    ]
   },
   "oracle": "manual",
-  "why": "bash manual, COMMAND EXECUTION: xargs is an external command; its argument names a program in a new process, which does not inherit shell functions (they are exported only with export -f, 'ENVIRONMENT')."
+  "why": "bash manual, FUNCTIONS: 'Functions may be exported so that subshells automatically have them defined with the -f option to the export builtin'; xargs starts a new process and handler is not exported, so 'xargs handler' is not a call of the function; the plain call is."
  },
  {
   "id": "S078",
   "category": "dynamic edges",
+  "tier": "gating",
   "file": "dyn/command.sh",
   "method": "textDocument/definition",
   "at": {
@@ -343,6 +397,6 @@
    ]
   },
   "oracle": "manual",
-  "why": "bash manual, SIMPLE COMMAND EXPANSION: the plain call, as control for the two cases above."
+  "why": "bash manual, SIMPLE COMMAND EXPANSION: \"the first word is taken to be the name of the command\"; COMMAND EXECUTION: \"If there exists a shell function by that name, that function is invoked\". the plain call, as control for the two cases above."
  }
 ]

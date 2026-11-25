@@ -2,6 +2,7 @@
  {
   "id": "S029",
   "category": "scope",
+  "tier": "gating",
   "file": "scope/local.sh",
   "method": "textDocument/definition",
   "at": {
@@ -24,6 +25,7 @@
  {
   "id": "S030",
   "category": "scope",
+  "tier": "gating",
   "file": "scope/local.sh",
   "method": "textDocument/definition",
   "at": {
@@ -46,6 +48,7 @@
  {
   "id": "S031",
   "category": "scope",
+  "tier": "gating",
   "file": "scope/dynamic.sh",
   "method": "textDocument/definition",
   "at": {
@@ -67,11 +70,12 @@
    ]
   },
   "oracle": "bash-trace",
-  "why": "bash manual, local: a local 'is visible to the function and its children', so reader sees outer's local when called from outer and the global when called from top level (dynamic scope); both bindings are reachable."
+  "why": "bash manual, SHELL BUILTIN COMMANDS, local: 'a visible scope restricted to that function and its children', so reader sees outer's local when called from outer and the global when called from top level (dynamic scope); both bindings are reachable."
  },
  {
   "id": "S032",
   "category": "scope",
+  "tier": "gating",
   "file": "scope/dynamic_only.sh",
   "method": "textDocument/definition",
   "at": {
@@ -89,11 +93,12 @@
    ]
   },
   "oracle": "bash-trace",
-  "why": "bash manual, local: show is called only from deploy, whose local target is the only binding that can be live."
+  "why": "bash manual, local: 'a visible scope restricted to that function and its children'; show is called only from deploy, whose local target is the only binding that can be live."
  },
  {
   "id": "S033",
   "category": "scope",
+  "tier": "gating",
   "file": "scope/subshell.sh",
   "method": "textDocument/definition",
   "at": {
@@ -111,11 +116,12 @@
    ]
   },
   "oracle": "manual",
-  "why": "bash manual, COMMAND EXECUTION ENVIRONMENT: a subshell is a copy; inside it the innermost assignment wins."
+  "why": "bash manual, COMMAND EXECUTION ENVIRONMENT: 'Command substitution, commands grouped with parentheses, and asynchronous commands are invoked in a subshell environment that is a duplicate of the shell environment'; inside it the innermost assignment wins."
  },
  {
   "id": "S034",
   "category": "scope",
+  "tier": "gating",
   "file": "scope/subshell.sh",
   "method": "textDocument/definition",
   "at": {
@@ -133,11 +139,12 @@
    ]
   },
   "oracle": "manual",
-  "why": "bash manual, COMMAND EXECUTION ENVIRONMENT: 'Command substitution and commands grouped with parentheses are invoked in a subshell environment'; its assignments do not reach the parent."
+  "why": "bash manual, COMMAND EXECUTION ENVIRONMENT: 'Changes made to the subshell environment cannot affect the shell's execution environment.'"
  },
  {
   "id": "S035",
   "category": "scope",
+  "tier": "gating",
   "file": "scope/escape.sh",
   "method": "textDocument/definition",
   "at": {
@@ -155,6 +162,7 @@
  {
   "id": "S036",
   "category": "scope",
+  "tier": "gating",
   "file": "scope/escape.sh",
   "method": "textDocument/definition",
   "at": {
@@ -172,6 +180,7 @@
  {
   "id": "S037",
   "category": "scope",
+  "tier": "gating",
   "file": "scope/fnlocal_subshell.sh",
   "method": "textDocument/definition",
   "at": {
@@ -194,6 +203,7 @@
  {
   "id": "S038",
   "category": "scope",
+  "tier": "gating",
   "file": "scope/pipeline.sh",
   "method": "textDocument/definition",
   "at": {
@@ -216,6 +226,7 @@
  {
   "id": "S039",
   "category": "scope",
+  "tier": "gating",
   "file": "scope/pipeline.sh",
   "method": "textDocument/definition",
   "at": {
@@ -228,11 +239,12 @@
    "empty": true
   },
   "oracle": "bash-trace",
-  "why": "bash manual, Pipelines: 'Each command in a pipeline is executed in its own subshell' (3.2 has no lastpipe), so 'echo hi | read z' leaves z unset in the parent."
+  "why": "bash manual, SHELL GRAMMAR, Pipelines: 'Each command in a pipeline is executed as a separate process (i.e., in a subshell).' The 3.2 manual lists no lastpipe option, so 'echo hi | read z' leaves z unset in the parent."
  },
  {
   "id": "S040",
   "category": "scope",
+  "tier": "gating",
   "file": "scope/pipeline.sh",
   "method": "textDocument/definition",
   "at": {
@@ -250,11 +262,12 @@
    ]
   },
   "oracle": "bash-trace",
-  "why": "bash manual, Pipelines: the increment happens in the last stage, a subshell, and is lost; the read after the pipeline binds to n=0 only."
+  "why": "bash manual, Pipelines: each command runs as a separate process (i.e., in a subshell); the increment happens in the last stage and is lost, so the read after the pipeline binds to n=0 only."
  },
  {
   "id": "S041",
   "category": "scope",
+  "tier": "gating",
   "file": "scope/procsub.sh",
   "method": "textDocument/definition",
   "at": {
@@ -267,11 +280,12 @@
    "empty": true
   },
   "oracle": "manual",
-  "why": "bash manual, EXPANSION, Process Substitution: the list runs in a separate process; p does not escape."
+  "why": "bash manual, EXPANSION, Process Substitution runs the list as a separate process; COMMAND EXECUTION ENVIRONMENT: 'Changes made to the subshell environment cannot affect the shell's execution environment.' p does not escape."
  },
  {
   "id": "S042",
   "category": "scope",
+  "tier": "gating",
   "file": "scope/procsub.sh",
   "method": "textDocument/definition",
   "at": {
@@ -294,6 +308,7 @@
  {
   "id": "S043",
   "category": "scope",
+  "tier": "gating",
   "file": "scope/procsub.sh",
   "method": "textDocument/definition",
   "at": {
@@ -316,6 +331,7 @@
  {
   "id": "S044",
   "category": "scope",
+  "tier": "gating",
   "file": "scope/s5.sh",
   "method": "textDocument/definition",
   "at": {

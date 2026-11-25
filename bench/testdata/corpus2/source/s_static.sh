@@ -1,5 +1,5 @@
 #!/bin/bash
-# run from this directory
+# assumption: this script is run from its own directory
 source ./lib/a.sh
 . ./lib/b.sh
 source ./lib/deep/c.sh extra args
