@@ -831,7 +831,7 @@ func (s *server) hover(raw json.RawMessage) (any, *rpcError) {
 	if !found {
 		return s.helpHover(p.TextDocument.URI, snap, path, off)
 	}
-	return hover{Contents: markupContent{Kind: "markdown", Value: md}, Range: s.rangeIn(converters{}, snap, path, rng)}, nil
+	return hover{Contents: markupContent{Kind: "markdown", Value: redact.String(md)}, Range: s.rangeIn(converters{}, snap, path, rng)}, nil
 }
 
 func symbolKind(k analysis.DeclKind) int {

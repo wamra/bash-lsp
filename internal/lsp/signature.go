@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"encoding/json"
+	"strings"
 	"unicode/utf16"
 
 	"github.com/wamra/bash-lsp/analysis"
@@ -64,15 +65,19 @@ func (s *server) signatureHelp(raw json.RawMessage) (any, *rpcError) {
 // signatureInfo renders sig. The parameters are the named positions and, for
 // a variadic function, the trailing `[args...]`.
 func (s *server) signatureInfo(sig analysis.FuncSignature) signatureInformation {
-	out := signatureInformation{Label: sig.Label, Parameters: []parameterInformation{}}
+	// Everything that comes from the file is redacted piece by piece, and the
+	// offsets are counted on the redacted pieces, so they still pick out the
+	// parameters of the label the client gets.
+	name := redact.String(sig.Name)
 	labels := make([]string, 0, len(sig.Params)+1)
 	for _, p := range sig.Params {
-		labels = append(labels, p.Label())
+		labels = append(labels, redact.String(p.Label()))
 	}
 	if sig.Variadic {
 		labels = append(labels, "[args...]")
 	}
-	at := utf16Len(sig.Name) + 1 // the label is the name, then each parameter after a space
+	out := signatureInformation{Label: strings.Join(append([]string{name}, labels...), " "), Parameters: []parameterInformation{}}
+	at := utf16Len(name) + 1 // the label is the name, then each parameter after a space
 	for _, l := range labels {
 		n := utf16Len(l)
 		if s.caps().LabelOffset {
