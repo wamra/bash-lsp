@@ -311,7 +311,7 @@ func (s *Snapshot) dynamicCallNodes(in bitset) (calls, sources map[Node]bool) {
 			if se.Ref.Word != nil {
 				text = s.siteText(f, se.Ref.Word.Range)
 			}
-			if text == "" || strings.ContainsAny(text, "$`") {
+			if text == "" || strings.ContainsAny(text, "$`") && !literalTail(text) {
 				sources[at.at(f, se.Ref.Range.Start.Offset)] = true
 			}
 		}
@@ -903,4 +903,13 @@ func (s *Snapshot) noteTestV(src []byte, n *tree.Node, note func(k refKind, strs
 			note(refVar, false, a+toks[k+1][0], a+toks[k+1][1])
 		}
 	}
+}
+
+// literalTail reports whether the path word text of a source names its file
+// by a literal final component (`"${dir}/utils.sh"`): the directory may be
+// unknown, the file is not wholly chosen at run time.
+func literalTail(text string) bool {
+	text = strings.TrimRight(text, `"'`)
+	tail := text[strings.LastIndexByte(text, '/')+1:]
+	return tail != "" && !strings.ContainsAny(tail, "$`")
 }

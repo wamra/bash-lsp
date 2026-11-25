@@ -98,3 +98,20 @@ func TestRenameSearchSurvivors(t *testing.T) {
 	}
 	refusesMem(t, map[string]string{"a.sh": chain(maxRenameReach - 10)}, RefuseConflict, "a.sh", "x=1", 0, "y")
 }
+
+func TestRenameDynamicSourceNeedsNoLiteralTail(t *testing.T) {
+	// A wholly dynamic path is refused; one with a literal final component is only a warning.
+	for _, tail := range []string{`"${dir}/$name"`, `"$1"`, "$f"} {
+		refusesMem(t, map[string]string{"a.sh": "f() {\n  local n=3\n  . " + tail + "\n}\n"}, RefuseDynamicScope, "a.sh", "local n=3", 6, "w")
+	}
+	for _, tail := range []string{`"${HOMEBREW_LIBRARY}/Homebrew/utils.sh"`, `"$d/x.sh"`, `"${d}"/x.sh`} {
+		p := planOK(t, map[string]string{"a.sh": "f() {\n  local n=3\n  . " + tail + "\n}\n"}, "a.sh", "local n=3", 6, "w")
+		found := false
+		for _, w := range p.Warnings {
+			found = found || strings.Contains(w, "dynamic source")
+		}
+		if !found {
+			t.Fatalf("%s: warnings %q", tail, p.Warnings)
+		}
+	}
+}
