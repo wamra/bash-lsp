@@ -160,7 +160,7 @@ func (s *server) fullTokens(uri string) (any, *rpcError) {
 		}
 		return semanticTokens{Data: []uint32{}}, nil
 	}
-	data := EncodeTokens(f.NewConverter(), snap.Tokens(path, nil))
+	data := encodeTokens(f.NewConverter(), snap.Tokens(path, nil))
 	res := semanticTokens{Data: data}
 	if d != nil {
 		res.ResultID = s.nextTokensID(d)
@@ -184,7 +184,7 @@ func (s *server) semanticTokensDelta(raw json.RawMessage) (any, *rpcError) {
 		}
 		return semanticTokens{Data: []uint32{}}, nil
 	}
-	data := EncodeTokens(f.NewConverter(), snap.Tokens(path, nil))
+	data := encodeTokens(f.NewConverter(), snap.Tokens(path, nil))
 	if d == nil {
 		return semanticTokens{Data: data}, nil
 	}
@@ -196,7 +196,7 @@ func (s *server) semanticTokensDelta(raw json.RawMessage) (any, *rpcError) {
 		return semanticTokens{ResultID: id, Data: data}, nil
 	}
 	edits := []semanticTokensEdit{}
-	if start, del, ins := DiffTokens(base, data); del > 0 || len(ins) > 0 {
+	if start, del, ins := diffTokens(base, data); del > 0 || len(ins) > 0 {
 		edits = append(edits, semanticTokensEdit{Start: start, DeleteCount: del, Data: ins})
 	}
 	return semanticTokensDelta{ResultID: id, Edits: edits}, nil
@@ -222,13 +222,13 @@ func (s *server) semanticTokensRange(raw json.RawMessage) (any, *rpcError) {
 	if r.Start.Offset > r.End.Offset {
 		return semanticTokens{Data: []uint32{}}, nil
 	}
-	return semanticTokens{Data: EncodeTokens(f.NewConverter(), snap.Tokens(path, &r))}, nil
+	return semanticTokens{Data: encodeTokens(f.NewConverter(), snap.Tokens(path, &r))}, nil
 }
 
-// EncodeTokens is the LSP encoding of toks (sorted, single-line): five
+// encodeTokens is the LSP encoding of toks (sorted, single-line): five
 // integers per token, the line and column relative to the token before
 // (the first to 0:0), the length, type and modifier bits, all in UTF-16 units.
-func EncodeTokens(c *tree.Converter, toks []analysis.Token) []uint32 {
+func encodeTokens(c *tree.Converter, toks []analysis.Token) []uint32 {
 	data := make([]uint32, 0, 5*len(toks))
 	pl, pc := 0, 0
 	for _, t := range toks {
@@ -244,11 +244,11 @@ func EncodeTokens(c *tree.Converter, toks []analysis.Token) []uint32 {
 	return data
 }
 
-// DiffTokens is the one edit that turns prev into next: the tuples the two
+// diffTokens is the one edit that turns prev into next: the tuples the two
 // share at the start and at the end stay, the rest is replaced. start and
 // deleteCount are multiples of 5. With nothing to change, deleteCount is 0
 // and data is empty.
-func DiffTokens(prev, next []uint32) (start, deleteCount int, data []uint32) {
+func diffTokens(prev, next []uint32) (start, deleteCount int, data []uint32) {
 	pre := 0
 	for pre+5 <= len(prev) && pre+5 <= len(next) && slices.Equal(prev[pre:pre+5], next[pre:pre+5]) {
 		pre += 5
@@ -326,7 +326,7 @@ func (s *server) flushTokenRefresh() {
 		snap := d.be.Snapshot()
 		var now []uint32
 		if f := fileOf(snap, d.path); f != nil {
-			now = EncodeTokens(f.NewConverter(), snap.Tokens(d.path, nil))
+			now = encodeTokens(f.NewConverter(), snap.Tokens(d.path, nil))
 		}
 		if !slices.Equal(now, d.semtok.data) {
 			s.call("workspace/semanticTokens/refresh", nil)

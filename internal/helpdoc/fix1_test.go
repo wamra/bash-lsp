@@ -135,9 +135,6 @@ func TestWindowsBranchStartsNothing(t *testing.T) {
 	if _, ok := l.Command(context.Background(), "sample"); ok {
 		t.Error("Command on Windows")
 	}
-	if help, man, why := l.Available(); help || man || !strings.Contains(why, "Windows") {
-		t.Errorf("Available = %v %v %q", help, man, why)
-	}
 	for _, line := range l.Lines() {
 		if !strings.Contains(line, "unavailable (not supported on Windows)") {
 			t.Errorf("line %q", line)

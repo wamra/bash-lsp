@@ -15,7 +15,6 @@ import (
 	"log"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"sync"
 	"time"
 
@@ -164,21 +163,6 @@ func (l *Lookup) Lines() []string {
 	h, _ := l.status("help", &l.bash, "bash", l.st.Help.BashPath)
 	m, _ := l.status("man", &l.man, "man", l.st.Help.ManPath)
 	return []string{h, m}
-}
-
-// Available says whether each source can be used; why holds the lines of
-// those that cannot.
-func (l *Lookup) Available() (help, man bool, why string) {
-	h, help := l.status("help", &l.bash, "bash", l.st.Help.BashPath)
-	m, man := l.status("man", &l.man, "man", l.st.Help.ManPath)
-	var parts []string
-	if !help {
-		parts = append(parts, h)
-	}
-	if !man {
-		parts = append(parts, m)
-	}
-	return help, man, strings.Join(parts, "; ")
 }
 
 // gate says whether a lookup of kind ("builtin" or "command") for name may

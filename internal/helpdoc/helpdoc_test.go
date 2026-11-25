@@ -321,13 +321,9 @@ func TestHelpProgramInsideRootRefused(t *testing.T) {
 	if n := f.count(); n != 0 {
 		t.Errorf("%d spawns", n)
 	}
-	help, man, why := l.Available()
-	if help || man || !strings.Contains(why, "inside the workspace folder") {
-		t.Errorf("Available = %v %v %q", help, man, why)
-	}
 	for _, line := range l.Lines() {
-		if !strings.Contains(line, "refused") {
-			t.Errorf("line %q does not say refused", line)
+		if !strings.Contains(line, "refused") || !strings.Contains(line, "inside the workspace folder") {
+			t.Errorf("line %q does not say refused, inside the workspace folder", line)
 		}
 	}
 }
@@ -366,9 +362,6 @@ func TestRepoHelpDisabledHonoured(t *testing.T) {
 	}
 	if n := f.count(); n != 0 {
 		t.Errorf("%d spawns", n)
-	}
-	if help, man, _ := l.Available(); help || man {
-		t.Error("Available is true with help disabled")
 	}
 	for _, line := range l.Lines() {
 		if !strings.HasSuffix(line, "disabled (help.enabled = false)") {
@@ -521,9 +514,6 @@ func TestLinesAvailableAndAbsent(t *testing.T) {
 		lines[0] != "help: available ("+resolved(t, filepath.Join(dir, "bash"))+")" ||
 		lines[1] != "man: available ("+resolved(t, filepath.Join(dir, "man"))+")" {
 		t.Fatalf("lines %q", lines)
-	}
-	if help, man, why := l.Available(); !help || !man || why != "" {
-		t.Fatalf("Available = %v %v %q", help, man, why)
 	}
 	l = newLookup(t, &fakeRun{}, defaults(), []string{t.TempDir()}, nil)
 	if got := l.Lines(); !slices.Equal(got, []string{"help: absent", "man: absent"}) {
