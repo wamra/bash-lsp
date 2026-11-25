@@ -139,6 +139,38 @@ func TestHintsHugeParameterIndex(t *testing.T) {
 	if got := q.s.Hints(p, whole(q.s, p), false, true); len(got) != 0 {
 		t.Fatalf("%+v", got)
 	}
+	sig, _, ok := sigAt(t, "f() { echo \"${999999999}\"; }\nf ▮")
+	if !ok || len(sig.Params) != maxParams {
+		t.Fatalf("declared parameters %d, want the cap %d (ok %v)", len(sig.Params), maxParams, ok)
+	}
+}
+
+// A word that contains a spread expansion anywhere is a spread: no hint on
+// it and none after it; hints before it stay. A count (`${#arr[@]}`) and a
+// single-quoted `'$@'` are one word each.
+func TestHintsSpreadInsideWord(t *testing.T) {
+	const pre = "cp2() { local src=\"$1\" dst=\"$2\"; }\n"
+	names := func(call string) string {
+		q := buildMem(t, map[string]string{"a.sh": pre + call + "\n"})
+		p := filepath.Join(q.root, "a.sh")
+		var out []string
+		for _, h := range q.s.Hints(p, whole(q.s, p), false, true) {
+			out = append(out, h.Label)
+		}
+		return strings.Join(out, " ")
+	}
+	for _, c := range []struct{ arg, before, after string }{
+		{`pre"$@"`, "src:", ""}, {`a$@`, "src:", ""}, {`"${arr[@]:1}"`, "src:", ""},
+		{`"${@:2}"`, "src:", ""}, {`${!arr[@]}`, "src:", ""}, {`"${arr[*]}"`, "src:", ""},
+		{`"x${*}y"`, "src:", ""}, {`"${#arr[@]}"`, "src: dst:", "src: dst:"}, {`'$@'`, "src: dst:", "src: dst:"},
+	} {
+		if got := names("cp2 a " + c.arg + " c"); got != c.before {
+			t.Errorf("a %s c: %q, want %q", c.arg, got, c.before)
+		}
+		if got := names("cp2 " + c.arg + " c"); got != c.after {
+			t.Errorf("%s c: %q, want %q", c.arg, got, c.after)
+		}
+	}
 }
 
 // A call through an alias may add arguments of its own, and the alias

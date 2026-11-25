@@ -138,17 +138,39 @@ func (s *Snapshot) paramHints(out []Hint, file, lo, hi int) []Hint {
 	return out
 }
 
-// isSpread reports whether the word w expands to any number of words: `$@`,
-// `$*`, `${@}`, `${*}` or `${name[@]}`, quoted or not.
+// isSpread reports whether the word w contains an expansion to any number of
+// words: `$@`, `$*`, `${@...}`, `${*...}` or `${name[@]...}` (also `${!name[@]}`),
+// anywhere in the word, quoted or not. A count `${#name[@]}` and a
+// single-quoted text are one word.
 func isSpread(w *tree.Node, src []byte) bool {
 	a, b := w.Range.Start.Offset, w.Range.End.Offset
 	if a < 0 || b > len(src) || a >= b {
 		return false
 	}
-	t := strings.Trim(string(src[a:b]), "\"")
-	switch t {
-	case "$@", "$*", "${@}", "${*}":
-		return true
+	t := string(src[a:b])
+	inSingle := false
+	for i := 0; i < len(t); i++ {
+		switch c := t[i]; {
+		case c == '\\':
+			i++
+		case c == '\'':
+			inSingle = !inSingle
+		case inSingle || c != '$' || i+1 >= len(t):
+		case t[i+1] == '@' || t[i+1] == '*':
+			return true
+		case t[i+1] == '{':
+			body := t[i+2:]
+			if end := strings.IndexByte(body, '}'); end >= 0 {
+				body = body[:end]
+			}
+			if strings.HasPrefix(body, "#") {
+				continue
+			}
+			if strings.HasPrefix(body, "@") || strings.HasPrefix(body, "*") ||
+				strings.Contains(body, "[@]") || strings.Contains(body, "[*]") {
+				return true
+			}
+		}
 	}
-	return strings.HasPrefix(t, "${") && (strings.HasSuffix(t, "[@]}") || strings.HasSuffix(t, "[*]}"))
+	return false
 }
