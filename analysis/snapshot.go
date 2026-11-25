@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/wamra/bash-lsp/tree"
 )
@@ -64,6 +65,9 @@ type Binding struct {
 type Location struct {
 	Path  string
 	Range tree.Range
+	// Why, set on the sites of a skipped-file refusal, says in a few words why
+	// the file or directory was not analysed.
+	Why string
 }
 
 // Options configure Build. SearchPaths may be nil. Prev, when set, is the
@@ -84,11 +88,29 @@ type Options struct {
 	Prev        *Snapshot
 	Oversize    func(path string) bool
 	Commands    func(name string) (path string, ok bool)
-	// Unanalysed lists the clean absolute paths of the files the caller knows
-	// of and left out of files: too large, past a file-count limit, unreadable
-	// or of a dialect not analysed. Such a file is in no file's view, yet may
-	// use any name, so a rename is refused while there is one.
-	Unanalysed []string
+	// Unanalysed lists the files and directories the caller knows of and left
+	// out of files: too large, past a file-count limit, unreadable or of a
+	// dialect not analysed, a directory not entered (too deep, unreadable).
+	// What is in them is in no file's view, yet may use any name, so a rename
+	// is refused while there is one.
+	Unanalysed []Unanalysed
+	// Excluded counts what the caller left out because the owner asked: the
+	// paths matched by files.exclude or a .gitignore. A rename goes on, and its
+	// plan carries a warning that they were not checked.
+	Excluded Excluded
+}
+
+// Unanalysed is a file or directory the caller left out of the build: its
+// clean absolute path and a short reason ("too large", "directory unreadable").
+type Unanalysed struct {
+	Path, Reason string
+}
+
+// Excluded counts the shell files (named like one) and the directories the
+// caller left out by the owner's exclusion settings. Files inside an excluded
+// directory are not counted.
+type Excluded struct {
+	Files, Dirs int
 }
 
 // maxAliasDepth bounds alias chains.
@@ -152,7 +174,8 @@ type privKey struct {
 type Snapshot struct {
 	gen        uint64
 	root       string
-	unanalysed []string // Options.Unanalysed, sorted
+	unanalysed []Unanalysed // Options.Unanalysed, by path
+	excluded   Excluded
 	paths      []string
 	idx        map[string]int
 	facts      []*FileFacts
@@ -214,7 +237,8 @@ func Build(files map[string]*FileFacts, opt Options, generation uint64) *Snapsho
 	}
 	sort.Strings(s.paths)
 	s.unanalysed = slices.Clone(opt.Unanalysed)
-	sort.Strings(s.unanalysed)
+	slices.SortFunc(s.unanalysed, func(a, b Unanalysed) int { return strings.Compare(a.Path, b.Path) })
+	s.excluded = opt.Excluded
 	n := len(s.paths)
 	for i, p := range s.paths {
 		s.idx[p] = i

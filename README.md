@@ -192,6 +192,14 @@ name, which are not touched. `warn` lines say what the analysis could not see
 with 1-based lines and UTF-16 columns, the bytes `preview_rename` returns over
 MCP. Each list is cut at 10,000 records with `"truncated": true`.
 
+Rename sees the files the workspace read. It refuses (`skipped-file`, naming
+each file or directory and why) while a file was too large, past
+`[limits] max_files`, unreadable or zsh, or a directory was too deep or
+unreadable, because a caller there could not be checked. It does not see files
+you excluded: what `files.exclude`, `files.include` or a `.gitignore` leaves
+out is not read, the rename goes on, and the plan carries a `warn` line saying
+how many excluded files and directories were not checked.
+
 Exit codes of `rename`: 0 done, 1 failure (a failed write, rolled back or not),
 2 usage, 4 refused (every refusal, an outside-root argument included). A
 refusal prints `refused: CODE: reason` on standard error, then one

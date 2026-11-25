@@ -1053,3 +1053,89 @@ func TestCLIRenameRefusalJSONWrittenIsAnEmptyList(t *testing.T) {
 		t.Fatalf("exit %d, written = %#v in\n%s", code, doc["written"], out)
 	}
 }
+
+// A caller in a directory the walk never listed (too deep, unreadable) is a
+// reason to refuse; the site says why, and nothing is written.
+func TestCLIRenameRefusesWhenADirectoryWasNotListed(t *testing.T) {
+	cases := []struct {
+		name, dir, why string
+		prep           func(t *testing.T, root, dir string)
+	}{
+		{"deep", strings.Repeat("d/", 66), "directory too deep", func(t *testing.T, root, dir string) {}},
+		{"unreadable", "locked/", "directory unreadable", func(t *testing.T, root, dir string) {
+			if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+				t.Skip("file modes do not stop this reader")
+			}
+			if err := os.Chmod(filepath.Join(root, "locked"), 0); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.Chmod(filepath.Join(root, "locked"), 0o755) })
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			root := t.TempDir()
+			if r, err := filepath.EvalSymlinks(root); err == nil {
+				root = r
+			}
+			putFile(t, root, "lib.sh", "f() { :; }\n")
+			putFile(t, root, "main.sh", "source ./lib.sh\nf\n")
+			putFile(t, root, c.dir+"caller.sh", "f\n")
+			c.prep(t, root, c.dir)
+			before := treeBytes(t, root)
+			for _, mode := range []string{"--preview", "--apply"} {
+				code, out, errs := runCode(t, "rename", "f", "g", mode, "--root", root)
+				if code != 4 || out != "" || !strings.HasPrefix(errs, "refused: skipped-file: ") || !strings.Contains(errs, "  "+c.why) {
+					t.Errorf("%s: exit %d out %q err %q", mode, code, out, errs)
+				}
+			}
+			code, out, _ := runCode(t, "rename", "f", "g", "--json", "--root", root)
+			if code != 4 || !strings.Contains(out, `"why": "`+c.why+`"`) {
+				t.Errorf("--json: exit %d\n%s", code, out)
+			}
+			if c.name == "unreadable" {
+				if _, dout, _ := runCode(t, "doctor", root); !strings.Contains(dout, "locked") || !strings.Contains(dout, "could not be read") {
+					t.Errorf("doctor does not name the unreadable directory:\n%s", dout)
+				}
+			}
+			sameTree(t, treeBytes(t, root), before)
+		})
+	}
+}
+
+// Files the owner excluded are not read: the rename goes on and says so, in
+// the text and in the JSON.
+func TestCLIRenameWarnsOfExcludedFiles(t *testing.T) {
+	for name, setup := range map[string]func(t *testing.T, root string){
+		"gitignore": func(t *testing.T, root string) {
+			putFile(t, root, ".gitignore", "vendor/\n")
+		},
+		"files.exclude": func(t *testing.T, root string) {
+			putFile(t, root, ".bash-lsp.toml", "[files]\nexclude = [\"vendor/\"]\n")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			if r, err := filepath.EvalSymlinks(root); err == nil {
+				root = r
+			}
+			putFile(t, root, "lib.sh", "f() { :; }\n")
+			putFile(t, root, "main.sh", "source ./lib.sh\nf\n")
+			putFile(t, root, "vendor/x.sh", "f\n")
+			setup(t, root)
+			code, out, errs := runCode(t, "rename", "f", "g", "--root", root)
+			if code != 0 || !strings.Contains(out+errs, "1 directory excluded by settings or .gitignore were not checked") {
+				t.Fatalf("exit %d out %q err %q", code, out, errs)
+			}
+			code, out, _ = runCode(t, "rename", "f", "g", "--json", "--root", root)
+			var doc struct{ Warnings []string }
+			mustJSON(t, out, &doc)
+			if code != 0 || len(doc.Warnings) != 1 || !strings.Contains(doc.Warnings[0], "excluded by settings or .gitignore") {
+				t.Fatalf("--json: exit %d warnings %v", code, doc.Warnings)
+			}
+			if b, _ := os.ReadFile(filepath.Join(root, "vendor/x.sh")); string(b) != "f\n" {
+				t.Errorf("the excluded file changed: %q", b)
+			}
+		})
+	}
+}

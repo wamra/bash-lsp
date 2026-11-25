@@ -762,3 +762,23 @@ func TestMCPPreviewRenameRefusesWhenACallerWasNeverRead(t *testing.T) {
 		}
 	}
 }
+
+func TestMCPPreviewRenameWarnsOfExcludedFilesAndSaysWhy(t *testing.T) {
+	files := map[string]string{"lib.sh": "f() { :; }\n", "main.sh": "source ./lib.sh\nf\n", "vendor/x.sh": "f\n", ".gitignore": "vendor/\n"}
+	root := workspaceRoot(t, files)
+	rs := serve(t, root, config.Settings{},
+		call(1, "preview_rename", map[string]any{"symbol": "f", "new_name": "h"}),
+	).replies(t)
+	tr := result(t, rs[0])
+	ws, _ := tr.Doc["warnings"].([]any)
+	if tr.IsError || len(ws) != 1 || !strings.Contains(ws[0].(string), "1 directory excluded by settings or .gitignore were not checked") {
+		t.Fatalf("%v %s", tr.IsError, tr.Text)
+	}
+	root = workspaceRoot(t, map[string]string{"lib.sh": "f() { :; }\n", "big.sh": "f\n" + strings.Repeat("# pad\n", 400)})
+	rs = serve(t, root, config.Settings{MaxFileBytes: 1000},
+		call(1, "preview_rename", map[string]any{"symbol": "f", "new_name": "h"}),
+	).replies(t)
+	if tr := result(t, rs[0]); !tr.IsError || !strings.Contains(tr.Text, "site  big.sh:1:1  too large") {
+		t.Fatalf("%v %s", tr.IsError, tr.Text)
+	}
+}

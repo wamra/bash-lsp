@@ -605,14 +605,14 @@ func TestRenameRefusesWhenAFileWasNeverRead(t *testing.T) {
 		files[p] = Bind(front.Parse(p, []byte(s), front.Detect(p, []byte(s))))
 	}
 	off := strings.Index(src[lib], "f()")
-	unread := []string{filepath.Join(root, "z.sh"), filepath.Join(root, "big.sh")}
+	unread := []Unanalysed{{filepath.Join(root, "z.sh"), "unreadable"}, {filepath.Join(root, "big.sh"), "too large"}}
 	s := Build(files, Options{Root: root, Unanalysed: unread}, 1)
 	plan, err := s.PlanRename(lib, off, "g")
 	r := refusal(t, err, RefuseSkippedFile)
 	if plan != nil {
 		t.Fatal("a plan with a refusal")
 	}
-	if len(r.Sites) != 2 || r.Sites[0].Path != unread[1] || r.Sites[1].Path != unread[0] {
+	if len(r.Sites) != 2 || r.Sites[0].Path != unread[1].Path || r.Sites[1].Path != unread[0].Path || r.Sites[0].Why != "too large" || r.Sites[1].Why != "unreadable" {
 		t.Fatalf("sites %v, want big.sh and z.sh", r.Sites)
 	}
 	if !r.NameIndependent {
@@ -641,9 +641,9 @@ func TestRenameRefusalListsAtMostMaxSitesUnreadFiles(t *testing.T) {
 	lib := filepath.Join(root, "lib.sh")
 	text := "f() { :; }\n"
 	files := map[string]*FileFacts{lib: Bind(front.Parse(lib, []byte(text), front.Detect(lib, []byte(text))))}
-	var unread []string
+	var unread []Unanalysed
 	for i := 0; i < maxRefusalSites+50; i++ {
-		unread = append(unread, filepath.Join(root, fmt.Sprintf("u%04d.sh", i)))
+		unread = append(unread, Unanalysed{Path: filepath.Join(root, fmt.Sprintf("u%04d.sh", i)), Reason: "unreadable"})
 	}
 	s := Build(files, Options{Root: root, Unanalysed: unread}, 1)
 	_, err := s.PlanRename(lib, 0, "g")
