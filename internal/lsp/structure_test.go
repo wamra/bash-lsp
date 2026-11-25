@@ -8,8 +8,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-
-	"github.com/wamra/bash-lsp/analysis"
 )
 
 const lspFoldSrc = "# one\n# two\n# three\nf() {\n  if true; then\n    cat <<EOF\nbody\nEOF\n  fi\n}\n# region setup\nx=1\n# endregion\n"
@@ -22,7 +20,7 @@ func foldText(fs []foldingRange) string {
 	return strings.Join(out, " ")
 }
 
-var structFolds = []analysis.Fold{{StartLine: 0, EndLine: 2, Kind: "comment"}, {StartLine: 3, EndLine: 9, Kind: ""}, {StartLine: 4, EndLine: 8, Kind: ""}, {StartLine: 5, EndLine: 7, Kind: ""}, {StartLine: 10, EndLine: 12, Kind: "region"}}
+var structFolds = []lineFold{{StartLine: 0, EndLine: 2, Kind: "comment"}, {StartLine: 3, EndLine: 9, Kind: ""}, {StartLine: 4, EndLine: 8, Kind: ""}, {StartLine: 5, EndLine: 7, Kind: ""}, {StartLine: 10, EndLine: 12, Kind: "region"}}
 
 func TestFoldingRangesCaps(t *testing.T) {
 	for _, tc := range []struct {
@@ -43,7 +41,7 @@ func TestFoldingRangesCaps(t *testing.T) {
 		}
 	}
 	// a two-line bracket fold has no line left to fold with lineFoldingOnly
-	if got := foldingRanges([]analysis.Fold{{StartLine: 0, EndLine: 1, Kind: ""}, {StartLine: 2, EndLine: 3, Kind: "comment"}}, clientCaps{LineFoldingOnly: true}); foldText(got) != "(2,3,comment)" {
+	if got := foldingRanges([]lineFold{{StartLine: 0, EndLine: 1, Kind: ""}, {StartLine: 2, EndLine: 3, Kind: "comment"}}, clientCaps{LineFoldingOnly: true}); foldText(got) != "(2,3,comment)" {
 		t.Errorf("two-line fold: %s", foldText(got))
 	}
 }
@@ -296,5 +294,32 @@ func TestDocumentLinkShebangFirst(t *testing.T) {
 	}
 	if len(ls) != 2 || !strings.HasSuffix(ls[0].Target, "/myinterp") || ls[0].Range.Start.Line != 0 || ls[1].Range.Start.Line != 1 {
 		t.Fatalf("links %s, want the shebang first, then the source", raw)
+	}
+}
+
+// Folds are in LSP lines: a lone CR ends a line, so every fold after one
+// starts and ends a line later than the line numbers of the tools say.
+func TestFoldingRangeCountsLoneCRLines(t *testing.T) {
+	for _, tc := range []struct{ name, src, want string }{
+		{"function", "# a\rb\nf() {\n  echo hi\n  echo ho\n}\n", "(0,1,comment) (2,5,)"},
+		{"function after a lone CR", "x=1;\rf() {\n  echo hi\n  echo ho\n}\n", "(1,4,)"},
+		{"comment run and region", "x=1\r# c1\n# c2\n# region r\nf() {\n  echo hi\n  echo ho\n}\n# endregion\n", "(1,2,comment) (3,8,region) (4,7,)"},
+		{"lone CR between comments", "# c1\n\r# c2\n", ""},
+		{"one tool line, two LSP lines", "f() { :;\r}\n", "(0,1,)"},
+		{"CRLF and lone CR", "a=1\r\nb=2;\rf() {\r\n  :\r}\r\n", "(2,4,)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := client(t, t.TempDir())
+			c.openText("a.sh", tc.src)
+			c.waitDiag("a.sh")
+			raw := c.call("textDocument/foldingRange", map[string]any{"textDocument": map[string]any{"uri": c.uri("a.sh")}})
+			var got []foldingRange
+			if err := json.Unmarshal(raw, &got); err != nil {
+				t.Fatalf("%v: %s", err, raw)
+			}
+			if foldText(got) != tc.want {
+				t.Fatalf("%s, want %s", foldText(got), tc.want)
+			}
+		})
 	}
 }
