@@ -226,6 +226,7 @@ func capabilities() map[string]any {
 			"supported": true, "changeNotifications": "workspace/didChangeWorkspaceFolders"}},
 		"definitionProvider":              true,
 		"referencesProvider":              true,
+		"renameProvider":                  map[string]any{"prepareProvider": true},
 		"implementationProvider":          true,
 		"hoverProvider":                   true,
 		"inlayHintProvider":               true,

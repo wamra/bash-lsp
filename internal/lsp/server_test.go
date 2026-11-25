@@ -76,13 +76,15 @@ type clientCfg struct {
 	hierarchical bool           // hierarchicalDocumentSymbolSupport
 	initOpts     any            // initializationOptions
 	workspaceCap map[string]any // capabilities.workspace
+	documentCap  map[string]any // added to capabilities.textDocument
 	respond      func(serverReq) (any, *rpcError)
 	onServer     func(*server) // called with the server before it runs; tests that call its methods
 }
 
 type rpcReply struct {
-	Result json.RawMessage
-	Error  *rpcError
+	Result  json.RawMessage
+	Error   *rpcError
+	ErrData json.RawMessage // the error's data member, as sent
 }
 
 func copyCorpus(t *testing.T) string {
@@ -151,6 +153,9 @@ func clientWith(t *testing.T, cfg clientCfg) *testClient {
 	if cfg.workspaceCap != nil {
 		caps["workspace"] = cfg.workspaceCap
 	}
+	for k, v := range cfg.documentCap {
+		caps["textDocument"].(map[string]any)[k] = v
+	}
 	params := map[string]any{"processId": nil, "capabilities": caps}
 	if cfg.folders != nil {
 		var fs []any
@@ -185,7 +190,7 @@ func (c *testClient) readLoop() {
 			Method string          `json:"method"`
 			Params json.RawMessage `json:"params"`
 			Result json.RawMessage `json:"result"`
-			Error  *rpcError       `json:"error"`
+			Error  json.RawMessage `json:"error"`
 		}
 		if err := json.Unmarshal(body, &m); err != nil {
 			c.t.Errorf("server wrote a non-JSON frame: %q", body)
@@ -228,7 +233,17 @@ func (c *testClient) readLoop() {
 			go c.in.Write(append([]byte(fmt.Sprintf("Content-Length: %d\r\n\r\n", len(b))), b...))
 			c.mu.Lock()
 		} else if len(m.ID) > 0 {
-			c.replies[string(m.ID)] = &rpcReply{Result: m.Result, Error: m.Error}
+			rep := &rpcReply{Result: m.Result}
+			if len(m.Error) > 0 && string(m.Error) != "null" {
+				rep.Error = &rpcError{}
+				_ = json.Unmarshal(m.Error, rep.Error)
+				var d struct {
+					Data json.RawMessage `json:"data"`
+				}
+				_ = json.Unmarshal(m.Error, &d)
+				rep.ErrData = d.Data
+			}
+			c.replies[string(m.ID)] = rep
 		}
 		c.cond.Broadcast()
 		c.mu.Unlock()
@@ -476,7 +491,7 @@ func TestInitializeCapabilities(t *testing.T) {
 		`"diagnosticProvider":{"interFileDependencies":true,"workspaceDiagnostics":false},"documentFormattingProvider":true,` +
 		`"documentHighlightProvider":true,"documentLinkProvider":{"resolveProvider":false},` +
 		`"documentRangeFormattingProvider":true,"documentSymbolProvider":true,"foldingRangeProvider":true,"hoverProvider":true,"implementationProvider":true,"inlayHintProvider":true,` +
-		`"positionEncoding":"utf-16","referencesProvider":true,"selectionRangeProvider":true,` +
+		`"positionEncoding":"utf-16","referencesProvider":true,"renameProvider":{"prepareProvider":true},"selectionRangeProvider":true,` +
 		`"semanticTokensProvider":{"full":{"delta":true},"legend":{"tokenModifiers":["declaration","readonly","modification","defaultLibrary","local","exported","array","associative","integer","nameref","environment","external","unresolved"],"tokenTypes":["function","variable","parameter","macro"]},"range":true},` +
 		`"signatureHelpProvider":{"retriggerCharacters":[" "],"triggerCharacters":[" "]},` +
 		`"textDocumentSync":{"change":2,"openClose":true,"save":{"includeText":false}},` +

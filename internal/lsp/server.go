@@ -269,6 +269,10 @@ func (s *server) handle(m message) (any, *rpcError) {
 		return s.definition(m.Params)
 	case "textDocument/references":
 		return s.references(m.Params)
+	case "textDocument/prepareRename":
+		return s.prepareRename(m.Params)
+	case "textDocument/rename":
+		return s.rename(m.Params)
 	case "textDocument/implementation":
 		return s.implementation(m.Params)
 	case "textDocument/hover":
