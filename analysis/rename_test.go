@@ -592,3 +592,63 @@ func TestRenameLoneCRInAnUntouchedFile(t *testing.T) {
 	q = buildMem(t, map[string]string{"a.sh": "bar=2\necho $bar\n", "b.sh": "x=1\rzzz=3\n"})
 	q.refuses(RefuseLineBreaks, "a.sh", "bar", 1, 0, "zzz")
 }
+
+// A file the workspace never read (too large, over the file count, unreadable)
+// is in no file's view, yet it may call the function: the rename is refused
+// and the refusal names the files.
+func TestRenameRefusesWhenAFileWasNeverRead(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "w")
+	lib, main := filepath.Join(root, "lib.sh"), filepath.Join(root, "main.sh")
+	src := map[string]string{lib: "f() { :; }\n", main: "source ./lib.sh\nf\n"}
+	files := map[string]*FileFacts{}
+	for p, s := range src {
+		files[p] = Bind(front.Parse(p, []byte(s), front.Detect(p, []byte(s))))
+	}
+	off := strings.Index(src[lib], "f()")
+	unread := []string{filepath.Join(root, "z.sh"), filepath.Join(root, "big.sh")}
+	s := Build(files, Options{Root: root, Unanalysed: unread}, 1)
+	plan, err := s.PlanRename(lib, off, "g")
+	r := refusal(t, err, RefuseSkippedFile)
+	if plan != nil {
+		t.Fatal("a plan with a refusal")
+	}
+	if len(r.Sites) != 2 || r.Sites[0].Path != unread[1] || r.Sites[1].Path != unread[0] {
+		t.Fatalf("sites %v, want big.sh and z.sh", r.Sites)
+	}
+	if !r.NameIndependent {
+		t.Error("not name independent")
+	}
+	if _, err := s.PlanRenameByName("f", "g"); err == nil {
+		t.Error("rename by name accepted")
+	}
+	// the same snapshot without the report renames
+	if _, err := Build(files, Options{Root: root}, 1).PlanRename(lib, off, "g"); err != nil {
+		t.Fatalf("without unread files: %v", err)
+	}
+	// a file of the snapshot that carries Skipped (an open document over the
+	// size limit) refuses too
+	big := filepath.Join(root, "big.sh")
+	files[big] = Bind(front.Parse(big, nil, front.Detect(big, nil)))
+	files[big].File.Skipped = "too big"
+	if _, err := Build(files, Options{Root: root}, 1).PlanRename(lib, off, "g"); refusal(t, err, RefuseSkippedFile) == nil {
+		t.Fatal("no refusal for a skipped file of the snapshot")
+	}
+}
+
+// The refusal lists at most maxRefusalSites files.
+func TestRenameRefusalListsAtMostMaxSitesUnreadFiles(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "w")
+	lib := filepath.Join(root, "lib.sh")
+	text := "f() { :; }\n"
+	files := map[string]*FileFacts{lib: Bind(front.Parse(lib, []byte(text), front.Detect(lib, []byte(text))))}
+	var unread []string
+	for i := 0; i < maxRefusalSites+50; i++ {
+		unread = append(unread, filepath.Join(root, fmt.Sprintf("u%04d.sh", i)))
+	}
+	s := Build(files, Options{Root: root, Unanalysed: unread}, 1)
+	_, err := s.PlanRename(lib, 0, "g")
+	r := refusal(t, err, RefuseSkippedFile)
+	if len(r.Sites) != maxRefusalSites || !strings.Contains(r.Reason, "of 150") {
+		t.Fatalf("%d sites, reason %q", len(r.Sites), r.Reason)
+	}
+}

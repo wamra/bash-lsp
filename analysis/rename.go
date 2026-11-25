@@ -643,6 +643,9 @@ func (s *Snapshot) planSymbol(sym *Symbol, newName string, cursor *renameSite) (
 	if len(skipped) > 0 {
 		return nil, s.refuse(RefuseSkippedFile, "a file in view was skipped for its size and may use "+sym.Name, skipped)
 	}
+	if ref := s.unanalysedRefusal(sym.Name); ref != nil {
+		return nil, ref
+	}
 
 	plan := &RenamePlan{Symbol: sym, Old: sym.Name, New: newName, Excluded: rs.excl}
 	plan.Edits = make([]RenameEdit, len(rs.edits))
@@ -663,6 +666,27 @@ func (s *Snapshot) planSymbol(sym *Symbol, newName string, cursor *renameSite) (
 		s.noteRenameCap(capOthers, s.declFile[sym.Decls[0]], sym.Decls[0].NameRange.Start.Line)
 	}
 	return plan, nil
+}
+
+// unanalysedRefusal refuses a rename while a file of the workspace was left
+// out of the analysis: it is in no file's view, and nothing says it does not
+// call the name. The files are the snapshot's own skipped files (an open
+// document over the size limit) and the ones the caller reported.
+func (s *Snapshot) unanalysedRefusal(old string) *RenameRefusal {
+	var sites []Location
+	at := tree.Range{Start: tree.Pos{Line: 1, Col: 1}, End: tree.Pos{Line: 1, Col: 1}}
+	for i, ff := range s.facts {
+		if ff.File != nil && ff.File.Skipped != "" {
+			sites = append(sites, Location{Path: s.paths[i], Range: at})
+		}
+	}
+	for _, p := range s.unanalysed {
+		sites = append(sites, Location{Path: p, Range: at})
+	}
+	if len(sites) == 0 {
+		return nil
+	}
+	return s.refuse(RefuseSkippedFile, "a file was skipped or could not be read (too large, past the file limit, unreadable or not analysed) and may use "+old, sites)
 }
 
 // hasLoneCR reports whether f has a CR that is not followed by LF outside a

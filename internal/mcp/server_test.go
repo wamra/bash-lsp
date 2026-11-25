@@ -747,3 +747,18 @@ func TestMCPPreviewRenameRefusesLoneCR(t *testing.T) {
 		t.Errorf("a.sh changed: %q", b)
 	}
 }
+
+func TestMCPPreviewRenameRefusesWhenACallerWasNeverRead(t *testing.T) {
+	files := map[string]string{"lib.sh": "f() { :; }\n", "main.sh": "source ./lib.sh\nf\n",
+		"big.sh": "source ./lib.sh\nf\n" + strings.Repeat("# pad\n", 400)}
+	root := workspaceRoot(t, files)
+	rs := serve(t, root, config.Settings{MaxFileBytes: 1000},
+		call(1, "preview_rename", map[string]any{"symbol": "f", "new_name": "h"}),
+		call(2, "preview_rename", map[string]any{"symbol": "lib.sh:1:1", "new_name": "h"}),
+	).replies(t)
+	for i, r := range rs {
+		if tr := result(t, r); !tr.IsError || !strings.HasPrefix(tr.Text, "refused: skipped-file: ") || !strings.Contains(tr.Text, "big.sh") {
+			t.Errorf("call %d: %v %s", i+1, tr.IsError, tr.Text)
+		}
+	}
+}

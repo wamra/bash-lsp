@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"os"
 	"path/filepath"
@@ -211,9 +212,10 @@ type overlay struct {
 type skipKind uint8
 
 const (
-	skipZsh   skipKind = iota + 1 // listed and skipped
-	skipBig                       // over MaxFileBytes
-	skipCount                     // over MaxFiles
+	skipZsh    skipKind = iota + 1 // listed and skipped
+	skipBig                        // over MaxFileBytes
+	skipCount                      // over MaxFiles
+	skipUnread                     // listed, could not be read
 )
 
 type skipInfo struct {
@@ -235,6 +237,10 @@ func (w *Workspace) zshSkip(path string) skipInfo {
 
 func (w *Workspace) countSkip(path string) skipInfo {
 	return skipInfo{kind: skipCount, path: path, reason: fmt.Sprintf("file limit of %d reached", w.lim.MaxFiles)}
+}
+
+func (w *Workspace) unreadSkip(path string) skipInfo {
+	return skipInfo{kind: skipUnread, path: path, reason: "the file could not be read"}
 }
 
 func (w *Workspace) bigSkip(path string, size int64) skipInfo {
@@ -657,6 +663,7 @@ func (w *Workspace) Refresh(paths ...string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	changed := w.rcStale()
+	skipN, skipSum := w.skipSig()
 	if changed {
 		w.rcCache = map[string]rcInfo{}
 		w.rcReal = map[string]bool{}
@@ -712,6 +719,9 @@ func (w *Workspace) Refresh(paths ...string) {
 				changed = true
 			}
 		}
+	}
+	if n, sum := w.skipSig(); n != skipN || sum != skipSum {
+		changed = true
 	}
 	if changed {
 		w.rebuild()
@@ -947,8 +957,25 @@ func (w *Workspace) rebuild() {
 		}
 		files[o.entry.path] = o.entry.facts
 	}
+	var unanalysed []string
+	for _, s := range w.skips {
+		if _, ok := files[s.path]; !ok { // an open document stands in for the file
+			unanalysed = append(unanalysed, s.path)
+		}
+	}
 	w.gen++
-	w.snap.Store(analysis.Build(files, analysis.Options{Root: w.root, SearchPaths: w.searchPaths, Prev: w.snap.Load(), Oversize: w.oversize, Commands: w.commands}, w.gen))
+	w.snap.Store(analysis.Build(files, analysis.Options{Root: w.root, SearchPaths: w.searchPaths, Prev: w.snap.Load(), Oversize: w.oversize, Commands: w.commands, Unanalysed: unanalysed}, w.gen))
+}
+
+// skipSig summarises the set of skipped files, so that Refresh can tell that
+// a refresh changed it: the snapshot lists them. Caller holds w.mu.
+func (w *Workspace) skipSig() (n int, sum uint64) {
+	for k := range w.skips {
+		h := fnv.New64a()
+		h.Write([]byte(k))
+		sum ^= h.Sum64()
+	}
+	return len(w.skips), sum
 }
 
 // oversize reports whether path is a file the walk skipped for its size.
@@ -1179,6 +1206,8 @@ func (w *Workspace) reconcileAll() (changed bool) {
 			}
 			if r.big { // grew past the limit after the stat
 				w.skips[k] = w.bigSkip(todo[i].path, todo[i].size)
+			} else {
+				w.skips[k] = w.unreadSkip(todo[i].path)
 			}
 			continue
 		}
@@ -1229,7 +1258,9 @@ func (w *Workspace) refreshOne(path string) (changed bool) {
 	}
 	src, big, err := readBounded(path, w.lim.MaxFileBytes)
 	if err != nil {
-		return drop()
+		d := drop()
+		w.skips[k] = w.unreadSkip(path)
+		return d
 	}
 	if big {
 		d := drop()

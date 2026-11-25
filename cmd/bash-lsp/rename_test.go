@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -945,5 +946,52 @@ func TestCLIRenameLoneCR(t *testing.T) {
 			t.Fatalf("%s: %q %v", name, got, err)
 		}
 		os.Remove(filepath.Join(root, name))
+	}
+}
+
+// A caller the workspace never read (over the size limit, past the file
+// count, unreadable) is a reason to refuse, and nothing is written.
+func TestCLIRenameRefusesWhenACallerWasNeverRead(t *testing.T) {
+	cases := []struct {
+		name  string
+		cfg   string
+		extra func(t *testing.T, root string)
+	}{
+		{"size", "[limits]\nmax_file_bytes = 1000\n", func(t *testing.T, root string) {
+			putFile(t, root, "big.sh", "source ./lib.sh\nf\n"+strings.Repeat("# pad\n", 400))
+		}},
+		{"count", "[limits]\nmax_files = 2\n", func(t *testing.T, root string) { putFile(t, root, "zcaller.sh", "source ./lib.sh\nf\n") }},
+		{"unreadable", "", func(t *testing.T, root string) {
+			if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+				t.Skip("file modes do not stop this reader")
+			}
+			putFile(t, root, "zcaller.sh", "source ./lib.sh\nf\n")
+			if err := os.Chmod(filepath.Join(root, "zcaller.sh"), 0); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.Chmod(filepath.Join(root, "zcaller.sh"), 0o644) })
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			root := t.TempDir()
+			if r, err := filepath.EvalSymlinks(root); err == nil {
+				root = r
+			}
+			putFile(t, root, "lib.sh", "f() { :; }\n")
+			putFile(t, root, "main.sh", "source ./lib.sh\nf\n")
+			if c.cfg != "" {
+				putFile(t, root, ".bash-lsp.toml", c.cfg)
+			}
+			c.extra(t, root)
+			before := treeBytes(t, root)
+			for _, mode := range []string{"--preview", "--apply"} {
+				code, out, errs := runCode(t, "rename", "f", "g", mode, "--root", root)
+				if code != 4 || out != "" || !strings.HasPrefix(errs, "refused: skipped-file: ") {
+					t.Errorf("%s: exit %d out %q err %q", mode, code, out, errs)
+				}
+			}
+			sameTree(t, treeBytes(t, root), before)
+		})
 	}
 }

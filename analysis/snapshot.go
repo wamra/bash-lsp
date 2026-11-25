@@ -84,6 +84,11 @@ type Options struct {
 	Prev        *Snapshot
 	Oversize    func(path string) bool
 	Commands    func(name string) (path string, ok bool)
+	// Unanalysed lists the clean absolute paths of the files the caller knows
+	// of and left out of files: too large, past a file-count limit, unreadable
+	// or of a dialect not analysed. Such a file is in no file's view, yet may
+	// use any name, so a rename is refused while there is one.
+	Unanalysed []string
 }
 
 // maxAliasDepth bounds alias chains.
@@ -147,6 +152,7 @@ type privKey struct {
 type Snapshot struct {
 	gen        uint64
 	root       string
+	unanalysed []string // Options.Unanalysed, sorted
 	paths      []string
 	idx        map[string]int
 	facts      []*FileFacts
@@ -207,6 +213,8 @@ func Build(files map[string]*FileFacts, opt Options, generation uint64) *Snapsho
 		}
 	}
 	sort.Strings(s.paths)
+	s.unanalysed = slices.Clone(opt.Unanalysed)
+	sort.Strings(s.unanalysed)
 	n := len(s.paths)
 	for i, p := range s.paths {
 		s.idx[p] = i

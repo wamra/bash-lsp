@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -320,5 +321,49 @@ func TestRenameURIsWithSpaceHashAndPercent(t *testing.T) {
 	want := []string{c.uri(main), c.uri(lib)}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("uris %v, want %v", got, want)
+	}
+}
+
+// A caller the workspace never read is no one's `source` target, so the
+// refusal cannot come from the edges: over the size limit, past the file
+// count, unreadable.
+func TestRenameRefusesWhenACallerWasNeverRead(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  string
+		put  func(t *testing.T, root string)
+	}{
+		{"size", "[limits]\nmax_file_bytes = 1000\n", func(t *testing.T, root string) {
+			writeFile(t, root, "big.sh", "source ./lib.sh\nf\n"+strings.Repeat("# pad\n", 400))
+		}},
+		{"count", "[limits]\nmax_files = 2\n", func(t *testing.T, root string) { writeFile(t, root, "zcaller.sh", "source ./lib.sh\nf\n") }},
+		{"unreadable", "", func(t *testing.T, root string) {
+			if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+				t.Skip("file modes do not stop this reader")
+			}
+			writeFile(t, root, "zcaller.sh", "source ./lib.sh\nf\n")
+			if err := os.Chmod(filepath.Join(root, "zcaller.sh"), 0); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.Chmod(filepath.Join(root, "zcaller.sh"), 0o644) })
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, root, "lib.sh", "f() { :; }\n")
+			writeFile(t, root, "main.sh", "source ./lib.sh\nf\n")
+			if tc.cfg != "" {
+				writeFile(t, root, ".bash-lsp.toml", tc.cfg)
+			}
+			tc.put(t, root)
+			cfg := renameCaps(true, false, false)
+			cfg.root = root
+			c := clientWith(t, cfg)
+			c.open("lib.sh")
+			c.waitDiag("lib.sh")
+			wantRefusal(t, c.rawCall("textDocument/rename", c.renameParams("lib.sh", Position{0, 0}, "g")), "skipped-file")
+			wantRefusal(t, c.prepareAt("lib.sh", Position{0, 0}), "skipped-file")
+		})
 	}
 }
