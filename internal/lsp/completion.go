@@ -121,6 +121,9 @@ func (s *server) completion(raw json.RawMessage) (any, *rpcError) {
 	cs := converters{}
 	seen := map[string]bool{}
 	add := func(it completionItem, gated bool) {
+		if !outwardSafe(it) {
+			return // never rewrite a field: an item that holds a secret is left out
+		}
 		g := 0
 		if gated {
 			g = 1
@@ -141,7 +144,7 @@ func (s *server) completion(raw json.RawMessage) (any, *rpcError) {
 			}
 		}
 		seen[it.Label] = true
-		add(completionItem{Label: it.Label, Kind: kind, Detail: redact.String(detail),
+		add(completionItem{Label: it.Label, Kind: kind, Detail: detail,
 			TextEdit: TextEdit{Range: s.rangeIn(cs, snap, path, it.Replace), NewText: it.Insert},
 			Data:     completionData{URI: uri, Label: it.Label, Kind: name}}, gated)
 	}
@@ -159,7 +162,7 @@ func (s *server) completion(raw json.RawMessage) (any, *rpcError) {
 					if seen[n] {
 						continue
 					}
-					add(completionItem{Label: redact.String(n), Kind: itemFunction, Detail: "command",
+					add(completionItem{Label: n, Kind: itemFunction, Detail: "command",
 						TextEdit: TextEdit{Range: s.rangeIn(cs, snap, path, rng), NewText: n},
 						Data:     completionData{URI: uri, Label: n, Kind: "command"}}, false)
 				}
@@ -169,6 +172,23 @@ func (s *server) completion(raw json.RawMessage) (any, *rpcError) {
 	}
 	out.IsIncomplete = incomplete
 	return out, nil
+}
+
+// outwardSafe reports whether every text an item sends, the data included, is
+// unchanged by redaction. Redacting in place would put the mark into the
+// user's buffer and leave the raw text in another field, so such an item is
+// dropped instead.
+func outwardSafe(it completionItem) bool {
+	texts := []string{it.Label, it.Detail, it.TextEdit.NewText, it.SortText}
+	if d, ok := it.Data.(completionData); ok {
+		texts = append(texts, d.URI, d.Label, d.Kind)
+	}
+	for _, t := range texts {
+		if redact.Changes(t) {
+			return false
+		}
+	}
+	return true
 }
 
 // optionItems are the options of cmd from a help text already in the cache:
@@ -191,9 +211,8 @@ func (s *server) optionItems(be backend, snap *analysis.Snapshot, path string, o
 		if !strings.HasPrefix(o.Flag, prefix) {
 			continue
 		}
-		flag := redact.String(o.Flag)
-		it := completionItem{Label: flag, Kind: itemProperty, Detail: redact.String(o.Arg),
-			TextEdit: TextEdit{Range: s.rangeIn(cs, snap, path, rng), NewText: flag},
+		it := completionItem{Label: o.Flag, Kind: itemProperty, Detail: o.Arg,
+			TextEdit: TextEdit{Range: s.rangeIn(cs, snap, path, rng), NewText: o.Flag},
 			Data:     completionData{URI: uri, Label: o.Flag, Kind: "option"}}
 		if o.Text != "" {
 			it.Documentation = &markupContent{Kind: "plaintext", Value: redact.String(o.Text)}

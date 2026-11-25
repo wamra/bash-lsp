@@ -133,14 +133,14 @@ func TestCompletionResolveHostileData(t *testing.T) {
 		mu.Unlock()
 		return extool.Result{Stdout: []byte(helpSample)}, nil
 	}
-	dir := progDir(t, "okprog")
+	dir := progDir(t, "okprog", "-x", "a b", "--html=cmd", "a\nb")
 	opts := helpInitOpts(t, nil)
 	opts["path"] = map[string]any{"profile": []string{dir}}
 	c := clientWith(t, clientCfg{root: t.TempDir(), initOpts: opts, onServer: func(s *server) { s.helpRun = run }})
 	c.openText("a.sh", "x=1\n")
 	labels := []string{
 		"ls; rm -rf /", "$(touch x)", "--html=cmd", strings.Repeat("a", 300), "../bin/x", "-x", "a\nb",
-		"`id`", "printf; id", " printf", "printf ", "/bin/sh", "okprog --help",
+		"`id`", "printf; id", " printf", "a b", "printf ", "/bin/sh", "okprog --help",
 	}
 	kinds := []string{"builtin", "keyword", "command", "function", "variable", "alias", "../x", ""}
 	for _, l := range labels {

@@ -195,3 +195,17 @@ func (x *writer) Flush() error {
 	x.buf = nil
 	return err
 }
+
+// changeHints are the fixed starts of the patterns of String, and "=".
+var changeHints = []string{"=", "AKIA", "gh", "github_pat_", "xox", "-----BEGIN"}
+
+// Changes reports whether String(s) differs from s. Most text holds none of
+// the bytes a pattern starts with, and is cleared without running one.
+func Changes(s string) bool {
+	for _, h := range changeHints {
+		if strings.Contains(s, h) {
+			return String(s) != s
+		}
+	}
+	return false
+}

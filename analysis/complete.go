@@ -548,8 +548,8 @@ func (s *Snapshot) variableItems(st site, minLen int) []ranked {
 
 // around reports whether the cursor is inside n: after its first byte and
 // before its end. At its end it is inside only for a node the parser closed
-// itself, or one that runs to the end of the file with no closing brace or
-// parenthesis (a function or subshell still being typed).
+// itself, or one that runs to the end of the file (blanks may follow) with no
+// closing brace or parenthesis (a function or subshell still being typed).
 func around(n *tree.Node, src []byte, offset int) bool {
 	if n == nil || n.Range.Start.Offset >= offset {
 		return false
@@ -558,7 +558,7 @@ func around(n *tree.Node, src []byte, offset int) bool {
 	if offset < end {
 		return true
 	}
-	return offset == end && (n.Recovered || end == len(src) && end > 0 && src[end-1] != '}' && src[end-1] != ')')
+	return offset == end && (n.Recovered || end > 0 && src[end-1] != '}' && src[end-1] != ')' && len(bytes.TrimSpace(src[end:])) == 0)
 }
 
 // commandItems are the functions and aliases in view, the builtins and the
@@ -640,7 +640,7 @@ func (s *Snapshot) sourceItems(st site, path string) []ranked {
 			continue
 		}
 		rel, err := filepath.Rel(dir, p)
-		if err != nil || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			continue
 		}
 		name, rest, deeper := strings.Cut(filepath.ToSlash(rel), "/")

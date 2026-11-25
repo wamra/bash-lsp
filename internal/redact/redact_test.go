@@ -173,3 +173,14 @@ func TestWriterLongRunWithTokenAtTheCut(t *testing.T) {
 		}
 	}
 }
+
+func TestChangesAgreesWithString(t *testing.T) {
+	for _, s := range []string{
+		"plain", "", "ls", "AKIAABCDEFGHIJKLMNOP", "ghp_" + strings.Repeat("a", 36), "github_pat_" + strings.Repeat("a", 22),
+		"xoxb-1234567890-abc", "-----BEGIN RSA PRIVATE KEY-----", "token=abc", "a=b", "--xoxb-1234567890-abc", "ghost",
+	} {
+		if got, want := Changes(s), String(s) != s; got != want {
+			t.Errorf("Changes(%q) = %v, want %v", s, got, want)
+		}
+	}
+}

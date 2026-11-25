@@ -87,3 +87,21 @@ func TestCompleteReplaceCoversTheTypedPartOnly(t *testing.T) {
 		t.Fatalf("%+v %v", it.Replace, ok)
 	}
 }
+
+func TestCompleteUnterminatedFunctionWithTextAfterTheCursor(t *testing.T) {
+	for name, tail := range map[string]string{"newline": "\n", "crlf": "\r\n", "blank lines": "\n\n  \n", "spaces": "   ", "none": ""} {
+		_, _, items, _ := compAt(t, map[string]string{"a.sh": "f() {\n  local aa\n  echo $a▮" + tail}, "a.sh")
+		if _, ok := has(items, "aa"); !ok {
+			t.Errorf("%s: aa missing: %v", name, labels(items))
+		}
+	}
+	// A closed function followed by a newline still ends at its brace.
+	_, _, items, _ := compAt(t, map[string]string{"a.sh": "f() {\n  local aa\n}\necho $a▮\n"}, "a.sh")
+	if _, ok := has(items, "aa"); ok {
+		t.Errorf("closed: aa leaked: %v", labels(items))
+	}
+	_, _, items, _ = compAt(t, map[string]string{"a.sh": "( z=1 ); echo $▮\n"}, "a.sh")
+	if _, ok := has(items, "z"); ok {
+		t.Errorf("closed subshell: z leaked: %v", labels(items))
+	}
+}
