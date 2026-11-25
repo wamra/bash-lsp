@@ -315,3 +315,73 @@ func TestHighlightAndLinkAreCappedAndSayOnce(t *testing.T) {
 		t.Fatalf("notice without a cut: %q", l)
 	}
 }
+
+// A request with more positions than maxSelectionPositions answers the first
+// maxSelectionPositions and an empty range at each position after them, so
+// the answer still has one entry per position, and says so once.
+func TestSelectionRangeCapsThePositions(t *testing.T) {
+	ws := t.TempDir()
+	writeFile(t, ws, "a.sh", "f() { echo \"$x\"; }\n")
+	c := client(t, ws)
+	c.open("a.sh")
+	n := maxSelectionPositions + 250
+	ps := make([]Position, n)
+	for i := range ps {
+		ps[i] = c.pos("a.sh", "$x", 1)
+		if i >= maxSelectionPositions {
+			ps[i].Character = 2 + i - maxSelectionPositions // distinct positions after the cap
+		}
+	}
+	for i := 0; i < 2; i++ {
+		got := c.selection("a.sh", ps...)
+		if len(got) != n {
+			t.Fatalf("%d answers for %d positions", len(got), n)
+		}
+		for i, g := range got {
+			switch {
+			case i < maxSelectionPositions && g.Parent == nil:
+				t.Fatalf("position %d, inside the cap, has no chain", i)
+			case i >= maxSelectionPositions && (g.Parent != nil || g.Range.Start != ps[i] || g.Range.End != ps[i]):
+				t.Fatalf("position %d, past the cap: %+v, want an empty range at %+v", i, g, ps[i])
+			}
+		}
+	}
+	c.waitLog("selectionRange")
+	if l := c.logsContaining("selectionRange"); len(l) != 1 {
+		t.Fatalf("%d notices, want one: %q", len(l), l)
+	}
+}
+
+// A request cancelled while it works stops between positions and answers
+// RequestCancelled.
+func TestSelectionRangeStopsWhenCancelled(t *testing.T) {
+	ws := t.TempDir()
+	writeFile(t, ws, "a.sh", "f() { echo \"$x\"; }\n")
+	var srv *server
+	c := clientWith(t, clientCfg{root: ws, onServer: func(s *server) { srv = s }})
+	c.open("a.sh")
+	c.selection("a.sh", Position{0, 0}) // the first build is done
+	params, err := json.Marshal(selectionRangeParams{
+		TextDocument: textDocumentIdentifier{URI: c.uri("a.sh")},
+		Positions:    []Position{{0, 1}, {0, 2}, {0, 3}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type outcome struct {
+		res  any
+		rerr *rpcError
+	}
+	done := make(chan outcome, 1)
+	srv.post(func() {
+		lr := &liveReq{done: make(chan struct{})}
+		close(lr.done)
+		srv.cur = lr
+		res, rerr := srv.selectionRange(params)
+		srv.cur = nil
+		done <- outcome{res, rerr}
+	})
+	o := <-done
+	if o.rerr == nil || o.rerr.Code != codeRequestCancelled {
+		t.Fatalf("answer %v, error %+v, want RequestCancelled", o.res, o.rerr)
+	}
+}

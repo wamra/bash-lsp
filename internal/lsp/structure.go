@@ -51,6 +51,10 @@ type foldingRangeParams struct {
 	TextDocument textDocumentIdentifier `json:"textDocument"`
 }
 
+// maxSelectionPositions is the most positions of one selectionRange request
+// that get a chain; the answer still has one entry per position.
+const maxSelectionPositions = 1000
+
 type selectionRangeParams struct {
 	TextDocument textDocumentIdentifier `json:"textDocument"`
 	Positions    []Position             `json:"positions"`
@@ -156,6 +160,20 @@ func (s *server) interpreterInProfile(target string) bool {
 	return s.pathProfile().HasDir(filepath.FromSlash(slashpath.Dir(target)))
 }
 
+// handlerCancelled reports whether the request being handled was cancelled
+// since the handler began, for a handler to check between steps.
+func (s *server) handlerCancelled() bool {
+	if s.cur == nil {
+		return false
+	}
+	select {
+	case <-s.cur.done:
+		return true
+	default:
+		return false
+	}
+}
+
 // cutNotice tells the client, once per session, that an answer was cut at its
 // bound.
 func (s *server) cutNotice(msg string) { s.logMessageOnce(messageTypeInfo, msg) }
@@ -176,8 +194,14 @@ func (s *server) selectionRange(raw json.RawMessage) (any, *rpcError) {
 	f := fileOf(snap, path)
 	out := make([]*selectionRange, 0, len(p.Positions))
 	cs := converters{}
-	for _, pos := range p.Positions {
-		if f == nil {
+	for i, pos := range p.Positions {
+		if s.handlerCancelled() {
+			return nil, cancelledError()
+		}
+		if f == nil || i >= maxSelectionPositions {
+			if f != nil && i == maxSelectionPositions {
+				s.cutNotice("selectionRange: a request holds more positions than are answered; each position past the first 1000 gets an empty range")
+			}
 			out = append(out, &selectionRange{Range: Range{Start: pos, End: pos}})
 			continue
 		}
