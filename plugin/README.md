@@ -1,13 +1,35 @@
 # bash-lsp plugin
 
 Gives Claude Code a Bash language server: go to definition, find references,
-hover, document and workspace symbols, and syntax diagnostics for `.sh`,
-`.bash`, `.bats` and `.ksh` files, and lint findings. It reads files and never
-runs them, and opens no network connection. The one program it may start is
-ShellCheck, to add its findings: only when ShellCheck is found on the `PATH` or
-at the `shellcheck.path` of the user settings, outside the workspace (a
-ShellCheck inside the workspace is never run), and unless `shellcheck.enabled`
-is false in the settings. Without it the native findings are shown alone.
+hover, document and workspace symbols, call hierarchy, syntax diagnostics and
+lint findings for `.sh`, `.bash`, `.bats` and `.ksh` files, and the editor
+requests listed in the repository README ("Editor features": completion,
+signature help, semantic tokens, folding, selection ranges, highlights, links,
+inlay hints, code actions, safe rename). It reads files and never runs them,
+and opens no network connection.
+
+## Programs it may start
+
+Three, and only these, each found outside the workspace (a program inside a
+workspace root is refused) and run with a filtered `PATH`, a neutral working
+directory, a time limit and an output limit:
+
+- **ShellCheck**, to add its findings: only when it is found on the `PATH` or
+  at the `shellcheck.path` of the user settings, and unless
+  `shellcheck.enabled` is false in the settings. Without it the native findings
+  are shown alone.
+- **`bash --noprofile --norc -c 'help -- "$1"' bash NAME`**, to show the
+  synopsis of a shell builtin or keyword on hover and in completion details.
+- **`man -- NAME`**, with `MANPAGER=cat` and `PAGER=cat`, for the same on an
+  external command that exists on the `PATH`.
+
+The name is always one separate argument and must be a plain name; `--help` is
+never run (it would execute the command being asked about). The output is read
+with a 2-second and 256 KiB limit, redacted, kept in memory only and never
+written to disk. Nothing is started on Windows. Set `help.enabled = false` in
+the user settings to switch the last two off (a repository file can turn them
+off too, never on); `help.bash_path` and `help.man_path` in the user settings
+name the programs. `bash-lsp doctor` lists which are available.
 
 ## What is in the plugin
 

@@ -1,0 +1,6 @@
+3:05  up 27 days,  7:03, 8 users, load averages: 4.32 4.66 5.15
+3:12  up 27 days,  7:11, 8 users, load averages: 3.19 3.61 4.41
+3:12  up 27 days,  7:11, 8 users, load averages: 4.09 3.79 4.44
+3:13  up 27 days,  7:11, 8 users, load averages: 3.69 3.71 4.40
+3:13  up 27 days,  7:11, 8 users, load averages: 3.72 3.72 4.40
+3:13  up 27 days,  7:12, 8 users, load averages: 4.57 3.96 4.46

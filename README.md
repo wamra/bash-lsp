@@ -3,30 +3,51 @@
 A Bash language server written in Go. It resolves definitions, references and
 symbols across `source`d files, over LSP on stdio.
 
-Status: milestone 3 is built and not yet released. The crash on crafted
-deeply nested input is closed in milestone 2a: the parser stops at 10,000
-levels of nesting with a syntax error (`docs/m2a-acceptance.md`,
-`docs/m2a-nesting-design.md`). Go to definition, references,
-implementation, hover, call hierarchy, document and workspace symbols work
-across `source`d files (static, `$(dirname "$0")`-relative and glob loaders),
-through aliases, through `"$cmd"` calls, and through the strings of `eval`,
-`trap` and `sh -c`, which are reported as candidates with their reason; locals
-are scoped to their function, and a read in a callee that no declaration in view
-explains is linked, as a candidate, to a caller's `local`.
-Syntax errors are reported and the files around them still analysed. Native
-lint rules with a ShellCheck bridge (`check`, and diagnostics in the editor),
-a formatter (`fmt`, and LSP formatting), the graph CLI commands, `extract` (the
-call graph as code-index's JSON lines), `search` (names plus code-index
-full-text hits) and an MCP server (`mcp`) are in, with watched files and
-several workspace folders. It passes 27 of the 28 cases of the comparison
-benchmark, failing only C24 (rename); C28 (the unquoted variable diagnostic)
-is green (`docs/m3-acceptance.md`). Rename is a later milestone, and known gaps
-are listed in `docs/m3-acceptance.md` and `docs/m1-deferred.md`. Linking into
-code-index (AC-14, AC-21) needs a patch in code-index first
-(`docs/code-index-integration.md`). `check --hook` (the plugin's optional `PostToolUse` fallback, off unless
-`hook.enabled` is set in the user settings) is in; SARIF output is not built yet.
-There are no published binaries and no
-stable interface yet, and CI has not run.
+Status: version 0.4.0 (`VERSION`) is a release candidate, built and verified
+on this machine only (`release/0.4.0/verify.txt`). Nothing is published: no
+binary is released, there is no remote, CI has never run, and the interface is
+not stable. The one milestone 4 exit criterion that is not met is the check in
+one real editor (a VS Code run); the owner deferred it, so it is recorded as
+pending (`docs/m4-acceptance.md`).
+
+What works: go to definition, references, implementation, hover (with the
+`help` or `man` synopsis of a builtin or command), call hierarchy, document and
+workspace symbols across `source`d files (static, `$(dirname "$0")`-relative
+and glob loaders), through aliases, through `"$cmd"` calls, and through the
+strings of `eval`, `trap` and `sh -c`, which are reported as candidates with
+their reason; locals are scoped to their function, and a read in a callee that
+no declaration in view explains is linked, as a candidate, to a caller's
+`local`. Syntax errors are reported and the files around them still analysed;
+the parser stops at 10,000 levels of nesting with a syntax error
+(`docs/m2a-nesting-design.md`). Native lint rules with a ShellCheck bridge
+(`check`, and diagnostics in the editor), a formatter (`fmt`, and LSP
+formatting), the graph CLI commands, `extract` (the call graph as code-index's
+JSON lines), `search` (names plus code-index full-text hits), an MCP server
+(`mcp`, with `preview_rename`), watched files and several workspace folders are
+in. Milestone 4 adds the editor features of [Editor features](#editor-features)
+and a safe [rename](#rename) on the command line, in the editor and as an MCP
+preview. `check --hook` (the plugin's optional `PostToolUse` fallback, off
+unless `hook.enabled` is set in the user settings) is in. SARIF output is not
+built (`--format sarif` exits 2). Linking into code-index (AC-14, AC-21) needs
+a patch in code-index first (`docs/code-index-integration.md`).
+
+Measured: the 28-case comparison benchmark, the larger suite, the latency
+budgets and the competitor and real-bash comparisons are in
+`docs/m4-acceptance.md` and `docs/benchmark.md`, each number next to its result
+file under `bench/results/`. The suite has cases bash-lsp fails; they are
+listed, with their cause, in `docs/benchmark.md`.
+
+Known gaps (also in `docs/m4-acceptance.md`): the lexer reads a lone `\r` as a
+blank where bash reads a character; `prepareRename` builds the rename plan and
+`rename` builds it again; every edit re-parses the whole file; `selectionRange`
+answers only the first 1,000 positions of a request (each later one gets an
+empty range); four helpers that cut a text to a length (in `internal/lsp`,
+`internal/query`, `cmd/bash-lsp` and `internal/mcp`) have drifted apart; the rename warning about excluded directories repeats on
+every rename in a repository that has an ignored directory; `$(else)` is an
+error although bash 3.2 to 5.1 accept it (only 5.3 rejects it), so it is stricter than those versions. Real bash
+builds checked: 3.2.57, 4.0, 4.2, 4.3, 4.4, 5.0, 5.1 and 5.3; 4.1 and 5.2 were
+not built, and the signatures of the downloaded source tarballs were not
+verified (`docs/version-table.md`).
 
 Licence: MIT (see `LICENSE`). Third-party attribution is in `NOTICE`.
 
@@ -159,6 +180,43 @@ What it does not do:
   them.
 - Command substitutions in backquotes are printed as `$( )`.
 
+## Editor features
+
+What an LSP client gets beyond definition, references, symbols, call hierarchy,
+diagnostics and formatting. Every list is capped; where the protocol has a field
+for it the answer says it is incomplete, and the server logs the cut once.
+
+| Request | What it answers |
+|---|---|
+| `textDocument/completion`, `completionItem/resolve` | Variables in scope (the function's locals, then the file's and the sourced files' globals, then environment names the file reads); functions and aliases in view; builtins and keywords; the operators after `${name`, each marked with the bash version it needs when the target range starts below it; files and folders after `source` or `.` (only shell files of the workspace); option flags of a command from its cached `help` or `man` page; with `completion.path_commands` (on by default) commands found on the `PATH`. At most 1,000 items, then `isIncomplete`. Resolve adds the synopsis. Completion itself starts no program. |
+| `textDocument/hover` on a builtin, keyword or external command | The synopsis from the `help` builtin or the manual page, labelled with its source (below). |
+| `textDocument/signatureHelp` | For a call of a script function: its name, the positional parameters its body reads (the variable each is copied into, else `$N`), `[args...]` when it reads more, the options of a `getopts` string, and its doc comment. Not for builtins, aliases, `"$cmd"` calls or commands inside `eval`. |
+| `textDocument/semanticTokens/full`, `/full/delta`, `/range` | Function, variable, parameter and alias (as `macro`) tokens; builtins, external commands and names that resolve to nothing are `function` with a modifier; variables carry their attributes (`local`, `exported`, `readonly`, `integer`, `array`, `associative`, `nameref`), `declaration` and `modification`. A delta is answered only for the exact previous result id. |
+| `textDocument/foldingRange`, `selectionRange` | Folds for functions, `if`, loops, `case`, subshells, brace groups, here-documents, runs of whole-line comments and `# region` / `# endregion` pairs; selection ranges from the word outwards (at most 128 levels). |
+| `textDocument/documentHighlight` | Declarations and resolved uses of the symbol under the cursor in the file; candidate and dynamic sites are not highlighted. |
+| `textDocument/documentLink` | A `source` or `.` word that resolves to exactly one workspace file (including `$(dirname "$0")`-relative paths), a workspace file that a command runs by path, and the interpreter of a `#!` line when that file exists; a glob loader gets none. |
+| `textDocument/inlayHint` | `-> lib/util.sh` (or `-> N files`) after a `source` path that is not a plain literal: one with a `# shellcheck source=` directive, a `$(dirname "$0")`-relative path or a loop glob (`inlay_hints.source_targets`, on by default) and the parameter name before each argument of a call to a script function (`inlay_hints.parameter_names`, off by default). At most 5,000 per request. |
+| `textDocument/codeAction` | ShellCheck and native quick fixes; "add a shebang" for a file whose first line is not `#!` and that no workspace file sources (quick fix); "quote this expansion" (`refactor.rewrite`). `source.fixAll` applies only fixes marked safe, and no fix is, so it is not advertised. |
+| `textDocument/prepareRename`, `textDocument/rename` | The same plan as `bash-lsp rename` (below), with the excluded sites as change annotations. |
+
+`hover` and `completionItem/resolve` may start two programs: `bash --noprofile
+--norc -c 'help -- "$1"' bash NAME` for a builtin or keyword, and `man -- NAME`
+for a command. The name is one argument, never part of a command line; it must
+be a plain name that exists as a program on the `PATH` outside every workspace
+root (or a bash builtin); the programs are found like ShellCheck (never inside
+the workspace); the answer is read with a 2-second and 256 KiB limit, kept in
+memory only (at most 1,024 names), redacted, and never written to disk. `--help`
+is never run. Neither program runs on Windows. `doctor` reports which are
+available. Set `help.enabled = false` to turn this off; `help.bash_path` and
+`help.man_path` (user settings only) name the programs.
+
+The new settings keys are `inlay_hints.source_targets`,
+`inlay_hints.parameter_names`, `completion.path_commands`, `help.enabled`,
+`help.bash_path` and `help.man_path`. A repository's `.bash-lsp.toml` can turn
+`completion.path_commands` and `help.enabled` off but never on when the user
+settings have them off; the two program paths are read from the user settings
+and the client's initialization options, never from a repository file.
+
 ## Rename
 
 `bash-lsp rename SYMBOL NEW` plans the rename of a function; `bash-lsp rename
@@ -193,9 +251,15 @@ with 1-based lines and UTF-16 columns, the bytes `preview_rename` returns over
 MCP. Each list is cut at 10,000 records with `"truncated": true`.
 
 Rename sees the files the workspace read. It refuses (`skipped-file`, naming
-each file or directory and why) while a file was too large, past
-`[limits] max_files`, unreadable or zsh, or a directory was too deep or
-unreadable, because a caller there could not be checked. It does not see files
+each file or directory and why) while any file or directory of the workspace
+was not analysed: too large, past `[limits] max_files`, unreadable, in a
+dialect the server does not support (zsh, which may still source a bash
+library), or in a directory that was too deep or unreadable, because a caller
+there could not be checked. The way out is to list the file or directory in
+`files.exclude`, which removes the refusal (the `warn` line below counts what
+the exclusion left out).
+It also refuses (`unsupported-line-breaks`) when a file it would
+edit contains a lone `\r`. It does not see files
 you excluded: what `files.exclude`, `files.include` or a `.gitignore` leaves
 out is not read, the rename goes on, and the plan carries a `warn` line saying
 how many excluded files and directories were not checked.
@@ -360,6 +424,12 @@ is not listed.
 
 ## Packaging
 
-`scripts/build-release.sh [VERSION]` cross-builds six archives and checksums into
-`dist/`. `scripts/build-plugin.sh OUT [VERSION]` stages the Claude Code plugin
-(see `plugin/README.md`).
+`scripts/build-release.sh [VERSION] [OUT]` cross-builds six archives into `OUT`
+(default `dist/`), with `checksums.txt` (the archives) and `binaries.txt` (each
+binary). VERSION defaults to the `VERSION` file. It refuses a tree with
+uncommitted or untracked files and an `OUT` that is not a previous output.
+Archives carry modification times, so two builds differ in `checksums.txt`;
+the binaries are reproducible, so compare `binaries.txt`.
+`scripts/build-plugin.sh OUT [VERSION]` stages the Claude Code plugin (see
+`plugin/README.md`). `release/0.4.0/` holds the lists of the verified build and
+`docs/release-checklist.md` the steps left to the owner.
