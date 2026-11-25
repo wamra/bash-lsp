@@ -72,6 +72,7 @@ const (
 	reasonSpecialVar      = "the new name is a special shell variable"
 	reasonSpecialSource   = "renaming a shell-special variable: the shell itself reads or sets it"
 	reasonDynamicCall     = "dynamic scope: a function that declares a local of this name makes a call the analysis cannot follow, which may reach code that reads or writes the name"
+	reasonDynamicSource   = "dynamic scope: a function that declares a local of this name sources a file chosen at run time, which may read or write the name"
 	reasonNewNameInString = "the new name appears in an eval or trap string that an edited function reaches, where it would read the renamed symbol"
 	reasonCalledCommand   = "the new name is called as a command in view, so those calls would reach the renamed function"
 	reasonSameName        = "the new name is the old name"
@@ -719,9 +720,12 @@ collect:
 
 // specialVariables are variables the shell itself reads or sets, beyond
 // shellVariable: the version and clock variables the version rules know, the
-// last-argument parameter, and RANDOM.
+// last-argument parameter, and the parameters the bash manual lists as set or
+// read by the shell (REPLY, COMPREPLY, SECONDS, FUNCNEST, BASH_XTRACEFD, OPTARG,
+// BASH_REMATCH, PIPESTATUS, LINENO, FUNCNAME, RANDOM).
 var specialVariables = map[string]bool{"_": true, "RANDOM": true, "BASH_VERSION": true, "BASH_VERSINFO": true,
-	"EPOCHSECONDS": true, "EPOCHREALTIME": true}
+	"EPOCHSECONDS": true, "EPOCHREALTIME": true, "REPLY": true, "COMPREPLY": true, "SECONDS": true, "FUNCNEST": true,
+	"BASH_XTRACEFD": true, "OPTARG": true, "BASH_REMATCH": true, "PIPESTATUS": true, "LINENO": true, "FUNCNAME": true}
 
 func specialVariable(name string) bool {
 	return shellVariable(name) || envVariables[name] || specialVariables[name]

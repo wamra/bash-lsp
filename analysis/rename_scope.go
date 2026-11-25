@@ -288,17 +288,34 @@ func (s *Snapshot) forEachCall(in bitset, visit func(f int, ff *FileFacts, n *tr
 }
 
 // dynamicCallNodes returns the graph nodes of in that run code the call graph
+// sources are the nodes that source a file whose path is built at run time and
+// found nowhere: its code is not in the view.
 // cannot name: calls through a variable or a parameter that no constant
 // resolves, eval of such a string, dynamic sources, and `command` or `builtin`
 // followed by an expansion.
-func (s *Snapshot) dynamicCallNodes(in bitset) map[Node]bool {
+func (s *Snapshot) dynamicCallNodes(in bitset) (calls, sources map[Node]bool) {
 	out := map[Node]bool{}
+	sources = map[Node]bool{}
 	in.each(func(f int) {
 		for _, d := range s.dyn[f] {
 			out[s.scopeNode(f, d.sc)] = true
 		}
 	})
 	at := s.newNodeAtter()
+	in.each(func(f int) {
+		for _, se := range s.edges[f] {
+			if se.Status != SourceUnresolved || se.Skipped != "" {
+				continue
+			}
+			text := ""
+			if se.Ref.Word != nil {
+				text = s.siteText(f, se.Ref.Word.Range)
+			}
+			if text == "" || strings.ContainsAny(text, "$`") {
+				sources[at.at(f, se.Ref.Range.Start.Offset)] = true
+			}
+		}
+	})
 	s.forEachCall(in, func(f int, ff *FileFacts, n *tree.Node) {
 		words := wordSpans(n)
 		if len(words) == 0 {
@@ -309,7 +326,7 @@ func (s *Snapshot) dynamicCallNodes(in bitset) map[Node]bool {
 			out[at.at(f, n.Range.Start.Offset)] = true
 		}
 	})
-	return out
+	return out, sources
 }
 
 // dynamicScopeRefusal refuses a rename of a variable that changes what
@@ -340,15 +357,32 @@ func (s *Snapshot) dynamicScopeRefusal(sym *Symbol, newName string, rs *renameSe
 	old := sym.Name
 	site0 := rs.edits[0]
 	var dyn map[Node]bool
-	hazard := func(locals, privs []Node, targets map[Node]bool, sites []Location, code, reason string) *RenameRefusal {
+	var dynSrc map[Node]bool
+	uncovered := func(string, int) bool { return false }
+	seen := map[string]bool{}
+	// mentioned reports whether the view writes name where the binder finds no
+	// use: code a dynamic call could read it through.
+	mentioned := func(name string, covered func(string, int) bool) bool {
+		if _, ok := seen[name]; !ok {
+			seen[name] = len(s.nameReferences(name, refVar, union, covered, nil)) > 0
+		}
+		return seen[name]
+	}
+	hazard := func(locals, privs []Node, targets map[Node]bool, name string, covered func(string, int) bool, sites []Location, code, reason string) *RenameRefusal {
 		if len(locals)+len(privs) == 0 {
 			return nil
 		}
 		if dyn == nil {
-			dyn = s.dynamicCallNodes(union)
+			dyn, dynSrc = s.dynamicCallNodes(union)
 		}
 		for _, n := range slices.Concat(locals, privs) {
-			if dyn[n] && observer(targets, n) {
+			switch {
+			case dynSrc[n]:
+				if code == RefuseDynamicScope {
+					reason = reasonDynamicSource
+				}
+				return s.refuse(code, reason, sites)
+			case dyn[n] && (observer(targets, n) || mentioned(name, covered)):
 				if code == RefuseDynamicScope {
 					reason = reasonDynamicCall
 				}
@@ -375,13 +409,13 @@ func (s *Snapshot) dynamicScopeRefusal(sym *Symbol, newName string, rs *renameSe
 	case sym.File == "": // a global
 		accOld = s.varAccessNodes(old, union, nil)
 		locals, privs, sites := s.declarers(old, union)
-		if ref := hazard(locals, privs, accOld, sites, RefuseDynamicScope, reasonDynamicScope); ref != nil {
+		if ref := hazard(locals, privs, accOld, old, rs.covered, sites, RefuseDynamicScope, reasonDynamicScope); ref != nil {
 			return ref
 		}
 		locals, privs, sites = s.declarers(newName, union)
 		if len(locals)+len(privs) > 0 {
 			editNodes := s.editNodes(s.newNodeAtter(), rs.edits)
-			if ref := hazard(locals, privs, editNodes, sites, RefuseConflict, reasonDynamicCapture); ref != nil {
+			if ref := hazard(locals, privs, editNodes, newName, uncovered, sites, RefuseConflict, reasonDynamicCapture); ref != nil {
 				return ref
 			}
 		}
@@ -409,10 +443,10 @@ func (s *Snapshot) dynamicScopeRefusal(sym *Symbol, newName string, rs *renameSe
 			start = []Node{{Path: sym.File, Func: s.declSym[d]}}
 		}
 		accOld = s.varAccessNodes(old, union, skip)
-		if ref := hazard(nil, start, accOld, s.symbolDecls(sym), RefuseDynamicScope, reasonDynamicScope); ref != nil {
+		if ref := hazard(nil, start, accOld, old, rs.covered, s.symbolDecls(sym), RefuseDynamicScope, reasonDynamicScope); ref != nil {
 			return ref
 		}
-		if ref := hazard(nil, start, s.varAccessNodes(newName, union, nil), s.symbolDecls(sym), RefuseConflict, reasonDynamicCapture); ref != nil {
+		if ref := hazard(nil, start, s.varAccessNodes(newName, union, nil), newName, uncovered, s.symbolDecls(sym), RefuseConflict, reasonDynamicCapture); ref != nil {
 			return ref
 		}
 	}
@@ -599,12 +633,21 @@ func (s *Snapshot) referenceScope(sym *Symbol) func(f, off int) bool {
 // A confined variable is checked in its function and what that calls. A place
 // that an edit or an exclusion covers is already accounted for.
 func (s *Snapshot) nameReferenceRefusal(sym *Symbol, union bitset, rs *renameSet) *RenameRefusal {
-	old := sym.Name
 	want := refFunc
 	if sym.Kind == DeclVariable {
 		want = refVar
 	}
-	scoped := s.referenceScope(sym)
+	if sites := s.nameReferences(sym.Name, want, union, rs.covered, s.referenceScope(sym)); len(sites) > 0 {
+		return s.refuse(RefuseNameReference, reasonNameReference, sites)
+	}
+	return nil
+}
+
+// nameReferences lists the places of the files of in that write old as a name
+// of kind want without a use the binder sees (see nameReferenceRefusal), except
+// where covered says an edit or exclusion accounts for it, and outside scoped
+// when that is set.
+func (s *Snapshot) nameReferences(old string, want refKind, union bitset, covered func(path string, off int) bool, scoped func(f, off int) bool) []Location {
 	var sites []Location
 	union.each(func(f int) {
 		ff := s.facts[f]
@@ -623,15 +666,15 @@ func (s *Snapshot) nameReferenceRefusal(sym *Symbol, union bitset, rs *renameSet
 			}
 			for _, at := range find(src[from:to], old) {
 				off := from + at
-				if rs.covered(path, off) || scoped != nil && !scoped(f, off) {
+				if covered(path, off) || scoped != nil && !scoped(f, off) {
 					continue
 				}
 				sites = append(sites, Location{Path: path, Range: tree.Range{Start: ff.File.PosAt(off), End: ff.File.PosAt(off + len(old))}})
 			}
 		}
-		var unknown map[*tree.Node]bool
+		var calls map[*tree.Node]bool
 		if want == refVar {
-			unknown = s.unknownCommandCalls(f)
+			calls = s.functionCalls(f)
 		}
 		indirect := false
 		ff.File.Root.Walk(func(n *tree.Node) bool {
@@ -643,7 +686,7 @@ func (s *Snapshot) nameReferenceRefusal(sym *Symbol, union bitset, rs *renameSet
 			case tree.KTest:
 				s.noteTestV(src, n, note)
 			case tree.KCall:
-				s.noteCallReferences(src, n, old, unknown[n], note)
+				s.noteCallReferences(src, n, old, calls[n] || dynamicWord(src, n), note)
 			case tree.KDecl:
 				s.noteDeclReferences(src, n, note)
 			}
@@ -661,7 +704,7 @@ func (s *Snapshot) nameReferenceRefusal(sym *Symbol, union bitset, rs *renameSet
 			}
 			if indirect || nameref {
 				for _, d := range ff.Decls {
-					if d.Kind == DeclVariable && d.Literal == old && !rs.covered(path, d.NameRange.Start.Offset) &&
+					if d.Kind == DeclVariable && d.Literal == old && !covered(path, d.NameRange.Start.Offset) &&
 						(scoped == nil || scoped(f, d.NameRange.Start.Offset)) {
 						sites = append(sites, Location{Path: path, Range: d.NameRange})
 					}
@@ -669,10 +712,7 @@ func (s *Snapshot) nameReferenceRefusal(sym *Symbol, union bitset, rs *renameSet
 			}
 		}
 	})
-	if len(sites) > 0 {
-		return s.refuse(RefuseNameReference, reasonNameReference, sites)
-	}
-	return nil
+	return sites
 }
 
 // wordSpans returns the source offsets of the KWord children of n.
@@ -693,33 +733,43 @@ func spanText(src []byte, sp [2]int) string {
 	return string(src[sp[0]:sp[1]])
 }
 
-// unknownCommandCalls returns the call nodes of file whose command is neither a
-// function, an alias or a builtin of the workspace nor a command of the PATH
-// profile: a function defined outside the workspace may be what runs. With no
-// profile the snapshot has no command edges and none are known.
-func (s *Snapshot) unknownCommandCalls(file int) map[*tree.Node]bool {
-	var out map[*tree.Node]bool
+// functionCalls returns the call nodes of file that may run a function: those
+// whose bindings name a function or an alias, and those whose command is neither
+// a function, an alias or a builtin of the workspace nor a command of the PATH
+// profile (a function defined outside the workspace may be what runs; with no
+// profile the snapshot has no command edges and none are known).
+func (s *Snapshot) functionCalls(file int) map[*tree.Node]bool {
+	out := map[*tree.Node]bool{}
+	for _, b := range s.bindings[file] {
+		if b.Use.Kind == UseCall && b.Sym != nil && (b.Sym.Kind == DeclFunction || b.Sym.Kind == DeclAlias) {
+			out[b.Use.Node] = true
+		}
+	}
 	for _, r := range s.recs[s.recAt[file]:s.recAt[file+1]] {
 		if r.cmd && r.res == Unresolved {
-			if out == nil {
-				out = map[*tree.Node]bool{}
-			}
 			out[s.facts[file].Uses[r.at].Node] = true
 		}
 	}
 	return out
 }
 
+// dynamicWord reports whether the command word of call n is built by an
+// expansion, so that the command it runs is not known.
+func dynamicWord(src []byte, n *tree.Node) bool {
+	words := wordSpans(n)
+	return len(words) > 0 && strings.ContainsAny(spanText(src, words[0]), "$`")
+}
+
 // noteCallReferences notes the name-bearing arguments of the commands whose
 // arguments name functions or variables without being uses, and the arguments
 // of a function (or of a command that may be one: unknown) that are the bare
 // name of a variable.
-func (s *Snapshot) noteCallReferences(src []byte, n *tree.Node, old string, unknown bool, note func(k refKind, strs bool, from, to int)) {
+func (s *Snapshot) noteCallReferences(src []byte, n *tree.Node, old string, fnCall bool, note func(k refKind, strs bool, from, to int)) {
 	words := wordSpans(n)
 	if len(words) < 2 {
 		return
 	}
-	if first := bareText(src, words[0]); len(s.funcSyms[first]) > 0 || unknown {
+	if fnCall {
 		for _, a := range words[1:] {
 			if bareText(src, a) == old {
 				note(refVar, false, a[0], a[1])

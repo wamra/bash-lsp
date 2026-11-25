@@ -490,7 +490,7 @@ func TestRenameGrowth(t *testing.T) {
 			}
 			var sum float64
 			for i := 1; i < len(times); i++ {
-				sum += float64(times[i]) / float64(max(times[i-1], time.Millisecond))
+				sum += float64(times[i]) / float64(times[i-1])
 			}
 			mean := sum / float64(len(times)-1)
 			t.Logf("%v, mean x%.2f per doubling", times, mean)

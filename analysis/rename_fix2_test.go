@@ -266,12 +266,20 @@ func TestRenameGrowthOfCheckedShapes(t *testing.T) {
 			return b.String()
 		}},
 	}
-	sizes := []int{2000, 4000, 8000, 16000}
-	if raceBuild {
-		sizes = []int{250, 500, 1000, 2000}
-	}
 	for name, sh := range shapes {
 		t.Run(name, func(t *testing.T) {
+			sizes := []int{4000, 8000, 16000, 32000}
+			switch name { // the chain is bounded by the reach cap; beyond 8000 prefix assignments leave the cache
+			case "chain of functions":
+				sizes = []int{2000, 4000, 8000, 16000}
+			case "prefix assignments":
+				sizes = []int{1000, 2000, 4000, 8000}
+			}
+			if raceBuild {
+				for i := range sizes {
+					sizes[i] /= 8
+				}
+			}
 			var times []time.Duration
 			done := withinBound(t, name, 60*time.Second, func() {
 				for _, n := range sizes {
@@ -283,7 +291,7 @@ func TestRenameGrowthOfCheckedShapes(t *testing.T) {
 			}
 			var sum float64
 			for i := 1; i < len(times); i++ {
-				sum += float64(times[i]) / float64(max(times[i-1], time.Millisecond))
+				sum += float64(times[i]) / float64(times[i-1])
 			}
 			mean := sum / float64(len(times)-1)
 			t.Logf("%s: %v, mean x%.2f per doubling", name, times, mean)
