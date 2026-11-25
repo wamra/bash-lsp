@@ -602,6 +602,20 @@ func TestHeldRunInArrivalOrder(t *testing.T) {
 	}
 }
 
+// waitServerLog waits, for a bounded time, until the server's own log holds
+// sub: a posted closure runs on the loop on its own schedule, so the reply to
+// a later request does not mean its log line has landed.
+func (c *testClient) waitServerLog(sub string) {
+	c.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(c.logs.String(), sub) {
+		if time.Now().After(deadline) {
+			c.t.Fatalf("%q not logged: %q", sub, c.logs.String())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // A panic in a closure posted to the loop is logged, the session goes on, and
 // a folder result that panics while applied still counts as applied.
 func TestPostedPanicRecovered(t *testing.T) {
@@ -613,9 +627,7 @@ func TestPostedPanicRecovered(t *testing.T) {
 	if got := c.symbols(""); len(got) == 0 {
 		t.Fatal("the session did not go on")
 	}
-	if !strings.Contains(c.logs.String(), "boom") {
-		t.Fatalf("panic not logged: %q", c.logs.String())
-	}
+	c.waitServerLog("boom")
 	srv.post(func() {
 		saved := srv.folders
 		defer func() { srv.folders = saved }()

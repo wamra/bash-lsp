@@ -81,7 +81,7 @@ var versionCases = []struct {
 	{"shopt -s lastpipe\n", "shopt -s lastpipe", "4.2", "lastpipe settings (`shopt -s lastpipe`)"},
 	{"declare -n r=x\n", "declare -n", "4.3", "namerefs (`declare -n`)"},
 	{"sleep 0 & wait -n\n", "wait -n", "4.3", "waiting for any job (`wait -n`)"},
-	{"echo \"${a[-1]}\"\n", "${a[-1]}", "4.3", "negative array subscripts (`${a[-1]}`)"},
+	{"echo \"${a[-1]}\"\n", "${a[-1]}", "4.2", "negative array subscripts (`${a[-1]}`)"},
 	{"echo \"${v@Q}\"\n", "${v@Q}", "4.4", "parameter transformations (`${v@Q}`)"},
 	{"echo \"$EPOCHSECONDS\"\n", "$EPOCHSECONDS", "5.0", "the EPOCHSECONDS and EPOCHREALTIME variables (`$EPOCHSECONDS`)"},
 	{"echo \"${EPOCHREALTIME}\"\n", "${EPOCHREALTIME}", "5.0", ""},

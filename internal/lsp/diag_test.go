@@ -1311,3 +1311,24 @@ func TestOutwardMessagesAreRedacted(t *testing.T) {
 		}
 	}
 }
+
+// A text with old-Mac line breaks puts the "did not finish" finding on its
+// first line, not across the whole file.
+func TestShellCheckTimeoutRangeStopsAtLoneCR(t *testing.T) {
+	setDebounce(t, 10*time.Millisecond)
+	root := t.TempDir()
+	put(t, filepath.Join(root, "a.sh"), "")
+	c := clientInit(t, root, false, scInit(fakeShellCheck(t, "sleep"), 1))
+	c.openText("a.sh", "#!/bin/bash\rrm $f\r")
+	c.waitPush("a.sh")
+	_, ds := c.waitPush("a.sh")
+	for _, d := range ds {
+		if d.Code == "WB1004" {
+			if d.Range.End.Line != 0 || d.Range.End.Character != len("#!/bin/bash") {
+				t.Fatalf("WB1004 range %+v, want to end at line 0 column %d", d.Range, len("#!/bin/bash"))
+			}
+			return
+		}
+	}
+	t.Fatalf("no WB1004 in %v", codes(ds))
+}

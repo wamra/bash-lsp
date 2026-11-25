@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -544,10 +545,7 @@ func (s *server) unfinished(d *document, err error, timeout time.Duration) (anal
 			why = fmt.Sprintf("it ran past its time limit of %s", timeout)
 		}
 	}
-	end := len(f.Src)
-	if i := bytes.IndexByte(f.Src, '\n'); i >= 0 {
-		end = i
-	}
+	end := f.FromUTF16(0, math.MaxInt32).Offset // the end of the first line
 	w := analysis.Diagnostic{Rule: rule, Severity: analysis.SevInfo, Origin: analysis.OriginNative,
 		Range:   tree.Range{Start: f.PosAt(0), End: f.PosAt(end)},
 		Message: "ShellCheck did not finish: " + why + "; only bash-lsp findings are shown"}

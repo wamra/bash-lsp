@@ -212,13 +212,41 @@ func TestTokensPositionalEdges(t *testing.T) {
 	)
 }
 
+func TestBreaksLine(t *testing.T) {
+	src := []byte("ab\rcd\r\nef\ngh")
+	rg := func(a, b int) tree.Range { return tree.Range{Start: tree.Pos{Offset: a}, End: tree.Pos{Offset: b}} }
+	for _, tc := range []struct {
+		a, b int
+		want bool
+	}{{0, 2, false}, {0, 3, true}, {2, 3, true}, {3, 5, false}, {3, 6, true}, {5, 7, true}, {7, 9, false}, {7, 10, true}, {10, 12, false}} {
+		if got := breaksLine(src, rg(tc.a, tc.b)); got != tc.want {
+			t.Errorf("[%d,%d) %q: %v, want %v", tc.a, tc.b, src[tc.a:tc.b], got, tc.want)
+		}
+	}
+}
+
+// A lone CR ends an LSP line but not a tool line: the tokens around it are
+// kept, each within one line of either kind.
+func TestTokensAroundALoneCR(t *testing.T) {
+	got := tokensOf(t, "x=1;\rf() { :; };\recho \"$x\"; f\n", Options{Root: "/w", Commands: func(string) (string, bool) { return "", false }})
+	wantToks(t, got,
+		"(0,0,1,variable,{declaration})",
+		"(0,5,1,function,{declaration})",
+		"(0,11,1,function,{defaultLibrary})",
+		"(0,17,4,function,{defaultLibrary})",
+		"(0,24,1,variable,{})",
+		"(0,28,1,function,{})",
+	)
+}
+
 func TestTokensSortedSingleLine(t *testing.T) {
 	q := buildCorpus(t)
 	for _, p := range q.s.Paths() {
 		toks := q.s.Tokens(p, nil)
 		prev := 0
 		for i, tk := range toks {
-			if tk.Range.Start.Line != tk.Range.End.Line || tk.Range.End.Offset <= tk.Range.Start.Offset {
+			if tk.Range.Start.Line != tk.Range.End.Line || tk.Range.End.Offset <= tk.Range.Start.Offset ||
+				breaksLine(q.s.Facts(p).File.Src, tk.Range) {
 				t.Fatalf("%s: token %d %v is not a non-empty single-line range", p, i, tk.Range)
 			}
 			if tk.Range.Start.Offset < prev {

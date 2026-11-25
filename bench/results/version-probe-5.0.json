@@ -1,0 +1,465 @@
+{
+ "label": "bash version probe",
+ "bash": "/private/tmp/bash-lsp/bash-builds/5.0/bash-5.0/bash",
+ "BASH_VERSION": "5.0.0(1)-release",
+ "date": "2026-11-25T00:08:41-05:00",
+ "expect": "a table row fails below its first version and passes from it; every control row passes",
+ "unexpected": [],
+ "rows": [
+  {
+   "key": "assoc-array",
+   "first_version_fds016": "4.0",
+   "argv": [
+    "-i",
+    "PATH=/usr/bin:/bin",
+    "/private/tmp/bash-lsp/bash-builds/5.0/bash-5.0/bash",
+    "--noprofile",
+    "--norc",
+    "-c",
+    "declare -A m"
+   ],
+   "exit": 0,
+   "stderr_first_line": "",
+   "verdict": "passes",
+   "expected": "passes"
+  },
+  {
+   "key": "mapfile",
+   "first_version_fds016": "4.0 (FDS-016: one conflicting source; not in the table)",
+   "argv": [
+    "-i",
+    "PATH=/usr/bin:/bin",
+    "/private/tmp/bash-lsp/bash-builds/5.0/bash-5.0/bash",
+    "--noprofile",
+    "--norc",
+    "-c",
+    "mapfile -t a </dev/null"
+   ],
+   "exit": 0,
+   "stderr_first_line": "",
+   "verdict": "passes",
+   "expected": null
+  },
+  {
+   "key": "case-modification",
+   "first_version_fds016": "4.0",
+   "argv": [
+    "-i",
+    "PATH=/usr/bin:/bin",
+    "/private/tmp/bash-lsp/bash-builds/5.0/bash-5.0/bash",
+    "--noprofile",
+    "--norc",
+    "-c",
+    "x=ab; echo \"${x^^}\" >/dev/null"
+   ],
+   "exit": 0,
+   "stderr_first_line": "",
+   "verdict": "passes",
+   "expected": "passes"
+  },
+  {
+   "key": "coproc",
+   "first_version_fds016": "4.0",
+   "argv": [
+    "-i",
+    "PATH=/usr/bin:/bin",
+    "/private/tmp/bash-lsp/bash-builds/5.0/bash-5.0/bash",
+    "--noprofile",
+    "--norc",
+    "-n",
+    "-c",
+    "coproc { :; }"
+   ],
+   "exit": 0,
+   "stderr_first_line": "",
+   "verdict": "passes",
+   "expected": "passes"
+  },
+  {
+   "key": "globstar",
+   "first_version_fds016": "4.0",
+   "argv": [
+    "-i",
+    "PATH=/usr/bin:/bin",
+    "/private/tmp/bash-lsp/bash-builds/5.0/bash-5.0/bash",
+    "--noprofile",
+    "--norc",
+    "-c",
+    "shopt -s globstar"
+   ],
+   "exit": 0,
+   "stderr_first_line": "",
+   "verdict": "passes",
+   "expected": "passes"
+  },
+  {
+   "key": "case-fallthrough",
+   "first_version_fds016": "4.0",
+   "argv": [
+    "-i",
+    "PATH=/usr/bin:/bin",
+    "/private/tmp/bash-lsp/bash-builds/5.0/bash-5.0/bash",
+    "--noprofile",
+    "--norc",
+    "-n",
+    "-c",
+    "case x in x) :;& y) :;; esac"
+   ],
+   "exit": 0,
+   "stderr_first_line": "",
+   "verdict": "passes",
+   "expected": "passes"
+  },
+  {
+   "key": "case-resume",
+   "first_version_fds016": "4.0",
+   "argv": [
+    "-i",
+    "PATH=/usr/bin:/bin",
+    "/private/tmp/bash-lsp/bash-builds/5.0/bash-5.0/bash",
+    "--noprofile",
+    "--norc",
+    "-n",
+    "-c",
+    "case x in x) :;;& y) :;; esac"
+   ],
+   "exit": 0,
+   "stderr_first_line": "",
+   "verdict": "passes",
+   "expected": "passes"
+  },
+  {
+   "key": "pipe-all",
+   "first_version_fds016": "4.0",
+   "argv": [
+    "-i",
+    "PATH=/usr/bin:/bin",
+    "/private/tmp/bash-lsp/bash-builds/5.0/bash-5.0/bash",
+    "--noprofile",
+    "--norc",
+    "-n",
+    "-c",
+    "true |& cat"
+   ],
+   "exit": 0,
+   "stderr_first_line": "",
+   "verdict": "passes",
+   "expected": "passes"
+  },
+  {
+   "key": "append-all",
+   "first_version_fds016": "4.0",
+   "argv": [
+    "-i",
+    "PATH=/usr/bin:/bin",
+    "/private/tmp/bash-lsp/bash-builds/5.0/bash-5.0/bash",
+    "--noprofile",
+    "--norc",
+    "-n",
+    "-c",
+    "true &>> /dev/null"
+   ],
+   "exit": 0,
+   "stderr_first_line": "",
+   "verdict": "passes",
+   "expected": "passes"
+  },
+  {
+   "key": "declare-g",
+   "first_version_fds016": "4.2",
+   "argv": [
+    "-i",
+    "PATH=/usr/bin:/bin",
+    "/private/tmp/bash-lsp/bash-builds/5.0/bash-5.0/bash",
+    "--noprofile",
+    "--norc",
+    "-c",
+    "declare -g x=1"
+   ],
+   "exit": 0,
+   "stderr_first_line": "",
+   "verdict": "passes",
+   "expected": "passes"
+  },
+  {
+   "key": "lastpipe",
+   "first_version_fds016": "4.2",
+   "argv": [
+    "-i",
+    "PATH=/usr/bin:/bin",
+    "/private/tmp/bash-lsp/bash-builds/5.0/bash-5.0/bash",
+    "--noprofile",
+    "--norc",
+    "-c",
+    "shopt -s lastpipe"
+   ],
+   "exit": 0,
+   "stderr_first_line": "",
+   "verdict": "passes",
+   "expected": "passes"
+  },
+  {
+   "key": "nameref",
+   "first_version_fds016": "4.3",
+   "argv": [
+    "-i",
+    "PATH=/usr/bin:/bin",
+    "/private/tmp/bash-lsp/bash-builds/5.0/bash-5.0/bash",
+    "--noprofile",
+    "--norc",
+    "-c",
+    "declare -n r=x"
+   ],
+   "exit": 0,
+   "stderr_first_line": "",
+   "verdict": "passes",
+   "expected": "passes"
+  },
+  {
+   "key": "wait-n",
+   "first_version_fds016": "4.3",
+   "argv": [
+    "-i",
+    "PATH=/usr/bin:/bin",
+    "/private/tmp/bash-lsp/bash-builds/5.0/bash-5.0/bash",
+    "--noprofile",
+    "--norc",
+    "-c",
+    ": & wait -n"
+   ],
+   "exit": 0,
+   "stderr_first_line": "",
+   "verdict": "passes",
+   "expected": "passes"
+  },
+  {
+   "key": "negative-subscript",
+   "first_version_fds016": "4.3",
+   "argv": [
+    "-i",
+    "PATH=/usr/bin:/bin",
+    "/private/tmp/bash-lsp/bash-builds/5.0/bash-5.0/bash",
+    "--noprofile",
+    "--norc",
+    "-c",
+    "a=(1 2); [ \"${a[-1]}\" = 2 ]"
+   ],
+   "exit": 0,
+   "stderr_first_line": "",
+   "verdict": "passes",
+   "expected": "passes"
+  },
+  {
+   "key": "transform-op",
+   "first_version_fds016": "4.4",
+   "argv": [
+    "-i",
+    "PATH=/usr/bin:/bin",
+    "/private/tmp/bash-lsp/bash-builds/5.0/bash-5.0/bash",
+    "--noprofile",
+    "--norc",
+    "-c",
+    "x=a; echo \"${x@Q}\" >/dev/null"
+   ],
+   "exit": 0,
+   "stderr_first_line": "",
+   "verdict": "passes",
+   "expected": "passes"
+  },
+  {
+   "key": "epochseconds",
+   "first_version_fds016": "5.0",
+   "argv": [
+    "-i",
+    "PATH=/usr/bin:/bin",
+    "/private/tmp/bash-lsp/bash-builds/5.0/bash-5.0/bash",
+    "--noprofile",
+    "--norc",
+    "-c",
+    "[ -n \"${EPOCHSECONDS-}\" ]"
+   ],
+   "exit": 0,
+   "stderr_first_line": "",
+   "verdict": "passes",
+   "expected": "passes"
+  },
+  {
+   "key": "wait-p",
+   "first_version_fds016": "5.1",
+   "argv": [
+    "-i",
+    "PATH=/usr/bin:/bin",
+    "/private/tmp/bash-lsp/bash-builds/5.0/bash-5.0/bash",
+    "--noprofile",
+    "--norc",
+    "-c",
+    ": & wait -p v"
+   ],
+   "exit": 2,
+   "stderr_first_line": "/private/tmp/bash-lsp/bash-builds/5.0/bash-5.0/bash: line 0: wait: -p: invalid option",
+   "verdict": "fails",
+   "expected": "fails"
+  },
+  {
+   "key": "control:double-bracket",
+   "first_version_fds016": "",
+   "argv": [
+    "-i",
+    "PATH=/usr/bin:/bin",
+    "/private/tmp/bash-lsp/bash-builds/5.0/bash-5.0/bash",
+    "--noprofile",
+    "--norc",
+    "-n",
+    "-c",
+    "[[ -n x ]]"
+   ],
+   "exit": 0,
+   "stderr_first_line": "",
+   "verdict": "control ok",
+   "expected": "passes"
+  },
+  {
+   "key": "control:function-keyword",
+   "first_version_fds016": "",
+   "argv": [
+    "-i",
+    "PATH=/usr/bin:/bin",
+    "/private/tmp/bash-lsp/bash-builds/5.0/bash-5.0/bash",
+    "--noprofile",
+    "--norc",
+    "-n",
+    "-c",
+    "function f { :; }"
+   ],
+   "exit": 0,
+   "stderr_first_line": "",
+   "verdict": "control ok",
+   "expected": "passes"
+  },
+  {
+   "key": "control:array-assign",
+   "first_version_fds016": "",
+   "argv": [
+    "-i",
+    "PATH=/usr/bin:/bin",
+    "/private/tmp/bash-lsp/bash-builds/5.0/bash-5.0/bash",
+    "--noprofile",
+    "--norc",
+    "-n",
+    "-c",
+    "a=(1 2)"
+   ],
+   "exit": 0,
+   "stderr_first_line": "",
+   "verdict": "control ok",
+   "expected": "passes"
+  },
+  {
+   "key": "control:ansi-c-quote",
+   "first_version_fds016": "",
+   "argv": [
+    "-i",
+    "PATH=/usr/bin:/bin",
+    "/private/tmp/bash-lsp/bash-builds/5.0/bash-5.0/bash",
+    "--noprofile",
+    "--norc",
+    "-n",
+    "-c",
+    "echo $'x' >/dev/null"
+   ],
+   "exit": 0,
+   "stderr_first_line": "",
+   "verdict": "control ok",
+   "expected": "passes"
+  },
+  {
+   "key": "control:herestring",
+   "first_version_fds016": "",
+   "argv": [
+    "-i",
+    "PATH=/usr/bin:/bin",
+    "/private/tmp/bash-lsp/bash-builds/5.0/bash-5.0/bash",
+    "--noprofile",
+    "--norc",
+    "-n",
+    "-c",
+    "cat <<< hi >/dev/null"
+   ],
+   "exit": 0,
+   "stderr_first_line": "",
+   "verdict": "control ok",
+   "expected": "passes"
+  },
+  {
+   "key": "control:redirect-all",
+   "first_version_fds016": "",
+   "argv": [
+    "-i",
+    "PATH=/usr/bin:/bin",
+    "/private/tmp/bash-lsp/bash-builds/5.0/bash-5.0/bash",
+    "--noprofile",
+    "--norc",
+    "-n",
+    "-c",
+    "true &> /dev/null"
+   ],
+   "exit": 0,
+   "stderr_first_line": "",
+   "verdict": "control ok",
+   "expected": "passes"
+  },
+  {
+   "key": "control:process-subst",
+   "first_version_fds016": "",
+   "argv": [
+    "-i",
+    "PATH=/usr/bin:/bin",
+    "/private/tmp/bash-lsp/bash-builds/5.0/bash-5.0/bash",
+    "--noprofile",
+    "--norc",
+    "-n",
+    "-c",
+    "cat <(true) >/dev/null"
+   ],
+   "exit": 0,
+   "stderr_first_line": "",
+   "verdict": "control ok",
+   "expected": "passes"
+  },
+  {
+   "key": "control:source-builtin",
+   "first_version_fds016": "",
+   "argv": [
+    "-i",
+    "PATH=/usr/bin:/bin",
+    "/private/tmp/bash-lsp/bash-builds/5.0/bash-5.0/bash",
+    "--noprofile",
+    "--norc",
+    "-n",
+    "-c",
+    "source /dev/null"
+   ],
+   "exit": 0,
+   "stderr_first_line": "",
+   "verdict": "control ok",
+   "expected": "passes"
+  },
+  {
+   "key": "control:plain",
+   "first_version_fds016": "",
+   "argv": [
+    "-i",
+    "PATH=/usr/bin:/bin",
+    "/private/tmp/bash-lsp/bash-builds/5.0/bash-5.0/bash",
+    "--noprofile",
+    "--norc",
+    "-c",
+    "true"
+   ],
+   "exit": 0,
+   "stderr_first_line": "",
+   "verdict": "control ok",
+   "expected": "passes"
+  }
+ ]
+}

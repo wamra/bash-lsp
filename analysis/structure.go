@@ -8,19 +8,22 @@ import (
 	"github.com/wamra/bash-lsp/tree"
 )
 
-// Fold is a foldable span of lines, 0-based and inclusive. Kind is "",
-// "comment" or "region" (the LSP FoldingRangeKind strings, "" for none). The
-// end line of a "" fold is the line of the closing keyword or bracket.
+// Fold is a foldable span of text: the byte offset of its first byte and of
+// its last byte, so the lines it covers follow from whichever line table the
+// caller counts with. Kind is "", "comment" or "region" (the LSP
+// FoldingRangeKind strings, "" for none). The last byte of a "" fold is on the
+// line of the closing keyword or bracket.
 type Fold struct {
-	StartLine, EndLine int
-	Kind               string
+	StartOffset, EndOffset int
+	Kind                   string
 }
 
-// Folds lists the foldable spans of path, outermost first within a start
-// line, in start order: function bodies, if/case/loop commands, subshells,
+// Folds lists the foldable spans of path, in start order and outermost first
+// among spans that start at the same byte: function bodies, if/case/loop commands, subshells,
 // brace groups and heredocs that span two or more lines, runs of two or
-// more whole-line comments, and `# region` / `# endregion` pairs. Nodes the
-// parser recovered are left out.
+// more whole-line comments, and `# region` / `# endregion` pairs. A span that
+// stays on one line, counting "\n", "\r\n" and a lone "\r" as line breaks, is
+// left out. Nodes the parser recovered are left out.
 func (s *Snapshot) Folds(path string) []Fold {
 	file, ok := s.idx[path]
 	if !ok {
@@ -30,11 +33,16 @@ func (s *Snapshot) Folds(path string) []Fold {
 	if f == nil || f.Root == nil {
 		return nil
 	}
-	seen := map[Fold]bool{}
+	type span struct {
+		start, end int // 0-based lines
+		kind       string
+	}
+	seen := map[span]bool{}
 	var out []Fold
 	add := func(fo Fold) {
-		if fo.EndLine > fo.StartLine && !seen[fo] {
-			seen[fo] = true
+		k := span{f.LSPLine(fo.StartOffset), f.LSPLine(fo.EndOffset), fo.Kind}
+		if k.end > k.start && !seen[k] {
+			seen[k] = true
 			out = append(out, fo)
 		}
 	}
@@ -51,37 +59,33 @@ func (s *Snapshot) Folds(path string) []Fold {
 				return true
 			}
 		case tree.KHeredoc:
-			start := n.Range.Start.Line
+			start := n.Range.Start.Offset
 			if n.Parent != nil && n.Parent.Kind == tree.KRedirect {
-				start = n.Parent.Range.Start.Line // the line with the `<<TAG`
+				start = n.Parent.Range.Start.Offset // the line with the `<<TAG`
 			}
-			add(Fold{StartLine: start - 1, EndLine: lastLine(n.Range) - 1})
+			add(Fold{StartOffset: start, EndOffset: lastByte(n.Range)})
 			return true
 		default:
 			return true
 		}
-		add(Fold{StartLine: n.Range.Start.Line - 1, EndLine: lastLine(n.Range) - 1})
+		add(Fold{StartOffset: n.Range.Start.Offset, EndOffset: lastByte(n.Range)})
 		return true
 	})
 	for _, fo := range commentFolds(f) {
 		add(fo)
 	}
 	sort.SliceStable(out, func(a, b int) bool {
-		if out[a].StartLine != out[b].StartLine {
-			return out[a].StartLine < out[b].StartLine
+		if out[a].StartOffset != out[b].StartOffset {
+			return out[a].StartOffset < out[b].StartOffset
 		}
-		return out[a].EndLine > out[b].EndLine
+		return out[a].EndOffset > out[b].EndOffset
 	})
 	return out
 }
 
-// lastLine is the 1-based line holding the last byte of r (an end at column 1
-// is exclusive: the line before).
-func lastLine(r tree.Range) int {
-	if r.End.Col == 1 && r.End.Offset > r.Start.Offset && r.End.Line > r.Start.Line {
-		return r.End.Line - 1
-	}
-	return r.End.Line
+// lastByte is the offset of the last byte of r, or its start when r is empty.
+func lastByte(r tree.Range) int {
+	return max(r.Start.Offset, r.End.Offset-1)
 }
 
 // marker reports whether text (a comment's text without the '#', trimmed) is
@@ -93,29 +97,32 @@ func marker(text, word string) bool {
 // commentFolds finds the runs of whole-line comments and the region pairs.
 func commentFolds(f *tree.File) []Fold {
 	var out []Fold
-	runStart, runEnd := -1, -1 // 0-based lines of the current run
+	// The current run: the offset of its first byte, the offset of the last
+	// byte of its last comment and that comment's line.
+	runStart, runEnd, runLine := -1, -1, -1
 	flush := func() {
-		if runStart >= 0 && runEnd > runStart {
-			out = append(out, Fold{StartLine: runStart, EndLine: runEnd, Kind: "comment"})
+		if runStart >= 0 && f.LSPLine(runEnd) > f.LSPLine(runStart) {
+			out = append(out, Fold{StartOffset: runStart, EndOffset: runEnd, Kind: "comment"})
 		}
-		runStart, runEnd = -1, -1
+		runStart, runEnd, runLine = -1, -1, -1
 	}
-	var regions []int
+	var regions []int // offsets of the open `# region` comments
 	for _, c := range f.Comments {
 		if c.Recovered || !wholeLine(f.Src, c.Range.Start.Offset) {
 			flush()
 			continue
 		}
-		line := c.Range.Start.Line - 1
+		line := f.LSPLine(c.Range.Start.Offset)
+		last := lastByte(c.Range)
 		switch {
 		case marker(c.Value, "region"):
 			flush()
-			regions = append(regions, line)
+			regions = append(regions, c.Range.Start.Offset)
 			continue
 		case marker(c.Value, "endregion"):
 			flush()
 			if n := len(regions); n > 0 {
-				out = append(out, Fold{StartLine: regions[n-1], EndLine: line, Kind: "region"})
+				out = append(out, Fold{StartOffset: regions[n-1], EndOffset: last, Kind: "region"})
 				regions = regions[:n-1]
 			}
 			continue
@@ -123,24 +130,25 @@ func commentFolds(f *tree.File) []Fold {
 			flush() // the shebang
 			continue
 		}
-		if runStart >= 0 && line == runEnd+1 {
-			runEnd = line
+		if runStart >= 0 && line == runLine+1 {
+			runEnd, runLine = last, f.LSPLine(last)
 		} else {
 			flush()
-			runStart, runEnd = line, line
+			runStart, runEnd, runLine = c.Range.Start.Offset, last, f.LSPLine(last)
 		}
 	}
 	flush()
 	return out
 }
 
-// wholeLine reports whether only blanks precede offset on its line.
+// wholeLine reports whether only blanks precede offset on its line, where a
+// lone "\r" ends a line too.
 func wholeLine(src []byte, offset int) bool {
 	for i := offset - 1; i >= 0; i-- {
 		switch src[i] {
-		case '\n':
+		case '\n', '\r':
 			return true
-		case ' ', '\t', '\r':
+		case ' ', '\t':
 		default:
 			return false
 		}

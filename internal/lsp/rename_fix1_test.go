@@ -25,42 +25,7 @@ func wantRefusal(t *testing.T, r *rpcReply, code string) {
 	}
 }
 
-// ---- bare CR ----
-
-func TestRenameRefusesBareCRInTheOpenBuffer(t *testing.T) {
-	const src = "# a\rb\nfoo=1\necho \"$foo\"\n"
-	c := clientWith(t, renameCaps(true, true, true))
-	c.openText("a.sh", src)
-	c.waitDiag("a.sh")
-	// LSP counts the bare CR as a line break: foo is on line 2.
-	r := c.rawCall("textDocument/rename", c.renameParams("a.sh", Position{2, 1}, "bar"))
-	wantRefusal(t, r, "unsupported-line-breaks")
-	if !strings.Contains(r.Error.Message, "a.sh") {
-		t.Fatalf("message %q does not name the file", r.Error.Message)
-	}
-	wantRefusal(t, c.prepareAt("a.sh", Position{2, 1}), "unsupported-line-breaks")
-}
-
-func TestRenameRefusesBareCRInAFileReadFromDisk(t *testing.T) {
-	root := t.TempDir()
-	writeFile(t, root, "lib.sh", "# a\rb\nfoo() { :; }\n")
-	writeFile(t, root, "main.sh", "source ./lib.sh\nfoo\n")
-	writeFile(t, root, "solo.sh", "# a\rb\nbaz=1\necho \"$baz\"\n")
-	cfg := renameCaps(true, true, true)
-	cfg.root = root
-	c := clientWith(t, cfg)
-	c.open("main.sh")
-	c.waitDiag("main.sh")
-	// The requested file is clean; an edit would land in the closed lib.sh.
-	r := c.rawCall("textDocument/rename", c.renameParams("main.sh", Position{1, 1}, "bar"))
-	wantRefusal(t, r, "unsupported-line-breaks")
-	if !strings.Contains(r.Error.Message, "lib.sh") {
-		t.Fatalf("message %q does not name lib.sh", r.Error.Message)
-	}
-	wantRefusal(t, c.prepareAt("main.sh", Position{1, 1}), "unsupported-line-breaks")
-	// The requested file itself is closed and has the bare CR.
-	wantRefusal(t, c.rawCall("textDocument/rename", c.renameParams("solo.sh", Position{2, 1}, "bar")), "unsupported-line-breaks")
-}
+// ---- CRLF ----
 
 func TestRenameWorksOnCRLFFiles(t *testing.T) {
 	root := t.TempDir()
@@ -77,14 +42,6 @@ func TestRenameWorksOnCRLFFiles(t *testing.T) {
 	res := c.renameAt("main.sh", Position{1, 1}, "bar")
 	if got := strings.Join(c.editLines(res), " "); got != "lib.sh:2 main.sh:2" {
 		t.Fatalf("edits %s", got)
-	}
-}
-
-func TestHasBareCR(t *testing.T) {
-	for in, want := range map[string]bool{"": false, "a\nb": false, "a\r\nb\r\n": false, "a\rb": true, "a\r": true, "a\r\n\r": true, "\r\r\n": true} {
-		if got := hasBareCR([]byte(in)); got != want {
-			t.Errorf("%q: %v", in, got)
-		}
 	}
 }
 

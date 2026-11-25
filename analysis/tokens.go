@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"bytes"
 	"slices"
 	"sort"
 
@@ -100,8 +101,14 @@ func isPositional(name string) bool {
 	return name[0] != '0'
 }
 
+// breaksLine reports whether the text of r holds a line break of any kind
+// that LSP counts: "\n" or "\r" (alone or in "\r\n").
+func breaksLine(src []byte, r tree.Range) bool {
+	return bytes.ContainsAny(src[r.Start.Offset:r.End.Offset], "\r\n")
+}
+
 // Tokens returns the semantic tokens of file path, sorted by position and
-// not overlapping, each on one line: declared and called functions, aliases
+// not overlapping, each inside one line (no "\n" or "\r" in it): declared and called functions, aliases
 // (macro), builtins, external and unresolved commands, variables and the
 // positional parameters. Within, when not nil, keeps the tokens that touch
 // it. Names that sit inside a string (a call in `eval "f"`, a `"$cmd"` call)
@@ -121,7 +128,7 @@ func (s *Snapshot) Tokens(path string, within *tree.Range) []Token {
 	}
 	var toks []Token
 	add := func(r tree.Range, t TokenType, m TokenMod) {
-		if r.Start.Line != r.End.Line || r.End.Offset <= r.Start.Offset || r.End.Offset <= lo || r.Start.Offset >= hi {
+		if r.End.Offset <= r.Start.Offset || r.End.Offset <= lo || r.Start.Offset >= hi || breaksLine(ff.File.Src, r) {
 			return
 		}
 		toks = append(toks, Token{r, t, m})

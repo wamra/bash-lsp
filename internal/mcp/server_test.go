@@ -730,3 +730,20 @@ func TestMCPPreviewRenameWritesNothing(t *testing.T) {
 		}
 	}
 }
+
+func TestMCPPreviewRenameRefusesLoneCR(t *testing.T) {
+	files := map[string]string{"a.sh": "x=1;\rf() { :; }\nf\n"}
+	root := workspaceRoot(t, files)
+	rs := serve(t, root, config.Settings{},
+		call(1, "preview_rename", map[string]any{"symbol": "f", "new_name": "h"}),
+		call(2, "preview_rename", map[string]any{"symbol": "a.sh:2:1", "new_name": "h"}),
+	).replies(t)
+	for i, r := range rs {
+		if tr := result(t, r); !tr.IsError || !strings.HasPrefix(tr.Text, "refused: unsupported-line-breaks: ") || !strings.Contains(tr.Text, "a.sh") {
+			t.Errorf("call %d: %v %s", i+1, tr.IsError, tr.Text)
+		}
+	}
+	if b, _ := os.ReadFile(filepath.Join(root, "a.sh")); string(b) != files["a.sh"] {
+		t.Errorf("a.sh changed: %q", b)
+	}
+}

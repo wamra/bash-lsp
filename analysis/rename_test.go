@@ -540,3 +540,55 @@ func TestRenameInexactCommandWordsExcluded(t *testing.T) {
 	wantSeq(t, q.editStrs(plan), "a.sh:1", "a.sh:4")
 	wantSeq(t, q.exclStrs(plan), "a.sh:2 resolved/inexact-name", "a.sh:3 resolved/inexact-name")
 }
+
+// The lexer reads a lone CR as a blank, the shell as a character: a rename
+// refuses when a file it would edit has one outside a comment.
+func TestRenameRefusesLoneCR(t *testing.T) {
+	for _, tc := range []struct{ name, src string }{
+		{"repro", "foo=1\rbar=2\necho $bar\n"},
+		{"CR at the end", "bar=2\necho $bar\r"},
+		{"CR CR LF", "bar=2\r\r\necho $bar\n"},
+		{"CR in a string", "bar=2\necho \"a\rb $bar\"\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			q := buildMem(t, map[string]string{"a.sh": tc.src})
+			r := q.refuses(RefuseLineBreaks, "a.sh", "bar", 1, 0, "zzz")
+			if !strings.Contains(r.Reason, "a.sh") || !r.NameIndependent {
+				t.Fatalf("refusal %+v", r)
+			}
+			p, o := q.at("a.sh", "bar", 1, 0)
+			_, _, err := q.s.PrepareRename(p, o)
+			refusal(t, err, RefuseLineBreaks)
+		})
+	}
+}
+
+func TestRenameLoneCRHarmlessCases(t *testing.T) {
+	// CRLF only, and a lone CR inside a comment (a comment ends at LF in both readings).
+	for name, src := range map[string]string{
+		"CRLF":            "bar=2\r\necho $bar\r\n",
+		"CR in a comment": "# a\rb\nbar=2\necho $bar\n",
+	} {
+		q := buildMem(t, map[string]string{"a.sh": src})
+		if _, err := q.plan("a.sh", "bar", 1, 0, "zzz"); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// A file with a lone CR that receives no edit blocks a rename only when it
+// mentions the old or the new name: a use or a definition read around the CR
+// could be hidden from the rename or invented by it.
+func TestRenameLoneCRInAnUntouchedFile(t *testing.T) {
+	q := buildMem(t, map[string]string{"a.sh": "bar=2\necho $bar\n", "b.sh": "x=1\ry=2\n"})
+	if _, err := q.plan("a.sh", "bar", 1, 0, "zzz"); err != nil {
+		t.Fatalf("unrelated file blocked the rename: %v", err)
+	}
+	q = buildMem(t, map[string]string{"a.sh": "bar=2\necho $bar\n", "b.sh": "x=1\recho $bar\n"})
+	r := q.refuses(RefuseLineBreaks, "a.sh", "bar", 1, 0, "zzz")
+	if !strings.Contains(r.Reason, "b.sh") {
+		t.Fatalf("reason %q does not name b.sh", r.Reason)
+	}
+	q = buildMem(t, map[string]string{"a.sh": "bar=2\necho $bar\n", "b.sh": "x=1\rzzz=3\n"})
+	q.refuses(RefuseLineBreaks, "a.sh", "bar", 1, 0, "zzz")
+}

@@ -353,7 +353,7 @@ func cmdAst(args []string, stdout, stderr io.Writer) int {
 	if depth := viewDepth(f); depth > astMaxDepth {
 		return fail(stderr, fmt.Errorf("tree too deep to print (depth %d)", depth))
 	}
-	conv := f.NewConverter()
+	conv := f.NewToolConverter()
 	if asJSON {
 		doc := astDoc{Path: filepath.ToSlash(pos[0]), Dialect: f.Dialect.String(), Errors: []astError{}, Root: fileView(f).json(conv)}
 		for _, e := range f.Errors {
@@ -397,7 +397,7 @@ func kindName(k analysis.DeclKind) string {
 // flattenSymbols lists a file's outline in source order, each function
 // followed by its locals (Container set). Depth 1 marks a local.
 func flattenSymbols(rel string, f *tree.File, ds []analysis.DocSymbol) (out []symOut, depth []int) {
-	conv := f.NewConverter()
+	conv := f.NewToolConverter()
 	for _, d := range ds {
 		sp := pos16(conv, d.Selection.Start)
 		out = append(out, symOut{rel, sp[0], sp[1], kindName(d.Kind), d.Name, ""})

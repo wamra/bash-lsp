@@ -5,7 +5,6 @@ import (
 	"unicode/utf8"
 
 	"encoding/json"
-	"github.com/wamra/bash-lsp/analysis"
 	"io"
 	"strings"
 	"testing"
@@ -99,7 +98,7 @@ func TestMalformedOptionalCapabilityDoesNotFailInitialize(t *testing.T) {
 }
 
 func TestFoldingRangeLimitHuge(t *testing.T) {
-	folds := []analysis.Fold{{StartLine: 0, EndLine: 3}, {StartLine: 1, EndLine: 2}}
+	folds := []lineFold{{StartLine: 0, EndLine: 3}, {StartLine: 1, EndLine: 2}}
 	if got := foldingRanges(folds, clientCaps{RangeLimit: math.MaxInt}); len(got) != 2 {
 		t.Errorf("got %v", got)
 	}

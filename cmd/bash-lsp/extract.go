@@ -253,7 +253,7 @@ func (x *extractor) fileRecords(path string) []extractRec {
 		return nil
 	}
 	f := ff.File
-	conv := f.NewConverter()
+	conv := f.NewToolConverter()
 	at := func(p tree.Pos) (int, int) { pos := pos16(conv, p); return pos[0], pos[1] }
 	var rs []sited
 	add := func(off int, r extractRec) { r.File = path; rs = append(rs, sited{off, r}) }

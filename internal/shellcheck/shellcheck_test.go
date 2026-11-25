@@ -1154,3 +1154,27 @@ func TestParseClampedColumnOnCRLFLine(t *testing.T) {
 		t.Errorf("range %+v, want both at %d", ds[0].Range, want)
 	}
 }
+
+// ShellCheck counts lines by "\n" only: a finding after a lone CR is at the
+// line ShellCheck says, and its LSP range sits one line further on.
+func TestParseFindingAfterLoneCR(t *testing.T) {
+	f := bashFile("/w/cr.sh", "#!/bin/bash\n# a\rb\nf=x\nrm $f\n")
+	out := []byte(`{"comments":[{"file":"-","line":4,"endLine":4,"column":4,"endColumn":6,"level":"info","code":2086,"message":"Double quote to prevent globbing and word splitting.","fix":null}]}`)
+	ds, err := Parse(f, out)
+	if err != nil || len(ds) != 1 {
+		t.Fatalf("%v %v", ds, err)
+	}
+	r := ds[0].Range
+	if got := string(f.Src[r.Start.Offset:r.End.Offset]); got != "$f" {
+		t.Fatalf("covers %q", got)
+	}
+	if r.Start.Line != 4 || r.Start.Col != 4 {
+		t.Errorf("tool position %d:%d, want 4:4", r.Start.Line, r.Start.Col)
+	}
+	if l, c := f.ToUTF16(r.Start); l != 4 || c != 3 {
+		t.Errorf("LSP start (%d,%d), want (4,3)", l, c)
+	}
+	if l, c := f.ToUTF16(r.End); l != 4 || c != 5 {
+		t.Errorf("LSP end (%d,%d), want (4,5)", l, c)
+	}
+}

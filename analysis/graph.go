@@ -222,8 +222,8 @@ func (s *Snapshot) Position(spec string) (path string, offset int, ok bool, err 
 	}
 	lineStart := off
 	f := s.facts[file].File
-	p := f.FromUTF16(line-1, col-1) // clamps a column past the line end
-	if _, ch := f.ToUTF16(p); ch != col-1 {
+	p := f.FromToolUTF16(line-1, col-1) // clamps a column past the line end
+	if _, ch := f.ToolUTF16(p); ch != col-1 {
 		return "", 0, true, fmt.Errorf("analysis: column %d of %q is not a position of the line", col, spec)
 	}
 	off = p.Offset

@@ -4,7 +4,7 @@ under a given bash, and record what happened.
 Usage: uv run --no-project python bench/version_probe.py BASH [OUT.json]
 
 Every snippet is a constant in this file (no repository text, nothing read
-from the analysed corpus). A syntactic feature runs under `BASH -n -c SNIPPET`
+from the analysed corpus). Each runs as `env -i PATH=/usr/bin:/bin BASH --noprofile --norc ...`. A syntactic feature runs with `-n -c SNIPPET`
 (parse only, nothing executes); the others under `BASH -c SNIPPET` with
 a command that needs nothing but the shell (`sleep 0`, `/dev/null`). A snippet
 "fails" when bash exits non-zero. Expected on 3.2.57: every 4.0+ feature
@@ -18,6 +18,7 @@ the verdict, with the bash path, its `$BASH_VERSION` and the date.
 import datetime
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -35,11 +36,11 @@ PROBES = [
     ("declare-g", "4.2", False, "declare -g x=1"),
     ("lastpipe", "4.2", False, "shopt -s lastpipe"),
     ("nameref", "4.3", False, "declare -n r=x"),
-    ("wait-n", "4.3", False, "sleep 0 & wait -n"),
+    ("wait-n", "4.3", False, ": & wait -n"),
     ("negative-subscript", "4.3", False, 'a=(1 2); [ "${a[-1]}" = 2 ]'),
     ("transform-op", "4.4", False, 'x=a; echo "${x@Q}" >/dev/null'),
     ("epochseconds", "5.0", False, '[ -n "${EPOCHSECONDS-}" ]'),
-    ("wait-p", "5.1", False, "sleep 0 & wait -p v"),
+    ("wait-p", "5.1", False, ": & wait -p v"),
     # Forms bash 3.2 has (WB1302 evidence, no version).
     ("control:double-bracket", "", True, "[[ -n x ]]"),
     ("control:function-keyword", "", True, "function f { :; }"),
@@ -53,8 +54,19 @@ PROBES = [
 ]
 
 
+def series(version):
+    m = re.match(r"(\d+)\.(\d+)", version)
+    return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+
+
+def minimum(first):
+    m = re.match(r"(\d+)\.(\d+)$", first)
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
 def run(bash, parse_only, snippet):
-    argv = [bash] + (["-n"] if parse_only else []) + ["-c", snippet]
+    argv = ["env", "-i", "PATH=/usr/bin:/bin", bash, "--noprofile", "--norc"] + \
+        (["-n"] if parse_only else []) + ["-c", snippet]
     p = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                        stderr=subprocess.PIPE, text=True, timeout=10)
     err = p.stderr.strip().splitlines()
@@ -74,15 +86,22 @@ def main():
         argv, code, err = run(bash, parse_only, snippet)
         control = key.startswith("control:")
         fails = code != 0
+        mn = minimum(first)
+        if control:
+            expect = "passes"
+        elif mn is not None:
+            expect = "fails" if series(version) < mn else "passes"
+        else:
+            expect = None  # not a table row: recorded, not judged
         verdict = ("control ok" if not fails else "CONTROL FAILED") if control else \
             ("fails" if fails else "passes")
-        if control and fails or (not control and not fails):
+        if expect and verdict.split()[0] != expect and not (control and not fails):
             bad.append(key)
         rows.append({"key": key, "first_version_fds016": first, "argv": argv[1:], "exit": code,
-                     "stderr_first_line": err, "verdict": verdict})
-    rec = {"label": "bash version probe, m3 task 4", "bash": bash, "BASH_VERSION": version,
+                     "stderr_first_line": err, "verdict": verdict, "expected": expect})
+    rec = {"label": "bash version probe", "bash": bash, "BASH_VERSION": version,
            "date": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
-           "expect": "every non-control row fails on 3.2.57; every control row passes",
+           "expect": "a table row fails below its first version and passes from it; every control row passes",
            "unexpected": bad, "rows": rows}
     with open(out, "w") as f:
         json.dump(rec, f, indent=1)

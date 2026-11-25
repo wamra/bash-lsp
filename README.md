@@ -89,7 +89,18 @@ The JSON each command prints with `--json` is described in
 [JSON records](#json-records).
 
 Positions are 1-based `line:col`, with columns counted in UTF-16 code units
-(the LSP column plus one), printed and accepted alike. A path printed by
+(the LSP column plus one), printed and accepted alike. Two definitions of a
+line are in use. Tool lines, the ones the CLI and the MCP tools print and
+accept and the ones ShellCheck reports, end at `\n` only, as compilers, shells
+and grep count; a lone `\r` is not a line break to them. LSP positions on the
+wire end a line at `\n`, `\r\n` or a lone `\r`, as the protocol defines. The
+two agree on text without a lone `\r`. Hover text and rule messages are text,
+not positions: they quote tool line numbers (`Defined in a.sh:5`, `at line 3`),
+which on a file with a lone `\r` differ from the editor's line numbers.
+Positions are exact on such a file, but its meaning is not: the lexer reads a
+lone `\r` as a blank where the shell reads an ordinary character (`foo=1\rbar=2`
+is one assignment to `foo` in bash), so `rename` refuses it (see
+[Refusals](#refusals)). A path printed by
 `check` and `fmt` is relative to the current directory when the file is under
 it, otherwise absolute. A path printed by `symbols` is relative to the PATH
 argument it came from: to that directory when it is a directory, to the file's
@@ -272,6 +283,7 @@ the `isError` result of `preview_rename`.
 | `skipped-file` | a file in view was skipped for its size and may use the name | `rename f h` with `source ./big.sh`, `big.sh` over `[limits] max_file_bytes` |
 | `too-many-sites` | more than 100,000 sites to edit or confirm by hand | `rename f h` with 100,001 calls of `f` |
 | `no-op` | the new name is the old name | `rename f f` |
+| `unsupported-line-breaks` | a file that would be edited has a lone `\r` (a `\r` not followed by `\n`) outside a comment, or such a file mentions the old or the new name: the lexer reads the `\r` as a blank, the shell as a character, so the sites and scopes found around it cannot be trusted. CRLF files and a lone `\r` inside a comment are fine. Convert the file to LF or CRLF | `rename bar zzz` on `x=1;\rbar() { :; }` |
 | `ambiguous-apply` | `--apply` by name while same-named other symbols exist; apply by `path:line:col` | `rename build_release ship --apply` on the corpus (`orphan.sh` also defines it) |
 | `outside-root` | the file part of the argument, or a file of the plan, lies outside the root once links are resolved | `rename ../x.sh:1:1 h` |
 | `read-only` | a file or its directory cannot be written | `rename f h --apply` with `chmod 444 a.sh` |

@@ -5,6 +5,9 @@ import (
 	"unicode/utf8"
 )
 
+// lineStarts returns the byte offset of each line start, counting "\n" only:
+// the line definition of compilers, shells, ShellCheck and grep, and so of
+// Pos.Line and Pos.Col.
 func lineStarts(src []byte) []int {
 	starts := []int{0}
 	for i, b := range src {
@@ -13,6 +16,45 @@ func lineStarts(src []byte) []int {
 		}
 	}
 	return starts
+}
+
+// lspLineStarts is the line table of the Language Server Protocol, which
+// breaks lines at "\r\n", "\n", and a "\r" not followed by "\n". It differs
+// from lineStarts only in a text with a lone "\r". Only the UTF-16
+// conversions use it.
+func lspLineStarts(src []byte) []int {
+	starts := []int{0}
+	for i, b := range src {
+		if b == '\n' || b == '\r' && (i+1 == len(src) || src[i+1] != '\n') {
+			starts = append(starts, i+1)
+		}
+	}
+	return starts
+}
+
+// lspLines returns the LSP line table, built on first use.
+func (f *File) lspLines() []int {
+	f.lspOnce.Do(func() { f.lsp = lspLineStarts(f.Src) })
+	return f.lsp
+}
+
+// lineAt is the 0-based line of table t holding offset (already clamped).
+func lineAt(t []int, offset int) int {
+	return sort.Search(len(t), func(i int) bool { return t[i] > offset }) - 1
+}
+
+// contentEnd is the byte offset where the text of line (0-based) of table t
+// ends, before its line break: "\n", "\r\n", or a lone "\r".
+func (f *File) contentEnd(t []int, line int) int {
+	if line+1 >= len(t) {
+		return len(f.Src)
+	}
+	start, end := t[line], t[line+1]
+	end-- // the "\n", or a lone "\r"
+	if f.Src[end] == '\n' && end > start && f.Src[end-1] == '\r' {
+		end--
+	}
+	return end
 }
 
 // PosAt returns the position of offset, clamped to [0, len(Src)].
@@ -25,6 +67,13 @@ func (f *File) PosAt(offset int) Pos {
 	}
 	i := sort.Search(len(f.lines), func(i int) bool { return f.lines[i] > offset }) - 1
 	return Pos{Offset: offset, Line: i + 1, Col: offset - f.lines[i] + 1}
+}
+
+// LSPLine returns the 0-based LSP line holding offset, clamped to
+// [0, len(Src)]. A line break belongs to the line it ends.
+func (f *File) LSPLine(offset int) int {
+	offset = min(max(offset, 0), len(f.Src))
+	return lineAt(f.lspLines(), offset)
 }
 
 // units returns the UTF-16 length of the rune at the start of b and its byte
@@ -40,11 +89,18 @@ func units(b []byte) (u, size int) {
 	return 1, size
 }
 
-// ToUTF16 converts p to a 0-based line and a column in UTF-16 units.
-func (f *File) ToUTF16(p Pos) (line, char int) {
+// ToUTF16 converts p to a 0-based LSP line and a column in UTF-16 units.
+func (f *File) ToUTF16(p Pos) (line, char int) { return f.toUTF16(f.lspLines(), p) }
+
+// ToolUTF16 converts p to the 0-based line of Pos.Line (counted by "\n" only,
+// as compilers, shells, ShellCheck and grep do) and a column in UTF-16 units
+// from the start of that line. It is ToUTF16 for text that tools print.
+func (f *File) ToolUTF16(p Pos) (line, char int) { return f.toUTF16(f.lines, p) }
+
+func (f *File) toUTF16(t []int, p Pos) (line, char int) {
 	p = f.PosAt(p.Offset)
-	line = p.Line - 1
-	for i := f.lines[line]; i < p.Offset; {
+	line = lineAt(t, p.Offset)
+	for i := t[line]; i < p.Offset; {
 		u, size := units(f.Src[i:p.Offset])
 		char += u
 		i += size
@@ -52,11 +108,16 @@ func (f *File) ToUTF16(p Pos) (line, char int) {
 	return line, char
 }
 
-// FromUTF16 converts a 0-based line and UTF-16 column to a Pos. A column past
-// the end of the line clamps to the line end (before any \r\n); a line past
-// the last clamps to EOF.
-func (f *File) FromUTF16(line, char int) Pos {
-	if line >= len(f.lines) {
+// FromUTF16 converts a 0-based LSP line and UTF-16 column to a Pos. A column
+// past the end of the line clamps to the line end (before its line break); a
+// line past the last clamps to EOF.
+func (f *File) FromUTF16(line, char int) Pos { return f.fromUTF16(f.lspLines(), line, char) }
+
+// FromToolUTF16 is FromUTF16 for lines counted by "\n" only (see ToolUTF16).
+func (f *File) FromToolUTF16(line, char int) Pos { return f.fromUTF16(f.lines, line, char) }
+
+func (f *File) fromUTF16(t []int, line, char int) Pos {
+	if line >= len(t) {
 		return f.PosAt(len(f.Src))
 	}
 	if line < 0 {
@@ -65,14 +126,8 @@ func (f *File) FromUTF16(line, char int) Pos {
 	if char < 0 {
 		char = 0
 	}
-	start := f.lines[line]
-	end := len(f.Src)
-	if line+1 < len(f.lines) {
-		end = f.lines[line+1] - 1 // the \n
-		if end > start && f.Src[end-1] == '\r' {
-			end--
-		}
-	}
+	start := t[line]
+	end := f.contentEnd(t, line)
 	off, n := start, 0
 	for off < end && n < char {
 		u, size := units(f.Src[off:end])
@@ -97,27 +152,32 @@ const checkpointEvery = 1024
 // concurrent use; make one per request.
 type Converter struct {
 	f     *File
+	t     []int                        // the line table: LSP lines, or "\n" lines for a tool converter
 	lines map[int][]checkpoint         // by line index, for lines longer than checkpointEvery
 	last  struct{ line, off, col int } // a rune boundary and its column, from the previous call
 }
 
 type checkpoint struct{ off, col int }
 
-// NewConverter returns a Converter for f.
-func (f *File) NewConverter() *Converter { return &Converter{f: f} }
+// NewConverter returns a Converter for f that gives LSP lines, like File.ToUTF16.
+func (f *File) NewConverter() *Converter { return &Converter{f: f, t: f.lspLines()} }
 
-// ToUTF16 is File.ToUTF16.
+// NewToolConverter returns a Converter for f that gives "\n" lines, like
+// File.ToolUTF16, for text that tools print.
+func (f *File) NewToolConverter() *Converter { return &Converter{f: f, t: f.lines} }
+
+// ToUTF16 is File.ToUTF16 (File.ToolUTF16 for a tool converter).
 func (c *Converter) ToUTF16(p Pos) (line, char int) {
-	f := c.f
+	f, t := c.f, c.t
 	p = f.PosAt(p.Offset)
-	line = p.Line - 1
-	i := f.lines[line]
+	line = lineAt(t, p.Offset)
+	i := t[line]
 	if p.Offset-i <= checkpointEvery {
-		return f.ToUTF16(p)
+		return f.toUTF16(t, p)
 	}
 	cps, ok := c.lines[line]
 	if !ok {
-		cps = f.checkpoints(line)
+		cps = f.checkpoints(t, line)
 		if c.lines == nil {
 			c.lines = map[int][]checkpoint{}
 		}
@@ -131,8 +191,8 @@ func (c *Converter) ToUTF16(p Pos) (line, char int) {
 		i, char = c.last.off, c.last.col
 	}
 	end := len(f.Src)
-	if line+1 < len(f.lines) {
-		end = f.lines[line+1]
+	if line+1 < len(t) {
+		end = t[line+1]
 	}
 	for i < p.Offset {
 		u, size := units(f.Src[i:end])
@@ -148,11 +208,11 @@ func (c *Converter) ToUTF16(p Pos) (line, char int) {
 
 // checkpoints scans line once, recording a checkpoint at a rune boundary at
 // least every checkpointEvery bytes; the first is the line start.
-func (f *File) checkpoints(line int) []checkpoint {
-	start := f.lines[line]
+func (f *File) checkpoints(t []int, line int) []checkpoint {
+	start := t[line]
 	end := len(f.Src)
-	if line+1 < len(f.lines) {
-		end = f.lines[line+1]
+	if line+1 < len(t) {
+		end = t[line+1]
 	}
 	cps := []checkpoint{{start, 0}}
 	col, next := 0, start+checkpointEvery
