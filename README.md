@@ -89,7 +89,14 @@ The JSON each command prints with `--json` is described in
 [JSON records](#json-records).
 
 Positions are 1-based `line:col`, with columns counted in UTF-16 code units
-(the LSP column plus one), printed and accepted alike. A path printed by
+(the LSP column plus one), printed and accepted alike. Two definitions of a
+line are in use. Tool lines, the ones the CLI and the MCP tools print and
+accept and the ones ShellCheck reports, end at `\n` only, as compilers, shells
+and grep count; a lone `\r` is not a line break to them. LSP positions on the
+wire end a line at `\n`, `\r\n` or a lone `\r`, as the protocol defines. The
+two agree on text without a lone `\r`. Hover text and rule messages are text,
+not positions: they quote tool line numbers (`Defined in a.sh:5`, `at line 3`),
+which on a file with a lone `\r` differ from the editor's line numbers. A path printed by
 `check` and `fmt` is relative to the current directory when the file is under
 it, otherwise absolute. A path printed by `symbols` is relative to the PATH
 argument it came from: to that directory when it is a directory, to the file's
