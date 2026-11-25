@@ -521,24 +521,33 @@ func TestRenameLatency(t *testing.T) {
 	c := clientWith(t, cfg)
 	c.open("big.sh")
 	c.waitDiag("big.sh")
-	best := func(method string, p map[string]any) time.Duration {
-		var d time.Duration
+	// cold is the first call (nothing cached), best the fastest of five.
+	measure := func(method string, p map[string]any) (cold, best time.Duration) {
 		for i := 0; i < 5; i++ {
 			start := time.Now()
 			r := c.rawCall(method, p)
 			if r.Error != nil {
 				t.Fatalf("%s: %+v", method, r.Error)
 			}
-			if e := time.Since(start); d == 0 || e < d {
-				d = e
+			e := time.Since(start)
+			if i == 0 {
+				cold = e
+			}
+			if best == 0 || e < best {
+				best = e
 			}
 		}
-		return d
+		return cold, best
+	}
+	at := func(rel string, p Position) map[string]any {
+		return map[string]any{"textDocument": map[string]any{"uri": c.uri(rel)}, "position": p}
 	}
 	chain := c.renameParams("s0000.sh", c.pos("s0000.sh", "f0_0() {", 1), "renamed_0")
-	rn := best("textDocument/rename", chain)
-	prep := best("textDocument/prepareRename", map[string]any{"textDocument": map[string]any{"uri": c.uri("big.sh")}, "position": c.pos("big.sh", "fn_1000() {", 3)})
-	t.Logf("rename in a 1,000-file chain: %v; prepareRename in the 561 KB file: %v", rn, prep)
+	rnCold, rn := measure("textDocument/rename", chain)
+	prepCold, prep := measure("textDocument/prepareRename", at("big.sh", c.pos("big.sh", "fn_1000() {", 3)))
+	chainPrepCold, chainPrep := measure("textDocument/prepareRename", at("s0000.sh", c.pos("s0000.sh", "f0_0() {", 1)))
+	t.Logf("rename in a 1,000-file chain: cold %v, best %v; prepareRename in the 561 KB file: cold %v, best %v; prepareRename in the chain: cold %v, best %v",
+		rnCold, rn, prepCold, prep, chainPrepCold, chainPrep)
 	if raceEnabled {
 		return
 	}
@@ -547,5 +556,74 @@ func TestRenameLatency(t *testing.T) {
 	}
 	if prep > 20*time.Millisecond {
 		t.Errorf("prepareRename took %v, budget 20 ms", prep)
+	}
+}
+
+// A prepareRename that succeeds must not be followed by a rename that always
+// refuses: the refusals that do not depend on the new name are decided at
+// prepare time, the ones that do (a conflict with the new name) are not.
+func TestPrepareRenameRefusesWhatNoNewNameCanFix(t *testing.T) {
+	type tc struct {
+		name, src string
+		pos       Position
+		code      string
+	}
+	for _, x := range []tc{
+		{"special variable", "f() {\n  local IFS=,\n  echo \"$IFS\"\n}\nf\n", Position{1, 9}, "name-conflict"},
+		{"name reference", "f() { :; }\nf\nunset -f f\n", Position{0, 0}, "name-reference"},
+		{"half-typed heredoc", "f() { :; }\nf\ncat <<EOF\nf\n", Position{1, 0}, "recovered-region"},
+		{"dynamic scope", "v=1\nouter() {\n  local v=2\n  inner\n}\ninner() { echo \"$v\"; }\nouter\n", Position{0, 0}, "dynamic-scope"},
+	} {
+		t.Run(x.name, func(t *testing.T) {
+			c := clientWith(t, renameCaps(true, false, false))
+			c.openText("a.sh", x.src)
+			c.waitDiag("a.sh")
+			rn := c.rawCall("textDocument/rename", c.renameParams("a.sh", x.pos, "zz_fresh_name"))
+			if rn.Error == nil || refusalCode(rn) != x.code {
+				t.Fatalf("rename: %+v %s %s, want a refusal %s", rn.Error, rn.ErrData, rn.Result, x.code)
+			}
+			pr := c.rawCall("textDocument/prepareRename", map[string]any{"textDocument": map[string]any{"uri": c.uri("a.sh")}, "position": x.pos})
+			if pr.Error == nil || pr.Error.Code != -32803 || refusalCode(pr) != x.code || !strings.HasPrefix(pr.Error.Message, x.code+":") {
+				t.Fatalf("prepareRename: %+v %s %s, want the refusal %s", pr.Error, pr.ErrData, pr.Result, x.code)
+			}
+		})
+	}
+	t.Run("conflict with the new name is for rename", func(t *testing.T) {
+		c := clientWith(t, renameCaps(true, false, false))
+		c.openText("a.sh", "a_fn() { :; }\nb_fn() { :; }\na_fn\n")
+		c.waitDiag("a.sh")
+		pos := Position{0, 1}
+		if r := c.rawCall("textDocument/rename", c.renameParams("a.sh", pos, "b_fn")); r.Error == nil || refusalCode(r) != "name-conflict" {
+			t.Fatalf("rename: %+v %s", r.Error, r.Result)
+		}
+		if r := c.rawCall("textDocument/prepareRename", map[string]any{"textDocument": map[string]any{"uri": c.uri("a.sh")}, "position": pos}); r.Error != nil {
+			t.Fatalf("prepareRename refused: %+v", r.Error)
+		}
+	})
+}
+
+// Warnings alone (nothing excluded) are shown as one message, annotation
+// support or not: there is nothing to confirm per site.
+func TestRenameWarningsAloneAreAMessage(t *testing.T) {
+	for _, ann := range []bool{false, true} {
+		t.Run(fmt.Sprint("annotations=", ann), func(t *testing.T) {
+			c := clientWith(t, renameCaps(true, true, ann))
+			c.openText("a.sh", "export VAR=1\necho \"$VAR\"\n")
+			c.waitDiag("a.sh")
+			res := c.renameAt("a.sh", Position{0, 8}, "NEW_VAR")
+			if len(res.ChangeAnnotations) != 0 {
+				t.Fatalf("annotations %+v", res.ChangeAnnotations)
+			}
+			if len(c.shown) != 1 || !strings.Contains(string(c.shown[0]), "exported") || strings.Contains(string(c.shown[0]), "sites left unchanged") {
+				t.Fatalf("messages %s", c.shown)
+			}
+			for _, d := range res.DocumentChanges {
+				for _, e := range d.Edits {
+					if e.AnnotationID != "" {
+						t.Fatalf("annotated edit %+v", e)
+					}
+				}
+			}
+		})
 	}
 }

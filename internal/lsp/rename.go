@@ -164,11 +164,41 @@ func (s *server) prepareRename(raw json.RawMessage) (any, *rpcError) {
 	if err != nil {
 		return s.failRequest(snap, err)
 	}
+	if err := probeRename(snap, path, off); err != nil {
+		return s.failRequest(snap, err)
+	}
 	r := s.rangeIn(converters{}, snap, path, rng)
 	if !s.caps().RenamePrepare {
 		return r, nil // a client without prepareSupport reads a bare Range
 	}
 	return prepareRenameResult{Range: r, Placeholder: redact.String(name)}, nil
+}
+
+// probeName is a valid name nothing is likely to use: a rename to it fails
+// only for reasons that no other name would change.
+const probeName = "bash_lsp_rename_probe"
+
+// probeRename plans a rename of the symbol at the cursor to probeName and
+// returns the refusals no new name can cure: the ones about the symbol or the
+// text around its sites (half-typed regions, skipped files, dynamic scope,
+// names given to eval, unset, declare -n and the like, shell-special
+// variables). Refusals about the new name (conflicts, invalid, reserved) do
+// not count, and neither does a plan that succeeds.
+func probeRename(snap *analysis.Snapshot, path string, off int) error {
+	_, err := snap.PlanRename(path, off, probeName)
+	var ref *analysis.RenameRefusal
+	if !errors.As(err, &ref) {
+		return nil
+	}
+	switch ref.Code {
+	case analysis.RefuseRecovered, analysis.RefuseSkippedFile, analysis.RefuseDynamicScope, analysis.RefuseNameReference:
+		return err
+	case analysis.RefuseConflict:
+		if strings.HasPrefix(ref.Reason, "renaming a shell-special variable") {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *server) rename(raw json.RawMessage) (any, *rpcError) {
@@ -228,7 +258,7 @@ func (s *server) planIsCurrent(snap *analysis.Snapshot, plan *analysis.RenamePla
 func (s *server) buildRenameEdit(snap *analysis.Snapshot, plan *analysis.RenamePlan) renameEdit {
 	caps := s.caps()
 	note, label := s.renameNote(snap, plan)
-	annotate := caps.DocumentChanges && caps.ChangeAnnotations && (len(plan.Excluded) > 0 || len(plan.Others) > 0 || len(plan.Warnings) > 0)
+	annotate := caps.DocumentChanges && caps.ChangeAnnotations && (len(plan.Excluded) > 0 || len(plan.Others) > 0)
 	if !annotate && (len(plan.Excluded) > 0 || len(plan.Warnings) > 0) {
 		s.c.notify("window/showMessage", showMessageParams{Type: messageTypeWarning, Message: note})
 	}
@@ -273,7 +303,10 @@ func (s *server) renameNote(snap *analysis.Snapshot, plan *analysis.RenamePlan) 
 	left := len(plan.Excluded) + len(plan.Others)
 	label = fmt.Sprintf("%d sites left unchanged", left)
 	var b strings.Builder
-	b.WriteString("bash-lsp rename of " + redact.String(plan.Old) + ": " + label + ".")
+	b.WriteString("bash-lsp rename of " + redact.String(plan.Old) + ":")
+	if left > 0 {
+		b.WriteString(" " + label + ".")
+	}
 	if len(plan.Excluded) > 0 {
 		b.WriteString("\nNot proven to name " + redact.String(plan.Old) + ", left as they are:")
 		for i, x := range plan.Excluded {

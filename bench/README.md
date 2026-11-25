@@ -97,5 +97,3 @@ The `*-m3` files without a task suffix are the milestone 3 acceptance measuremen
 `bash-lsp-m3-final.json` is `bench.py` after the milestone 3 final fix wave (ShellCheck off, `BASH_LSP_CONFIG=bench/config-shellcheck-off.toml`): 27 of 28, failing only C24.
 
 `bash-lsp-m3-final2.json` is the same run after the second final-wave round: 27 of 28, failing only C24.
-
-The `bash-lsp-m4-task4.json` file is `bench.py` after `textDocument/rename` and `prepareRename` (milestone 4 task 4), on a binary built from a clean tree into `/private/tmp/bash-lsp/t4-bin/`: 28 of 28, C24 passes (edits on `main.sh` lines 5, 6 and 7), C04 and C25 still pass.
