@@ -31,14 +31,15 @@ type Hint struct {
 //     parameter at that position has a name, `name:`.
 //
 // A path the snapshot does not hold gives nil, and so does an inverted range.
-func (s *Snapshot) Hints(path string, within tree.Range, sources, params bool) []Hint {
+// cut is true when there were more than maxHints hints and the rest are left out.
+func (s *Snapshot) Hints(path string, within tree.Range, sources, params bool) (hints []Hint, cut bool) {
 	file, ok := s.idx[path]
 	if !ok || (!sources && !params) {
-		return nil
+		return nil, false
 	}
 	ff := s.facts[file]
 	if ff == nil || ff.File == nil {
-		return nil
+		return nil, false
 	}
 	lo, hi := within.Start.Offset, within.End.Offset
 	var out []Hint
@@ -50,9 +51,9 @@ func (s *Snapshot) Hints(path string, within tree.Range, sources, params bool) [
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Pos.Offset < out[j].Pos.Offset })
 	if len(out) > maxHints {
-		out = out[:maxHints]
+		out, cut = out[:maxHints], true
 	}
-	return out
+	return out, cut
 }
 
 func (s *Snapshot) sourceHints(out []Hint, file, lo, hi int) []Hint {

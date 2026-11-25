@@ -639,3 +639,75 @@ func TestRenameWarningsAloneAreAMessage(t *testing.T) {
 		})
 	}
 }
+
+// A client without annotation support still hears of another symbol of the
+// same name that the rename leaves alone, even when nothing else is unsure.
+func TestRenameShowMessageNamesOtherSymbolsWithoutAnnotations(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "a.sh", "f() { :; }\nf\n")
+	writeFile(t, root, "b.sh", "f() { :; }\nf\n")
+	cfg := renameCaps(true, true, false)
+	cfg.root = root
+	c := clientWith(t, cfg)
+	c.open("a.sh")
+	res := c.renameAt("a.sh", Position{0, 0}, "g")
+	if got := c.editLines(res); strings.Join(got, " ") != "a.sh:1 a.sh:2" {
+		t.Fatalf("edits %v", got)
+	}
+	if len(c.shown) != 1 {
+		t.Fatalf("%d messages: %s", len(c.shown), c.shown)
+	}
+	var m struct {
+		Type    int    `json:"type"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(c.shown[0], &m); err != nil || m.Type != 2 || !strings.Contains(m.Message, "b.sh:1") || !strings.Contains(m.Message, "other symbol") {
+		t.Fatalf("%v %s", err, c.shown[0])
+	}
+}
+
+// The note that goes with a rename (message or annotation) says that excluded
+// files were not checked.
+func TestRenameNoteSaysExcludedFilesWereNotChecked(t *testing.T) {
+	for _, annotations := range []bool{false, true} {
+		root := t.TempDir()
+		writeFile(t, root, "a.sh", "f() { :; }\nf\n")
+		writeFile(t, root, ".gitignore", "vendor/\n")
+		if err := os.MkdirAll(filepath.Join(root, "vendor"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, root, "vendor/x.sh", "f\n")
+		writeFile(t, root, "b.sh", "f() { :; }\n") // another symbol named f: the annotation path
+		cfg := renameCaps(true, true, annotations)
+		cfg.root = root
+		c := clientWith(t, cfg)
+		c.open("a.sh")
+		raw := c.call("textDocument/rename", c.renameParams("a.sh", Position{0, 0}, "g"))
+		got := string(raw)
+		if !annotations {
+			got = ""
+			for _, m := range c.shown {
+				got += string(m)
+			}
+		}
+		if !strings.Contains(got, "1 directory excluded by settings or .gitignore were not checked") {
+			t.Errorf("annotations %v: %s", annotations, got)
+		}
+	}
+}
+
+func TestRenameRefusalSaysWhyPerFile(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "lib.sh", "f() { :; }\n")
+	writeFile(t, root, "big.sh", "f\n"+strings.Repeat("# pad\n", 400))
+	writeFile(t, root, ".bash-lsp.toml", "[limits]\nmax_file_bytes = 1000\n")
+	cfg := renameCaps(true, false, false)
+	cfg.root = root
+	c := clientWith(t, cfg)
+	c.open("lib.sh")
+	r := c.rawCall("textDocument/rename", c.renameParams("lib.sh", Position{0, 0}, "g"))
+	wantRefusal(t, r, "skipped-file")
+	if !strings.Contains(r.Error.Message, "big.sh (too large)") {
+		t.Fatalf("message %q does not say why", r.Error.Message)
+	}
+}

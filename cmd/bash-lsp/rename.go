@@ -139,7 +139,7 @@ func cmdRename(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		var ref *query.RenameRefusedError
 		if o.json && errors.As(err, &ref) {
-			printJSON(stdout, renameResult{Refused: ref})
+			printJSON(stdout, renameResult{Refused: ref, Written: []string{}})
 		}
 		return failRename(stderr, err)
 	}
@@ -331,6 +331,25 @@ func (f *renameFile) check(root string) error {
 	}
 	if issue := query.CheckFileBytes(f.rel, b, f.src); issue != nil {
 		return refusedIssue(issue)
+	}
+	return f.checkDest(root)
+}
+
+// checkDest is the part of check that concerns the file the staged text will
+// replace, once there is one: the path resolves, now, to the very file chosen
+// when the text was staged, and that file is inside the root. A directory
+// swapped for a link and back in between would otherwise leave check looking
+// at one file while the rename replaces another.
+func (f *renameFile) checkDest(root string) error {
+	if f.dest == "" {
+		return nil
+	}
+	real, err := filepath.EvalSymlinks(f.path)
+	if err != nil || real != f.dest {
+		return refusedIssue(&query.ApplyIssue{Code: query.IssueStale, Reason: f.rel + " no longer resolves to the file the new text was staged for"})
+	}
+	if _, ok := query.Inside(root, f.dest); !ok {
+		return refusedIssue(&query.ApplyIssue{Code: query.IssueOutsideRoot, Reason: f.rel + " resolves outside the root"})
 	}
 	return nil
 }

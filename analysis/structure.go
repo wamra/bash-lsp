@@ -1,7 +1,6 @@
 package analysis
 
 import (
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -159,19 +158,26 @@ func wholeLine(src []byte, offset int) bool {
 // maxSelectionDepth is the most levels SelectionChain returns.
 const maxSelectionDepth = 128
 
+// maxHighlights is the most occurrences Highlights returns.
+const maxHighlights = 5000
+
+// MaxLinks is the most links Links returns. A caller that adds a link of its
+// own (the shebang) keeps its total to this.
+const MaxLinks = 5000
+
 // SelectionChain returns the nested ranges around offset of path, innermost
 // first, each strictly containing the one before: the name or word part, the
 // word, the command, the statement, the enclosing blocks, the function and the
 // file. Equal ranges collapse. When the nesting is deeper than
-// maxSelectionDepth the outermost levels are dropped.
-func (s *Snapshot) SelectionChain(path string, offset int) []tree.Range {
+// maxSelectionDepth the outermost levels are dropped, and cut is true.
+func (s *Snapshot) SelectionChain(path string, offset int) (chain []tree.Range, cut bool) {
 	file, ok := s.idx[path]
 	if !ok {
-		return nil
+		return nil, false
 	}
 	f := s.facts[file].File
 	if f == nil || f.Root == nil || offset < 0 || offset > len(f.Src) {
-		return nil
+		return nil, false
 	}
 	var out []tree.Range
 	add := func(r tree.Range) {
@@ -187,7 +193,8 @@ func (s *Snapshot) SelectionChain(path string, offset int) []tree.Range {
 		}
 		out = append(out, r)
 	}
-	for n := f.NodeAt(offset); n != nil && len(out) < maxSelectionDepth; n = n.Parent {
+	n := f.NodeAt(offset)
+	for ; n != nil && len(out) < maxSelectionDepth; n = n.Parent {
 		if n.Name != "" && n.NameRange.End.Offset > n.NameRange.Start.Offset && n.NameRange.Contains(offset) {
 			add(n.NameRange)
 		}
@@ -197,10 +204,11 @@ func (s *Snapshot) SelectionChain(path string, offset int) []tree.Range {
 		}
 		add(r)
 	}
+	cut = n != nil
 	if len(out) > maxSelectionDepth {
-		out = out[:maxSelectionDepth]
+		out, cut = out[:maxSelectionDepth], true
 	}
-	return out
+	return out, cut
 }
 
 // trimTerminator cuts the `;` and blanks a statement's range ends with, so a
@@ -225,41 +233,62 @@ type Highlight struct {
 
 // Highlights returns, in source order, the declarations of the symbol under
 // the cursor in path and the uses in path that resolve to it (a use bound only
-// as a candidate is left out, as are uses whose text is not the name).
-func (s *Snapshot) Highlights(path string, offset int) []Highlight {
+// as a candidate is left out, as are uses whose text is not the name). At most
+// maxHighlights come back, the one under the cursor among them; cut is true
+// when there were more.
+func (s *Snapshot) Highlights(path string, offset int) (out []Highlight, cut bool) {
 	h, file, ok := s.at(path, offset)
 	if !ok {
-		return nil
+		return nil, false
 	}
 	byStart := map[int]Highlight{}
-	put := func(r tree.Range, write bool) {
-		if old, seen := byStart[r.Start.Offset]; seen {
+	put := func(r tree.Range, write bool) bool {
+		old, seen := byStart[r.Start.Offset]
+		if !seen && len(byStart) >= maxHighlights {
+			return false
+		}
+		if seen {
 			write = write || old.Write
 			if old.Range.End.Offset > r.End.Offset {
 				r = old.Range
 			}
 		}
 		byStart[r.Start.Offset] = Highlight{Range: r, Write: write}
+		return true
 	}
+	// the occurrence under the cursor goes in first, so the cap cannot drop it
+	if h.decl != nil {
+		put(h.decl.NameRange, true)
+	}
+	for _, b := range h.binds {
+		if b.File == path && b.Res == Resolved && b.Use.NamesTarget() {
+			put(b.Use.Range, b.Use.Kind == UseVarWrite)
+		}
+	}
+syms:
 	for _, sym := range s.hitSyms(h) {
 		for _, d := range sym.Decls {
-			if s.declFile[d] == file {
-				put(d.NameRange, true)
+			if s.declFile[d] == file && !put(d.NameRange, true) {
+				cut = true
+				break syms
 			}
 		}
 		for _, b := range s.bySym[sym] {
 			if b.File != path || b.Res != Resolved || !b.Use.NamesTarget() {
 				continue
 			}
-			put(b.Use.Range, b.Use.Kind == UseVarWrite)
+			if !put(b.Use.Range, b.Use.Kind == UseVarWrite) {
+				cut = true
+				break syms
+			}
 		}
 	}
-	out := make([]Highlight, 0, len(byStart))
+	out = make([]Highlight, 0, len(byStart))
 	for _, hl := range byStart {
 		out = append(out, hl)
 	}
 	sort.Slice(out, func(a, b int) bool { return out[a].Range.Start.Offset < out[b].Range.Start.Offset })
-	return out
+	return out, cut
 }
 
 // Link is a clickable span of a file. Target is an absolute path.
@@ -272,16 +301,20 @@ type Link struct {
 // Links returns the links of path in source order: each `source` or `.` word
 // with exactly one target and each executed workspace file. A `source` with
 // several targets (a glob loader) or none gives no link. The shebang is not
-// here: Shebang names it and the caller checks that the file exists.
-func (s *Snapshot) Links(path string) []Link {
+// here: Shebang names it. At most MaxLinks come back, the first in source
+// order; cut is true when there were more.
+func (s *Snapshot) Links(path string) (out []Link, cut bool) {
 	file, ok := s.idx[path]
 	if !ok {
-		return nil
+		return nil, false
 	}
-	var out []Link
 	for _, se := range s.edges[file] {
 		if se.Status != SourceResolved || len(se.Targets) != 1 {
 			continue
+		}
+		if len(out) >= MaxLinks {
+			cut = true
+			break
 		}
 		r := se.Ref.Range
 		if se.Ref.Word != nil {
@@ -289,22 +322,31 @@ func (s *Snapshot) Links(path string) []Link {
 		}
 		out = append(out, Link{Range: r, Target: se.Targets[0], Tooltip: "source → " + s.rel(se.Targets[0])})
 	}
+	invokes := 0
 	for k := s.recAt[file]; k < s.recAt[file+1]; k++ {
 		if s.recs[k].rel != RelInvokes {
 			continue
+		}
+		if invokes++; invokes > MaxLinks {
+			cut = true
+			break
 		}
 		e := s.edgeOf(file, &s.recs[k])
 		out = append(out, Link{Range: e.Site.Range, Target: e.ToFile, Tooltip: "invokes → " + s.rel(e.ToFile)})
 	}
 	sort.SliceStable(out, func(a, b int) bool { return out[a].Range.Start.Offset < out[b].Range.Start.Offset })
-	return out
+	if len(out) > MaxLinks {
+		out, cut = out[:MaxLinks], true
+	}
+	return out, cut
 }
 
 // Shebang returns the interpreter of the `#!` first line of path as a link
 // candidate: its range, the absolute path text as Target, and the tooltip.
-// ok is false when there is no shebang or the interpreter is not an absolute
-// path (`#!/usr/bin/env bash` names `/usr/bin/env` only). It does not look at
-// the file system: the caller checks that Target exists.
+// ok is false when there is no shebang or the interpreter is not a plain
+// absolute path (see interpreterPath; `#!/usr/bin/env bash` names
+// `/usr/bin/env` only). It does not look at the file system, and the path comes
+// from the file's text: the caller decides whether it is safe to point at.
 func (s *Snapshot) Shebang(path string) (Link, bool) {
 	file, ok := s.idx[path]
 	if !ok {
@@ -333,9 +375,33 @@ func (s *Snapshot) Shebang(path string) (Link, bool) {
 		n = len(rest)
 	}
 	interp := rest[:n]
-	if interp == "" || !filepath.IsAbs(interp) {
+	if !interpreterPath(interp) {
 		return Link{}, false
 	}
 	return Link{Range: tree.Range{Start: f.PosAt(start), End: f.PosAt(start + n)}, Target: interp,
-		Tooltip: "interpreter → " + filepath.ToSlash(interp)}, true
+		Tooltip: "interpreter → " + interp}, true
+}
+
+// interpreterPath reports whether p, the interpreter text of a shebang, is a
+// plain absolute path in slash form: one leading slash, no empty or dot
+// segment, no trailing slash, and no backslash, colon or control character. It
+// is a rule on the text alone, the same on every platform: what
+// filepath.IsAbs accepts depends on the platform, and on Windows it accepts
+// `//host/share/x` and `\\host\share\x`, which name a machine the repository
+// chooses, and `C:\x`, which names a volume.
+func interpreterPath(p string) bool {
+	if len(p) < 2 || p[0] != '/' || p[len(p)-1] == '/' {
+		return false
+	}
+	for i := 0; i < len(p); i++ {
+		if c := p[i]; c == '\\' || c == ':' || c < ' ' || c == 0x7f {
+			return false
+		}
+	}
+	for _, seg := range strings.Split(p[1:], "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return false
+		}
+	}
+	return true
 }

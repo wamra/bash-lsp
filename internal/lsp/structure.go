@@ -2,7 +2,8 @@ package lsp
 
 import (
 	"encoding/json"
-	"os"
+	slashpath "path"
+	"path/filepath"
 	"sort"
 
 	"github.com/wamra/bash-lsp/analysis"
@@ -49,6 +50,10 @@ type documentLink struct {
 type foldingRangeParams struct {
 	TextDocument textDocumentIdentifier `json:"textDocument"`
 }
+
+// maxSelectionPositions is the most positions of one selectionRange request
+// that get a chain; the answer still has one entry per position.
+const maxSelectionPositions = 1000
 
 type selectionRangeParams struct {
 	TextDocument textDocumentIdentifier `json:"textDocument"`
@@ -148,6 +153,31 @@ func (s *server) foldingRange(raw json.RawMessage) (any, *rpcError) {
 	return foldingRanges(lspFolds(f, snap.Folds(path)), s.caps()), nil
 }
 
+// interpreterInProfile reports whether target, a plain slash-form absolute
+// path (analysis.Shebang), is in a directory of the PATH profile. A path that
+// is not absolute on this platform is in none.
+func (s *server) interpreterInProfile(target string) bool {
+	return s.pathProfile().HasDir(filepath.FromSlash(slashpath.Dir(target)))
+}
+
+// handlerCancelled reports whether the request being handled was cancelled
+// since the handler began, for a handler to check between steps.
+func (s *server) handlerCancelled() bool {
+	if s.cur == nil {
+		return false
+	}
+	select {
+	case <-s.cur.done:
+		return true
+	default:
+		return false
+	}
+}
+
+// cutNotice tells the client, once per session, that an answer was cut at its
+// bound.
+func (s *server) cutNotice(msg string) { s.logMessageOnce(messageTypeInfo, msg) }
+
 func (s *server) selectionRange(raw json.RawMessage) (any, *rpcError) {
 	var p selectionRangeParams
 	if rerr := decode(raw, &p); rerr != nil {
@@ -164,12 +194,21 @@ func (s *server) selectionRange(raw json.RawMessage) (any, *rpcError) {
 	f := fileOf(snap, path)
 	out := make([]*selectionRange, 0, len(p.Positions))
 	cs := converters{}
-	for _, pos := range p.Positions {
-		if f == nil {
+	for i, pos := range p.Positions {
+		if s.handlerCancelled() {
+			return nil, cancelledError()
+		}
+		if f == nil || i >= maxSelectionPositions {
+			if f != nil && i == maxSelectionPositions {
+				s.cutNotice("selectionRange: a request holds more positions than are answered; each position past the first 1000 gets an empty range")
+			}
 			out = append(out, &selectionRange{Range: Range{Start: pos, End: pos}})
 			continue
 		}
-		chain := snap.SelectionChain(path, f.FromUTF16(pos.Line, pos.Character).Offset)
+		chain, cut := snap.SelectionChain(path, f.FromUTF16(pos.Line, pos.Character).Offset)
+		if cut {
+			s.cutNotice("selectionRange: the code is nested deeper than one chain holds; the outermost levels are left out")
+		}
 		if len(chain) == 0 {
 			out = append(out, &selectionRange{Range: Range{Start: pos, End: pos}})
 			continue
@@ -192,7 +231,10 @@ func (s *server) documentHighlight(raw json.RawMessage) (any, *rpcError) {
 	if rerr != nil || !ok {
 		return nil, rerr
 	}
-	hs := snap.Highlights(path, off)
+	hs, cut := snap.Highlights(path, off)
+	if cut {
+		s.cutNotice("documentHighlight: the symbol has more occurrences in this file than one answer holds; the rest are left out")
+	}
 	if len(hs) == 0 {
 		return nil, nil
 	}
@@ -221,14 +263,19 @@ func (s *server) documentLink(raw json.RawMessage) (any, *rpcError) {
 		return nil, rerr
 	}
 	snap := be.Snapshot()
-	links := snap.Links(path)
+	links, cut := snap.Links(path)
+	if cut {
+		s.cutNotice("documentLink: the file has more links than one answer holds; the rest are left out")
+	}
 	cs := converters{}
 	out := make([]documentLink, 0, len(links)+1)
-	// The shebang interpreter: one stat of the exact path on the first line,
-	// a link only for a regular file (or a symlink to one).
-	if l, ok := snap.Shebang(path); ok {
-		if st, err := os.Stat(l.Target); err == nil && st.Mode().IsRegular() {
-			links = append([]analysis.Link{l}, links...)
+	// The shebang interpreter: the path is the file's text, so it is linked
+	// only when it sits in a directory of the PATH profile this server
+	// already holds. Nothing on the file system is looked at.
+	if l, ok := snap.Shebang(path); ok && s.interpreterInProfile(l.Target) {
+		links = append([]analysis.Link{l}, links...)
+		if len(links) > analysis.MaxLinks {
+			links = links[:analysis.MaxLinks]
 		}
 	}
 	for _, l := range links {

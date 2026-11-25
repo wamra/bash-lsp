@@ -92,6 +92,9 @@ func (e *RenameRefusedError) Error() string {
 	b.WriteString(head)
 	for i, s := range e.Sites {
 		line := fmt.Sprintf("\nsite  %s:%d:%d", oneLine(redact.String(s.Path)), s.Line, s.Col)
+		if s.Why != "" {
+			line += "  " + oneLine(redact.String(s.Why))
+		}
 		if b.Len()+len(line) > maxRefusalText {
 			fmt.Fprintf(&b, "\nmore  %d sites are not listed", len(e.Sites)-i)
 			break

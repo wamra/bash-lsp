@@ -196,7 +196,7 @@ func TestDiffTokens(t *testing.T) {
 		{"insert at start", a, slices.Concat(tup(9, 9, 9, 9, 9), a), 0, 0, tup(9, 9, 9, 9, 9)},
 	}
 	for _, tc := range cases {
-		s, d, data := DiffTokens(tc.prev, tc.next)
+		s, d, data := diffTokens(tc.prev, tc.next)
 		if s != tc.start || d != tc.del || !slices.Equal(data, tc.data) {
 			t.Errorf("%s: got (%d,%d,%v), want (%d,%d,%v)", tc.name, s, d, data, tc.start, tc.del, tc.data)
 		}

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"os"
 	"path/filepath"
@@ -211,9 +212,10 @@ type overlay struct {
 type skipKind uint8
 
 const (
-	skipZsh   skipKind = iota + 1 // listed and skipped
-	skipBig                       // over MaxFileBytes
-	skipCount                     // over MaxFiles
+	skipZsh    skipKind = iota + 1 // listed and skipped
+	skipBig                        // over MaxFileBytes
+	skipCount                      // over MaxFiles
+	skipUnread                     // listed, could not be read
 )
 
 type skipInfo struct {
@@ -221,6 +223,19 @@ type skipInfo struct {
 	line   string // LimitsHit line for skipBig
 	path   string // display spelling of the skipped file
 	reason string
+}
+
+// short is the reason in a few words, as a refusal lists it.
+func (s skipInfo) short() string {
+	switch s.kind {
+	case skipBig:
+		return "too large"
+	case skipCount:
+		return "over the file limit"
+	case skipUnread:
+		return "unreadable"
+	}
+	return "unsupported dialect"
 }
 
 // Skip is a file the discovery listed but did not load, with the reason.
@@ -235,6 +250,10 @@ func (w *Workspace) zshSkip(path string) skipInfo {
 
 func (w *Workspace) countSkip(path string) skipInfo {
 	return skipInfo{kind: skipCount, path: path, reason: fmt.Sprintf("file limit of %d reached", w.lim.MaxFiles)}
+}
+
+func (w *Workspace) unreadSkip(path string) skipInfo {
+	return skipInfo{kind: skipUnread, path: path, reason: "the file could not be read"}
 }
 
 func (w *Workspace) bigSkip(path string, size int64) skipInfo {
@@ -278,13 +297,17 @@ type Workspace struct {
 	skips     map[string]skipInfo
 	dirName   map[string]string // key(real dir) -> the walk's logical path for it
 	rcCache   map[string]rcInfo
-	rcReal    map[string]bool    // search directory -> inside the root after links; cleared with rcCache
-	excl      map[string]bool    // keys of directories whose subtrees another workspace owns
-	listings  map[string]listing // directory listings for spelling on a folding volume, by key
-	unlisted  map[string]string  // keys of directories too large to list for spelling -> their LimitsHit line; cleared by a full walk
-	ignBudget *ignore.Budget     // the ignore work of the last walk
-	depthHit  map[string]string  // root-relative directories the walk did not enter for depth -> LimitsHit line; reset by a walk
-	rcNotes   map[string]string  // dropped .shellcheckrc entries, by rc directory and entry; cleared with rcCache
+	rcReal    map[string]bool                // search directory -> inside the root after links; cleared with rcCache
+	excl      map[string]bool                // keys of directories whose subtrees another workspace owns
+	listings  map[string]listing             // directory listings for spelling on a folding volume, by key
+	unlisted  map[string]string              // keys of directories too large to list for spelling -> their LimitsHit line; cleared by a full walk
+	ignBudget *ignore.Budget                 // the ignore work of the last walk
+	depthHit  map[string]string              // root-relative directories the walk did not enter for depth -> LimitsHit line; reset by a walk
+	unwalked  map[string]analysis.Unanalysed // keys of directories the walk did not list (too deep, unreadable) -> the directory and why; reset by a walk
+	unreadDir map[string]string              // keys of directories that could not be listed -> their LimitsHit line; reset by a walk
+	exclFiles int                            // shell-named files, and
+	exclDirs  int                            // directories, the last walk left out by files.exclude, files.include or a .gitignore
+	rcNotes   map[string]string              // dropped .shellcheckrc entries, by rc directory and entry; cleared with rcCache
 	snap      atomic.Pointer[analysis.Snapshot]
 
 	// Fixed at Open (Config).
@@ -657,6 +680,7 @@ func (w *Workspace) Refresh(paths ...string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	changed := w.rcStale()
+	skipN, skipSum := w.skipSig()
 	if changed {
 		w.rcCache = map[string]rcInfo{}
 		w.rcReal = map[string]bool{}
@@ -712,6 +736,9 @@ func (w *Workspace) Refresh(paths ...string) {
 				changed = true
 			}
 		}
+	}
+	if n, sum := w.skipSig(); n != skipN || sum != skipSum {
+		changed = true
 	}
 	if changed {
 		w.rebuild()
@@ -780,6 +807,9 @@ func (w *Workspace) Report() Report {
 	}
 	var dirs []string
 	for _, l := range w.depthHit {
+		dirs = append(dirs, l)
+	}
+	for _, l := range w.unreadDir {
 		dirs = append(dirs, l)
 	}
 	for _, l := range w.unlisted {
@@ -947,8 +977,36 @@ func (w *Workspace) rebuild() {
 		}
 		files[o.entry.path] = o.entry.facts
 	}
+	var unanalysed []analysis.Unanalysed
+	for _, s := range w.skips {
+		if _, ok := files[s.path]; !ok { // an open document stands in for the file
+			unanalysed = append(unanalysed, analysis.Unanalysed{Path: s.path, Reason: s.short()})
+		}
+	}
+	for _, u := range w.unwalked {
+		unanalysed = append(unanalysed, u)
+	}
 	w.gen++
-	w.snap.Store(analysis.Build(files, analysis.Options{Root: w.root, SearchPaths: w.searchPaths, Prev: w.snap.Load(), Oversize: w.oversize, Commands: w.commands}, w.gen))
+	w.snap.Store(analysis.Build(files, analysis.Options{Root: w.root, SearchPaths: w.searchPaths, Prev: w.snap.Load(), Oversize: w.oversize, Commands: w.commands,
+		Unanalysed: unanalysed, Excluded: analysis.Excluded{Files: w.exclFiles, Dirs: w.exclDirs}}, w.gen))
+}
+
+// skipSig summarises the set of skipped files, so that Refresh can tell that
+// a refresh changed it: the snapshot lists them. Caller holds w.mu.
+func (w *Workspace) skipSig() (n int, sum uint64) {
+	add := func(k string) {
+		h := fnv.New64a()
+		h.Write([]byte(k))
+		sum ^= h.Sum64()
+	}
+	for k := range w.skips {
+		add(k)
+	}
+	for k := range w.unwalked {
+		add("dir:" + k)
+	}
+	add(fmt.Sprint("excluded:", w.exclFiles, ",", w.exclDirs))
+	return len(w.skips) + len(w.unwalked), sum
 }
 
 // oversize reports whether path is a file the walk skipped for its size.
@@ -1040,6 +1098,9 @@ func (w *Workspace) walk() (cands []candidate) {
 	w.skips = map[string]skipInfo{}
 	w.dirName = map[string]string{w.key(w.root): w.root}
 	w.depthHit = map[string]string{}
+	w.unwalked = map[string]analysis.Unanalysed{}
+	w.unreadDir = map[string]string{}
+	w.exclFiles, w.exclDirs = 0, 0
 	w.unlisted = map[string]string{} // a full walk lists large directories again
 	visited := map[string]bool{w.key(w.root): true}
 	w.ignBudget = ignore.NewBudget(maxIgnoreRules, maxIgnoreEvals, ignoreEvalsPerEntry)
@@ -1051,6 +1112,8 @@ func (w *Workspace) walk() (cands []candidate) {
 		}
 		ents, err := os.ReadDir(dir) // sorted by name
 		if err != nil {
+			w.unwalked[w.key(dir)] = analysis.Unanalysed{Path: dir, Reason: "directory unreadable"}
+			w.unreadDir[w.key(dir)] = fmt.Sprintf("directory could not be read: %s and below not read", w.relSlash(dir))
 			return
 		}
 		for _, de := range ents {
@@ -1075,11 +1138,16 @@ func (w *Workspace) walk() (cands []candidate) {
 				isDir, target = true, rt
 			}
 			if isDir {
-				if w.skipDir(name) || set.Ignored(relp, true) || w.exclude.Ignored(relp, true) || visited[w.key(target)] || w.excluded(target) {
+				if w.skipDir(name) || visited[w.key(target)] || w.excluded(target) {
+					continue
+				}
+				if set.Ignored(relp, true) || w.exclude.Ignored(relp, true) {
+					w.exclDirs++
 					continue
 				}
 				if depth+1 > w.lim.MaxDirDepth {
 					w.depthHit[w.key(relp)] = fmt.Sprintf("directory depth limit of %d reached: %s and below not read", w.lim.MaxDirDepth, relp)
+					w.unwalked[w.key(full)] = analysis.Unanalysed{Path: full, Reason: "directory too deep"}
 					continue
 				}
 				if de.Type()&os.ModeSymlink != 0 && w.aliasIgnored(target) {
@@ -1090,7 +1158,13 @@ func (w *Workspace) walk() (cands []candidate) {
 				rec(full, target, relp, set, depth+1)
 				continue
 			}
-			if !de.Type().IsRegular() || set.Ignored(relp, false) || w.exclude.Ignored(relp, false) || !w.included(relp) {
+			if !de.Type().IsRegular() {
+				continue
+			}
+			if set.Ignored(relp, false) || w.exclude.Ignored(relp, false) || !w.included(relp) {
+				if shellExts[strings.ToLower(filepath.Ext(name))] {
+					w.exclFiles++ // by name: the file is not opened
+				}
 				continue
 			}
 			switch classify(full) {
@@ -1179,6 +1253,8 @@ func (w *Workspace) reconcileAll() (changed bool) {
 			}
 			if r.big { // grew past the limit after the stat
 				w.skips[k] = w.bigSkip(todo[i].path, todo[i].size)
+			} else {
+				w.skips[k] = w.unreadSkip(todo[i].path)
 			}
 			continue
 		}
@@ -1229,7 +1305,9 @@ func (w *Workspace) refreshOne(path string) (changed bool) {
 	}
 	src, big, err := readBounded(path, w.lim.MaxFileBytes)
 	if err != nil {
-		return drop()
+		d := drop()
+		w.skips[k] = w.unreadSkip(path)
+		return d
 	}
 	if big {
 		d := drop()

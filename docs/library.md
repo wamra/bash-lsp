@@ -130,6 +130,25 @@ nested more than three strings deep, is a `Dynamic`/`expansion` edge.
   an existing file left out of `files` for its size; a `source` naming one is
   `Unresolved`/`skipped-for-size` instead of `not-found`. `Analyze` is `Build`
   plus parsing and binding.
+- `Options.Unanalysed []Unanalysed` lists what the caller knows of and left
+  out of `files`: `Unanalysed{Path, Reason}` is a file (too large, over a file
+  limit, unreadable, a dialect not analysed) or a directory never listed (too
+  deep, unreadable), with a clean absolute path and a short reason. Such a
+  place is in no file's view and may use any name, so while the list is not
+  empty, and while any file of the snapshot has `File.Skipped` set,
+  `PlanRename` and `PlanRenameByName` refuse with `skipped-file`; the refusal's
+  `Sites` are those places, each `Location.Why` holding the reason (at most 100
+  are listed). `Options.Excluded Excluded{Files, Dirs}` counts the shell files
+  and directories the caller left out because its owner excluded them
+  (`files.exclude`, `.gitignore`); the rename is not refused, and its plan has
+  a warning that they were not checked.
+- Four queries return a second result, `cut bool`, true when the answer was
+  cut at its bound and the rest left out: `Highlights(path, offset) ([]Highlight,
+  bool)` (at most 5,000, the occurrence under the cursor kept), `Links(path)
+  ([]Link, bool)` (the first `MaxLinks` = 5,000 in source order),
+  `Hints(path, within, sources, params) ([]Hint, bool)` (the first 5,000) and
+  `SelectionChain(path, offset) ([]tree.Range, bool)` (at most 128 levels, the
+  outermost dropped).
 - `func ResolveSources(ff *FileFacts, root string, searchPaths []string, exists func(string) bool, glob func(string) []string) []SourceEdge`
   resolves every `source` command of one file; `SourceEdge{Ref SourceRef,
   Targets []string, Status SourceStatus, How string, Skipped string}` (`How`
@@ -167,7 +186,8 @@ nested more than three strings deep, is a `Dynamic`/`expansion` edge.
   ScopeKind`; `SymbolInfo{Name, Kind, Path, Range}` is a workspace-symbol hit;
   `DocSymbol{Name, Kind, Detail, Range, Selection, Children}` is one outline
   entry; `DeclKind` is `DeclFunction`, `DeclVariable` or `DeclAlias`;
-  `Location{Path, Range}`.
+  `Location{Path, Range, Why}` (`Why` is set only on the sites of a
+  `skipped-file` refusal).
 - `Binding{Use, File, Sym, Res, Reason}`; `Resolution` is `Resolved`,
   `Candidate`, `Dynamic` or `Unresolved`, and has `String()`.
   `SourceRef{Node, Word, Range, Directive}` is one `source`/`.` (or bats

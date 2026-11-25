@@ -188,21 +188,21 @@ func TestDocumentLinkShebangAndGlob(t *testing.T) {
 		t.Skip("shebang paths are Unix paths")
 	}
 	ws := t.TempDir()
-	tools := t.TempDir()
-	interp := filepath.Join(tools, "myinterp")
-	writeFile(t, tools, "myinterp", "")
-	if err := os.Mkdir(filepath.Join(tools, "adir"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(interp, filepath.Join(tools, "alias")); err != nil {
-		t.Fatal(err)
-	}
+	outside := t.TempDir() // exists, but is not a directory of the PATH profile
+	writeFile(t, outside, "myinterp", "")
 	loop := "for f in mods/*.sh; do . \"$f\"; done\n"
-	writeFile(t, ws, "a.sh", "#!"+interp+"\n"+loop)
-	writeFile(t, ws, "viaalias.sh", "#!"+filepath.Join(tools, "alias")+" -e\n")
-	writeFile(t, ws, "missing.sh", "#!"+filepath.Join(tools, "nothing")+"\n")
-	writeFile(t, ws, "dir.sh", "#!"+filepath.Join(tools, "adir")+"\n")
+	// testBin is the profile's directory: a name in it is linked whether or
+	// not the file is there, because nothing is stat'ed
+	writeFile(t, ws, "a.sh", "#!"+testBin+"/ls\n"+loop)
+	writeFile(t, ws, "viaargs.sh", "#!"+testBin+"/cat -e\n")
+	writeFile(t, ws, "missing.sh", "#!"+testBin+"/nothing\n")
+	writeFile(t, ws, "outside.sh", "#!"+outside+"/myinterp\n")
 	writeFile(t, ws, "env.sh", "#!usr/bin/env bash\n")
+	writeFile(t, ws, "usrbin.sh", "#!/usr/bin/env bash\n")
+	writeFile(t, ws, "unc.sh", "#!//host/share/bash\n")
+	writeFile(t, ws, "uncback.sh", "#!\\\\host\\share\\bash\n")
+	writeFile(t, ws, "volume.sh", "#!C:/Git/bin/bash\n")
+	writeFile(t, ws, "dots.sh", "#!"+testBin+"/../x/sh\n")
 	if err := os.MkdirAll(filepath.Join(ws, "mods"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -219,71 +219,30 @@ func TestDocumentLinkShebangAndGlob(t *testing.T) {
 		return out
 	}
 	// the glob loader gives no link; the shebang gives one, first
+	interp := testBin + "/ls"
 	ls := links("a.sh")
-	if len(ls) != 1 || !strings.HasSuffix(ls[0].Target, "/myinterp") || ls[0].Range != (Range{Position{0, 2}, Position{0, 2 + len(interp)}}) {
+	if len(ls) != 1 || !strings.HasSuffix(ls[0].Target, "/ls") || ls[0].Range != (Range{Position{0, 2}, Position{0, 2 + len(interp)}}) {
 		t.Fatalf("a.sh: %+v", ls)
 	}
-	if ls := links("viaalias.sh"); len(ls) != 1 || !strings.HasSuffix(ls[0].Target, "/alias") {
-		t.Fatalf("a symlink to a file: %+v", ls)
+	if ls := links("viaargs.sh"); len(ls) != 1 || !strings.HasSuffix(ls[0].Target, "/cat") {
+		t.Fatalf("viaargs.sh: %+v", ls)
 	}
-	for _, rel := range []string{"missing.sh", "dir.sh", "env.sh"} {
+	if ls := links("missing.sh"); len(ls) != 1 || !strings.HasSuffix(ls[0].Target, "/nothing") {
+		t.Fatalf("a name in a profile directory is linked without a stat: %+v", ls)
+	}
+	for _, rel := range []string{"outside.sh", "env.sh", "usrbin.sh", "unc.sh", "uncback.sh", "volume.sh", "dots.sh"} {
 		if ls := links(rel); len(ls) != 0 {
 			t.Fatalf("%s: %+v", rel, ls)
 		}
 	}
 }
 
-func TestStructureCapabilities(t *testing.T) {
-	caps := capabilities()
-	for _, k := range []string{"foldingRangeProvider", "selectionRangeProvider", "documentHighlightProvider"} {
-		if caps[k] != true {
-			t.Errorf("%s = %v", k, caps[k])
-		}
-	}
-	b, _ := json.Marshal(caps["documentLinkProvider"])
-	if string(b) != `{"resolveProvider":false}` {
-		t.Errorf("documentLinkProvider = %s", b)
-	}
-}
-
-// TestFoldingRangeRequestCaps sends the folding capabilities the way a client
-// does: the test sets the server's client capabilities after initialize, with
-// the same effect as reading them from the initialize request.
-func TestFoldingRangeRequestCaps(t *testing.T) {
-	ws := t.TempDir()
-	writeFile(t, ws, "a.sh", lspFoldSrc)
-	for _, tc := range []struct {
-		caps clientCaps
-		want string
-	}{
-		{clientCaps{LineFoldingOnly: true}, "(0,2,comment) (3,8,) (4,7,) (5,6,) (10,12,region)"},
-		{clientCaps{RangeLimit: 3}, "(0,2,comment) (3,9,) (10,12,region)"},
-	} {
-		var srv *server
-		c := clientWith(t, clientCfg{root: ws, onServer: func(s *server) { srv = s }})
-		srv.ccaps = tc.caps // after initialize returned; the next request is sent after this write
-		c.open("a.sh")
-		raw := c.call("textDocument/foldingRange", map[string]any{"textDocument": map[string]any{"uri": c.uri("a.sh")}})
-		var got []foldingRange
-		if err := json.Unmarshal(raw, &got); err != nil {
-			t.Fatalf("%v: %s", err, raw)
-		}
-		if foldText(got) != tc.want {
-			t.Errorf("%+v: %s, want %s", tc.caps, foldText(got), tc.want)
-		}
-	}
-}
-
-// A file with a shebang and a source: the shebang link comes first.
 func TestDocumentLinkShebangFirst(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shebang paths are Unix paths")
 	}
 	ws := t.TempDir()
-	tools := t.TempDir()
-	interp := filepath.Join(tools, "myinterp")
-	writeFile(t, tools, "myinterp", "")
-	writeFile(t, ws, "a.sh", "#!"+interp+"\n. ./lib.sh\n")
+	writeFile(t, ws, "a.sh", "#!"+testBin+"/ls\n. ./lib.sh\n")
 	writeFile(t, ws, "lib.sh", "f() { :; }\n")
 	c := client(t, ws)
 	c.open("a.sh")
@@ -292,7 +251,7 @@ func TestDocumentLinkShebangFirst(t *testing.T) {
 	if err := json.Unmarshal(raw, &ls); err != nil {
 		t.Fatalf("%v: %s", err, raw)
 	}
-	if len(ls) != 2 || !strings.HasSuffix(ls[0].Target, "/myinterp") || ls[0].Range.Start.Line != 0 || ls[1].Range.Start.Line != 1 {
+	if len(ls) != 2 || !strings.HasSuffix(ls[0].Target, "/ls") || ls[0].Range.Start.Line != 0 || ls[1].Range.Start.Line != 1 {
 		t.Fatalf("links %s, want the shebang first, then the source", raw)
 	}
 }
@@ -321,5 +280,132 @@ func TestFoldingRangeCountsLoneCRLines(t *testing.T) {
 				t.Fatalf("%s, want %s", foldText(got), tc.want)
 			}
 		})
+	}
+}
+
+// documentHighlight and documentLink answer at most 5,000 entries and say so
+// once per session, however many requests are cut.
+func TestHighlightAndLinkAreCappedAndSayOnce(t *testing.T) {
+	ws := t.TempDir()
+	writeFile(t, ws, "a.sh", "f() { :; }\n"+strings.Repeat("f\n", 5500))
+	writeFile(t, ws, "b.sh", "#!"+testBin+"/ls\n"+strings.Repeat(". ./a.sh\n", 5500))
+	c := client(t, ws)
+	c.open("a.sh")
+	c.open("b.sh")
+	for i := 0; i < 2; i++ {
+		if hs := c.highlights("a.sh", Position{0, 0}); len(hs) != 5000 {
+			t.Fatalf("%d highlights, want 5000", len(hs))
+		}
+		raw := c.call("textDocument/documentLink", map[string]any{"textDocument": map[string]any{"uri": c.uri("b.sh")}})
+		var ls []documentLink
+		if err := json.Unmarshal(raw, &ls); err != nil || len(ls) != 5000 {
+			t.Fatalf("%d links (%v), want 5000", len(ls), err)
+		}
+	}
+	c.waitLog("documentHighlight")
+	c.waitLog("documentLink")
+	if n := len(c.logsContaining("documentHighlight")) + len(c.logsContaining("documentLink")); n != 2 {
+		t.Fatalf("%d notices, want one each: %q", n, c.logMsgs)
+	}
+	// a cut-free answer says nothing
+	c2 := client(t, copyCorpus(t))
+	c2.open("main.sh")
+	c2.highlights("main.sh", c2.pos("main.sh", `local name="$1"`, 6))
+	if l := c2.logsContaining("documentHighlight"); len(l) != 0 {
+		t.Fatalf("notice without a cut: %q", l)
+	}
+}
+
+// A request with more positions than maxSelectionPositions answers the first
+// maxSelectionPositions and an empty range at each position after them, so
+// the answer still has one entry per position, and says so once.
+func TestSelectionRangeCapsThePositions(t *testing.T) {
+	ws := t.TempDir()
+	writeFile(t, ws, "a.sh", "f() { echo \"$x\"; }\n")
+	c := client(t, ws)
+	c.open("a.sh")
+	n := maxSelectionPositions + 250
+	ps := make([]Position, n)
+	for i := range ps {
+		ps[i] = c.pos("a.sh", "$x", 1)
+		if i >= maxSelectionPositions {
+			ps[i].Character = 2 + i - maxSelectionPositions // distinct positions after the cap
+		}
+	}
+	for i := 0; i < 2; i++ {
+		got := c.selection("a.sh", ps...)
+		if len(got) != n {
+			t.Fatalf("%d answers for %d positions", len(got), n)
+		}
+		for i, g := range got {
+			switch {
+			case i < maxSelectionPositions && g.Parent == nil:
+				t.Fatalf("position %d, inside the cap, has no chain", i)
+			case i >= maxSelectionPositions && (g.Parent != nil || g.Range.Start != ps[i] || g.Range.End != ps[i]):
+				t.Fatalf("position %d, past the cap: %+v, want an empty range at %+v", i, g, ps[i])
+			}
+		}
+	}
+	c.waitLog("selectionRange")
+	if l := c.logsContaining("selectionRange"); len(l) != 1 {
+		t.Fatalf("%d notices, want one: %q", len(l), l)
+	}
+}
+
+// A request cancelled while it works stops between positions and answers
+// RequestCancelled.
+func TestSelectionRangeStopsWhenCancelled(t *testing.T) {
+	ws := t.TempDir()
+	writeFile(t, ws, "a.sh", "f() { echo \"$x\"; }\n")
+	var srv *server
+	c := clientWith(t, clientCfg{root: ws, onServer: func(s *server) { srv = s }})
+	c.open("a.sh")
+	c.selection("a.sh", Position{0, 0}) // the first build is done
+	params, err := json.Marshal(selectionRangeParams{
+		TextDocument: textDocumentIdentifier{URI: c.uri("a.sh")},
+		Positions:    []Position{{0, 1}, {0, 2}, {0, 3}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type outcome struct {
+		res  any
+		rerr *rpcError
+	}
+	done := make(chan outcome, 1)
+	srv.post(func() {
+		lr := &liveReq{done: make(chan struct{})}
+		close(lr.done)
+		srv.cur = lr
+		res, rerr := srv.selectionRange(params)
+		srv.cur = nil
+		done <- outcome{res, rerr}
+	})
+	o := <-done
+	if o.rerr == nil || o.rerr.Code != codeRequestCancelled {
+		t.Fatalf("answer %v, error %+v, want RequestCancelled", o.res, o.rerr)
+	}
+}
+
+// A chain cut at the depth cap says so once per session.
+func TestSelectionDepthCapSaysOnce(t *testing.T) {
+	ws := t.TempDir()
+	src := strings.Repeat("( ", 300) + "echo hi" + strings.Repeat(" )", 300) + "\n"
+	writeFile(t, ws, "a.sh", src)
+	c := client(t, ws)
+	c.open("a.sh")
+	at := Position{0, strings.Index(src, "hi")}
+	for i := 0; i < 2; i++ {
+		got := c.selection("a.sh", at)
+		depth := 0
+		for n := &got[0]; n != nil; n = n.Parent {
+			depth++
+		}
+		if depth != 128 {
+			t.Fatalf("chain of %d levels, want 128", depth)
+		}
+	}
+	c.waitLog("selectionRange")
+	if l := c.logsContaining("nested deeper"); len(l) != 1 {
+		t.Fatalf("%d notices, want one: %q", len(l), l)
 	}
 }

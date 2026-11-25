@@ -181,7 +181,7 @@ func TestRefusalTextRedactsAndStaysOnOneLine(t *testing.T) {
 			t.Errorf("%v: secret in %q", c, r.Error())
 		}
 	}
-	e := &RenameRefusedError{Code: "name-conflict", Reason: "line one\nline two\r " + tok, Sites: []Site{{"a.sh", 1, 2}}}
+	e := &RenameRefusedError{Code: "name-conflict", Reason: "line one\nline two\r " + tok, Sites: []Site{{Path: "a.sh", Line: 1, Col: 2}}}
 	if got := e.Error(); strings.Count(got, "\n") != 1 || strings.Contains(got, "ghp_") || !strings.HasSuffix(got, "\nsite  a.sh:1:2") {
 		t.Errorf("%q", got)
 	}
@@ -190,7 +190,7 @@ func TestRefusalTextRedactsAndStaysOnOneLine(t *testing.T) {
 func TestRefusalTextDropsWholeSiteLines(t *testing.T) {
 	e := &RenameRefusedError{Code: "name-conflict", Reason: "r"}
 	for i := 0; i < 1000; i++ {
-		e.Sites = append(e.Sites, Site{"some/long/path/to/a/file.sh", i + 1, 1})
+		e.Sites = append(e.Sites, Site{Path: "some/long/path/to/a/file.sh", Line: i + 1, Col: 1})
 	}
 	got := e.Error()
 	if len(got) > 4100 {

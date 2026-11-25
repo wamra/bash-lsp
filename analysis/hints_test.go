@@ -24,15 +24,15 @@ func hintLabels(hs []Hint) string {
 func TestHintsSourceTargets(t *testing.T) {
 	q := buildCorpus(t)
 	dyn := filepath.Join(q.root, "dyn.sh")
-	got := q.s.Hints(dyn, whole(q.s, dyn), true, false)
+	got := hintsOf(q.s, dyn, whole(q.s, dyn), true, false)
 	if len(got) != 1 || got[0].Label != "→ lib/util.sh" || got[0].Param || got[0].Pos.Line != 3 || got[0].Pos.Col != 27 {
 		t.Fatalf("dyn.sh: %+v", got)
 	}
 	main := filepath.Join(q.root, "main.sh")
-	if got := q.s.Hints(main, whole(q.s, main), true, false); len(got) != 0 {
+	if got := hintsOf(q.s, main, whole(q.s, main), true, false); len(got) != 0 {
 		t.Fatalf("a literal source gets no hint: %+v", got)
 	}
-	if got := q.s.Hints(dyn, whole(q.s, dyn), false, false); len(got) != 0 {
+	if got := hintsOf(q.s, dyn, whole(q.s, dyn), false, false); len(got) != 0 {
 		t.Fatalf("sources off: %+v", got)
 	}
 }
@@ -51,7 +51,7 @@ func TestHintsScriptDirAndLoopGlob(t *testing.T) {
 	if strings.Join(how, ",") != "script-dir,loop-glob" {
 		t.Fatalf("edges resolved by %v", how)
 	}
-	got := q.s.Hints(p, whole(q.s, p), true, false)
+	got := hintsOf(q.s, p, whole(q.s, p), true, false)
 	if hintLabels(got) != "1:26 → lib/a.sh|2:36 → 2 files" {
 		t.Fatalf("%s", hintLabels(got))
 	}
@@ -63,7 +63,7 @@ func TestHintsDirectiveTarget(t *testing.T) {
 		"lib/a.sh": "a() { :; }\n",
 	})
 	p := filepath.Join(q.root, "main.sh")
-	got := q.s.Hints(p, whole(q.s, p), true, false)
+	got := hintsOf(q.s, p, whole(q.s, p), true, false)
 	if len(got) != 1 || got[0].Label != "→ lib/a.sh" {
 		t.Fatalf("%+v", got)
 	}
@@ -72,10 +72,10 @@ func TestHintsDirectiveTarget(t *testing.T) {
 func TestHintsParameterNames(t *testing.T) {
 	q := buildMem(t, map[string]string{"a.sh": "cp2() { local src=\"$1\" dst=\"$2\"; }\ncp2 a b c\nf() { echo \"$1\"; }\nf x\n"})
 	p := filepath.Join(q.root, "a.sh")
-	if got := q.s.Hints(p, whole(q.s, p), true, false); len(got) != 0 {
+	if got := hintsOf(q.s, p, whole(q.s, p), true, false); len(got) != 0 {
 		t.Fatalf("parameter names off: %+v", got)
 	}
-	got := q.s.Hints(p, whole(q.s, p), false, true)
+	got := hintsOf(q.s, p, whole(q.s, p), false, true)
 	// `c` has no parameter, and `f`'s only parameter has no name.
 	if hintLabels(got) != "2:5 src:|2:7 dst:" {
 		t.Fatalf("%s", hintLabels(got))
@@ -93,19 +93,19 @@ func TestHintsWithin(t *testing.T) {
 	src := string(q.s.Facts(p).File.Src)
 	at := strings.Index(src, "cp2 c")
 	within := tree.Range{Start: tree.Pos{Offset: at}, End: tree.Pos{Offset: len(src)}}
-	if got := q.s.Hints(p, within, false, true); hintLabels(got) != "3:5 src:|3:7 dst:" {
+	if got := hintsOf(q.s, p, within, false, true); hintLabels(got) != "3:5 src:|3:7 dst:" {
 		t.Fatalf("%s", hintLabels(got))
 	}
 	// A window that starts inside the call, after its command word.
 	mid := tree.Range{Start: tree.Pos{Offset: at + 6}, End: tree.Pos{Offset: len(src)}}
-	if got := q.s.Hints(p, mid, false, true); hintLabels(got) != "3:7 dst:" {
+	if got := hintsOf(q.s, p, mid, false, true); hintLabels(got) != "3:7 dst:" {
 		t.Fatalf("%s", hintLabels(got))
 	}
 	inverted := tree.Range{Start: tree.Pos{Offset: len(src)}, End: tree.Pos{Offset: 0}}
-	if got := q.s.Hints(p, inverted, true, true); len(got) != 0 {
+	if got := hintsOf(q.s, p, inverted, true, true); len(got) != 0 {
 		t.Fatalf("inverted range: %+v", got)
 	}
-	if got := q.s.Hints("/nowhere.sh", within, true, true); got != nil {
+	if got := hintsOf(q.s, "/nowhere.sh", within, true, true); got != nil {
 		t.Fatalf("unknown path: %+v", got)
 	}
 }
@@ -118,7 +118,7 @@ func TestHintsCapped(t *testing.T) {
 	}
 	q := buildMem(t, map[string]string{"a.sh": b.String()})
 	p := filepath.Join(q.root, "a.sh")
-	got := q.s.Hints(p, whole(q.s, p), true, true)
+	got := hintsOf(q.s, p, whole(q.s, p), true, true)
 	if len(got) != maxHints {
 		t.Fatalf("%d hints, want %d", len(got), maxHints)
 	}
@@ -136,7 +136,7 @@ func TestHintsCapped(t *testing.T) {
 func TestHintsHugeParameterIndex(t *testing.T) {
 	q := buildMem(t, map[string]string{"a.sh": "f() { echo \"${999999999}\"; }\nf a b c\n"})
 	p := filepath.Join(q.root, "a.sh")
-	if got := q.s.Hints(p, whole(q.s, p), false, true); len(got) != 0 {
+	if got := hintsOf(q.s, p, whole(q.s, p), false, true); len(got) != 0 {
 		t.Fatalf("%+v", got)
 	}
 	sig, _, ok := sigAt(t, "f() { echo \"${999999999}\"; }\nf ▮")
@@ -154,7 +154,7 @@ func TestHintsSpreadInsideWord(t *testing.T) {
 		q := buildMem(t, map[string]string{"a.sh": pre + call + "\n"})
 		p := filepath.Join(q.root, "a.sh")
 		var out []string
-		for _, h := range q.s.Hints(p, whole(q.s, p), false, true) {
+		for _, h := range hintsOf(q.s, p, whole(q.s, p), false, true) {
 			out = append(out, h.Label)
 		}
 		return strings.Join(out, " ")
@@ -185,7 +185,7 @@ func TestHintsAliasCallGetsNone(t *testing.T) {
 	} {
 		q := buildMem(t, map[string]string{"a.sh": c.src})
 		p := filepath.Join(q.root, "a.sh")
-		if got := hintLabels(q.s.Hints(p, whole(q.s, p), false, true)); got != c.want {
+		if got := hintLabels(hintsOf(q.s, p, whole(q.s, p), false, true)); got != c.want {
 			t.Errorf("%s: %q, want %q", name, got, c.want)
 		}
 	}
@@ -196,8 +196,34 @@ func TestHintsAliasCallGetsNone(t *testing.T) {
 func TestHintsSkipSpreadArguments(t *testing.T) {
 	q := buildMem(t, map[string]string{"a.sh": "cp2() { local src=\"$1\" dst=\"$2\"; }\ncp2 \"$@\" b\ncp2 $* b\ncp2 \"$*\" b\ncp2 $@ b\ncp2 a \"$@\"\n"})
 	p := filepath.Join(q.root, "a.sh")
-	got := q.s.Hints(p, whole(q.s, p), false, true)
+	got := hintsOf(q.s, p, whole(q.s, p), false, true)
 	if hintLabels(got) != "6:5 src:" {
 		t.Fatalf("%s", hintLabels(got))
+	}
+}
+
+func hintsOf(s *Snapshot, path string, within tree.Range, sources, params bool) []Hint {
+	h, _ := s.Hints(path, within, sources, params)
+	return h
+}
+
+// The cut is reported when there are more than maxHints hints, and only then.
+func TestHintsReportTheCut(t *testing.T) {
+	build := func(calls int) (*Snapshot, string) {
+		var b strings.Builder
+		b.WriteString("f() { local x=\"$1\"; }\n")
+		for i := 0; i < calls; i++ {
+			b.WriteString("f a\n")
+		}
+		q := buildMem(t, map[string]string{"a.sh": b.String()})
+		return q.s, filepath.Join(q.root, "a.sh")
+	}
+	s, p := build(maxHints + 1)
+	if got, cut := s.Hints(p, whole(s, p), true, true); len(got) != maxHints || !cut {
+		t.Fatalf("%d hints, cut %v, want %d and a cut", len(got), cut, maxHints)
+	}
+	s, p = build(maxHints)
+	if got, cut := s.Hints(p, whole(s, p), true, true); len(got) != maxHints || cut {
+		t.Fatalf("%d hints, cut %v at the limit", len(got), cut)
 	}
 }

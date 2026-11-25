@@ -199,3 +199,67 @@ func TestSignatureUTF16(t *testing.T) {
 		t.Fatalf("offsets pick out %v", got)
 	}
 }
+
+const sigToken = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+
+// The signature label, and the parameter labels in it, are redacted like the
+// documentation: a function or parameter named like a token never reaches the
+// client, and the offsets still pick out the parameters of the redacted label.
+func TestSignatureHelpLabelRedacted(t *testing.T) {
+	for _, offsets := range []bool{false, true} {
+		var srv *server
+		c := clientWith(t, clientCfg{root: t.TempDir(), onServer: func(s *server) { srv = s }})
+		srv.ccaps.LabelOffset = offsets
+		h, raw := c.sigAtMark(sigToken + "() { local " + sigToken + "_p=\"$1\" b=\"$2\"; }\n" + sigToken + " x ▮")
+		if h == nil {
+			t.Fatalf("no signature (offsets %v): %s", offsets, raw)
+		}
+		if strings.Contains(raw, "abcdefghijklmnopqrstuvwxyz0123456789") {
+			t.Fatalf("token in the answer (offsets %v): %s", offsets, raw)
+		}
+		s := h.Signatures[0]
+		if !strings.HasPrefix(s.Label, "[redacted] ") {
+			t.Fatalf("label %q", s.Label)
+		}
+		if !offsets {
+			continue
+		}
+		u := utf16.Encode([]rune(s.Label))
+		var got []string
+		for _, p := range s.Parameters {
+			var o [2]int
+			if err := json.Unmarshal(p.Label, &o); err != nil {
+				t.Fatalf("not an offset pair: %s", p.Label)
+			}
+			got = append(got, string(utf16.Decode(u[o[0]:o[1]])))
+		}
+		if strings.Join(got, "|") != "[redacted]_p|b" {
+			t.Fatalf("offsets pick out %v in %q", got, s.Label)
+		}
+	}
+}
+
+// Hover on a script symbol redacts the text it shows, as completion resolve
+// does for the same symbol.
+func TestHoverRedactsScriptSymbolText(t *testing.T) {
+	const tok = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+	root := t.TempDir()
+	writeFile(t, root, "a.sh", "# Deploy with password=hunter2secret to the host.\ndeploy() { :; }\n# The token.\nTOKEN_VAL="+tok+"\ndeploy\necho \"$TOKEN_VAL\"\n")
+	c := client(t, root)
+	c.open("a.sh")
+	for _, at := range []struct {
+		text string
+		col  int
+	}{{"deploy() {", 1}, {"TOKEN_VAL=", 2}, {`"$TOKEN_VAL"`, 3}} {
+		got := c.hoverText("a.sh", at.text, at.col)
+		if got == "" {
+			t.Fatalf("no hover at %q", at.text)
+		}
+		if strings.Contains(got, "hunter2secret") || strings.Contains(got, "abcdefghijklmnopqrstuvwxyz0123456789") {
+			t.Errorf("hover at %q shows a secret:\n%s", at.text, got)
+		}
+	}
+	if got := c.hoverText("a.sh", "deploy() {", 1); !strings.Contains(got, "[redacted]") {
+		t.Errorf("the doc comment is not shown redacted:\n%s", got)
+	}
+}

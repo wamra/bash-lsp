@@ -50,6 +50,9 @@ type Site struct {
 	Path string `json:"path"`
 	Line int    `json:"line"`
 	Col  int    `json:"col"`
+	// Why is set on the sites of a skipped-file refusal: in a few words, why
+	// the file or directory was not analysed.
+	Why string `json:"why,omitempty"`
 }
 
 // Edge is one call, source or invoke edge.
@@ -211,7 +214,7 @@ func (b *Builder) Pos(path string, p tree.Pos) (line, col int) {
 // Site is the position of l.
 func (b *Builder) Site(l analysis.Location) Site {
 	line, col := b.Pos(l.Path, l.Range.Start)
-	return Site{b.Rel(l.Path), line, col}
+	return Site{Path: b.Rel(l.Path), Line: line, Col: col, Why: l.Why}
 }
 
 // Node is the record of n.
@@ -284,7 +287,7 @@ func (e Edge) Line() string {
 // DeclLoc is where n is defined: the first declaration of its function in its
 // file, the top of the file for a file node.
 func (b *Builder) DeclLoc(n analysis.Node) Site {
-	top := Site{b.Rel(n.Path), 1, 1}
+	top := Site{Path: b.Rel(n.Path), Line: 1, Col: 1}
 	ff := b.snap.Facts(n.Path)
 	if n.Func == nil || ff == nil {
 		return top

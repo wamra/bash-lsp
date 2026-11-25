@@ -132,7 +132,35 @@ func (s *server) failRequest(snap *analysis.Snapshot, err error) (any, *rpcError
 		s.log.Printf("rename: %v", err)
 		return nil, &rpcError{codeInternalError, "internal error in rename"}
 	}
-	return s.refuseRequest(ref.Code, ref.Reason, s.locations(snap, ref.Sites), ref.Code)
+	return s.refuseRequest(ref.Code, ref.Reason+s.siteReasons(ref.Sites), s.locations(snap, ref.Sites), ref.Code)
+}
+
+// maxSiteReasons is the most sites whose reason goes into a refusal message.
+const maxSiteReasons = 5
+
+// siteReasons is "; path (why), ..." for the first sites that carry a reason,
+// as the data of a refusal has no place for it: the message is all a client
+// shows.
+func (s *server) siteReasons(sites []analysis.Location) string {
+	var b strings.Builder
+	n := 0
+	for _, l := range sites {
+		if l.Why == "" {
+			continue
+		}
+		if n == maxSiteReasons {
+			b.WriteString(", ...")
+			break
+		}
+		if n == 0 {
+			b.WriteString(": ")
+		} else {
+			b.WriteString(", ")
+		}
+		b.WriteString(s.relPath(l.Path) + " (" + l.Why + ")")
+		n++
+	}
+	return b.String()
 }
 
 // refuseRequest answers the current request with RequestFailed and the
@@ -279,7 +307,7 @@ func (s *server) buildRenameEdit(snap *analysis.Snapshot, plan *analysis.RenameP
 	caps := s.caps()
 	annotate := caps.DocumentChanges && caps.ChangeAnnotations && (len(plan.Excluded) > 0 || len(plan.Others) > 0)
 	note, label := s.renameNote(snap, plan)
-	if !annotate && (len(plan.Excluded) > 0 || len(plan.Warnings) > 0) {
+	if !annotate && (len(plan.Excluded) > 0 || len(plan.Warnings) > 0 || len(plan.Others) > 0) {
 		s.c.notify("window/showMessage", showMessageParams{Type: messageTypeWarning, Message: note})
 	}
 	cs := converters{}
