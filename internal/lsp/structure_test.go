@@ -288,7 +288,7 @@ func TestFoldingRangeCountsLoneCRLines(t *testing.T) {
 func TestHighlightAndLinkAreCappedAndSayOnce(t *testing.T) {
 	ws := t.TempDir()
 	writeFile(t, ws, "a.sh", "f() { :; }\n"+strings.Repeat("f\n", 5500))
-	writeFile(t, ws, "b.sh", strings.Repeat(". ./a.sh\n", 5500))
+	writeFile(t, ws, "b.sh", "#!"+testBin+"/ls\n"+strings.Repeat(". ./a.sh\n", 5500))
 	c := client(t, ws)
 	c.open("a.sh")
 	c.open("b.sh")

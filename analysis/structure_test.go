@@ -343,22 +343,22 @@ func TestHighlightsCapped(t *testing.T) {
 	}
 }
 
-// More than maxLinks links are cut to the first maxLinks, in source order.
+// More than MaxLinks links are cut to the first MaxLinks, in source order.
 func TestLinksCapped(t *testing.T) {
 	var b strings.Builder
-	for i := 0; i < maxLinks+500; i++ {
+	for i := 0; i < MaxLinks+500; i++ {
 		b.WriteString(". ./lib.sh\n")
 	}
 	q := buildMem(t, map[string]string{"a.sh": b.String(), "lib.sh": ":\n"})
 	ls, cut := q.s.Links(q.abs("a.sh"))
-	if len(ls) != maxLinks || !cut {
-		t.Fatalf("%d links, cut %v, want %d and a cut", len(ls), cut, maxLinks)
+	if len(ls) != MaxLinks || !cut {
+		t.Fatalf("%d links, cut %v, want %d and a cut", len(ls), cut, MaxLinks)
 	}
-	if ls[0].Range.Start.Line != 1 || ls[maxLinks-1].Range.Start.Line != maxLinks {
-		t.Fatalf("not the first %d: lines %d..%d", maxLinks, ls[0].Range.Start.Line, ls[maxLinks-1].Range.Start.Line)
+	if ls[0].Range.Start.Line != 1 || ls[MaxLinks-1].Range.Start.Line != MaxLinks {
+		t.Fatalf("not the first %d: lines %d..%d", MaxLinks, ls[0].Range.Start.Line, ls[MaxLinks-1].Range.Start.Line)
 	}
-	q = buildMem(t, map[string]string{"a.sh": strings.Repeat(". ./lib.sh\n", maxLinks), "lib.sh": ":\n"})
-	if ls, cut := q.s.Links(q.abs("a.sh")); len(ls) != maxLinks || cut {
+	q = buildMem(t, map[string]string{"a.sh": strings.Repeat(". ./lib.sh\n", MaxLinks), "lib.sh": ":\n"})
+	if ls, cut := q.s.Links(q.abs("a.sh")); len(ls) != MaxLinks || cut {
 		t.Fatalf("%d links, cut %v at the limit", len(ls), cut)
 	}
 }

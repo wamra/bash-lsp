@@ -158,12 +158,12 @@ func wholeLine(src []byte, offset int) bool {
 // maxSelectionDepth is the most levels SelectionChain returns.
 const maxSelectionDepth = 128
 
-// maxHighlights is the most occurrences Highlights returns, and maxLinks the
-// most links Links returns.
-const (
-	maxHighlights = 5000
-	maxLinks      = 5000
-)
+// maxHighlights is the most occurrences Highlights returns.
+const maxHighlights = 5000
+
+// MaxLinks is the most links Links returns. A caller that adds a link of its
+// own (the shebang) keeps its total to this.
+const MaxLinks = 5000
 
 // SelectionChain returns the nested ranges around offset of path, innermost
 // first, each strictly containing the one before: the name or word part, the
@@ -301,7 +301,7 @@ type Link struct {
 // Links returns the links of path in source order: each `source` or `.` word
 // with exactly one target and each executed workspace file. A `source` with
 // several targets (a glob loader) or none gives no link. The shebang is not
-// here: Shebang names it. At most maxLinks come back, the first in source
+// here: Shebang names it. At most MaxLinks come back, the first in source
 // order; cut is true when there were more.
 func (s *Snapshot) Links(path string) (out []Link, cut bool) {
 	file, ok := s.idx[path]
@@ -312,7 +312,7 @@ func (s *Snapshot) Links(path string) (out []Link, cut bool) {
 		if se.Status != SourceResolved || len(se.Targets) != 1 {
 			continue
 		}
-		if len(out) >= maxLinks {
+		if len(out) >= MaxLinks {
 			cut = true
 			break
 		}
@@ -327,7 +327,7 @@ func (s *Snapshot) Links(path string) (out []Link, cut bool) {
 		if s.recs[k].rel != RelInvokes {
 			continue
 		}
-		if invokes++; invokes > maxLinks {
+		if invokes++; invokes > MaxLinks {
 			cut = true
 			break
 		}
@@ -335,8 +335,8 @@ func (s *Snapshot) Links(path string) (out []Link, cut bool) {
 		out = append(out, Link{Range: e.Site.Range, Target: e.ToFile, Tooltip: "invokes → " + s.rel(e.ToFile)})
 	}
 	sort.SliceStable(out, func(a, b int) bool { return out[a].Range.Start.Offset < out[b].Range.Start.Offset })
-	if len(out) > maxLinks {
-		out, cut = out[:maxLinks], true
+	if len(out) > MaxLinks {
+		out, cut = out[:MaxLinks], true
 	}
 	return out, cut
 }

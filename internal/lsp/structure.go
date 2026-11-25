@@ -274,6 +274,9 @@ func (s *server) documentLink(raw json.RawMessage) (any, *rpcError) {
 	// already holds. Nothing on the file system is looked at.
 	if l, ok := snap.Shebang(path); ok && s.interpreterInProfile(l.Target) {
 		links = append([]analysis.Link{l}, links...)
+		if len(links) > analysis.MaxLinks {
+			links = links[:analysis.MaxLinks]
+		}
 	}
 	for _, l := range links {
 		out = append(out, documentLink{Range: s.rangeIn(cs, snap, path, l.Range), Target: s.uriOf(l.Target), Tooltip: l.Tooltip})
