@@ -46,25 +46,45 @@ func splitLines(b []byte) []string {
 
 // bracketed matches a bracketed option of a help synopsis: [-ers], [-u fd],
 // [--name arg].
-var bracketed = regexp.MustCompile(`\[(-{1,2}[A-Za-z0-9][A-Za-z0-9-]*)(?: ([^\]\[\s]+))?\]`)
+// An alternative such as [-L|-P] is one match.
+var bracketed = regexp.MustCompile(`\[(-{1,2}[A-Za-z0-9][A-Za-z0-9-]*(?:\|-{1,2}[A-Za-z0-9][A-Za-z0-9-]*)*)(?: ([^\]\[\s]+))?\]`)
 
 // ParseHelp reads the output of the bash `help` builtin. The output may hold
 // several topics (a prefix matches many); only the section whose first line
-// starts "name: " is kept. Its synopsis is the rest of that line, and its
-// options are the bracketed flags in it.
+// starts "name: " is kept, or, for a compound command, "name ... closer: "
+// (`[[ ... ]]: [[ expression ]]`). Its synopsis is the rest of that line, and
+// its options are the bracketed flags in it.
 func ParseHelp(name string, out []byte) (Doc, bool) {
-	prefix := name + ": "
-	for _, line := range splitLines(out) {
-		if !strings.HasPrefix(line, prefix) {
-			continue
+	lines := splitLines(out)
+	for _, compound := range []bool{false, true} {
+		for _, line := range lines {
+			syn, ok := topicSynopsis(name, line, compound)
+			if !ok {
+				continue
+			}
+			if syn == "" {
+				return Doc{}, false
+			}
+			return Doc{Name: name, Synopsis: clip(syn, maxSynopsis), Options: helpOptions(syn), Source: "help"}, true
 		}
-		syn := strings.TrimSpace(line[len(prefix):])
-		if syn == "" {
-			return Doc{}, false
-		}
-		return Doc{Name: name, Synopsis: clip(syn, maxSynopsis), Options: helpOptions(syn), Source: "help"}, true
 	}
 	return Doc{}, false
+}
+
+// topicSynopsis reads the first line of a help topic: "name: synopsis", or
+// with compound set "name ... closer: synopsis".
+func topicSynopsis(name, line string, compound bool) (string, bool) {
+	if !compound {
+		if rest, ok := strings.CutPrefix(line, name+": "); ok {
+			return strings.TrimSpace(rest), true
+		}
+		return "", false
+	}
+	title, rest, ok := strings.Cut(line, ": ")
+	if !ok || !strings.HasPrefix(title, name+" ... ") || strings.ContainsAny(strings.TrimPrefix(title, name+" ... "), " \t") {
+		return "", false
+	}
+	return strings.TrimSpace(rest), true
 }
 
 func helpOptions(syn string) []Option {
@@ -77,18 +97,24 @@ func helpOptions(syn string) []Option {
 		}
 	}
 	for _, m := range bracketed.FindAllStringSubmatch(syn, -1) {
-		flag, arg := m[1], m[2]
-		if strings.HasPrefix(flag, "--") || len(flag) == 2 {
-			add(flag, arg)
-			continue
-		}
-		letters := flag[1:] // a cluster such as -ers: one option per letter, the argument goes to the last
-		for i := 0; i < len(letters); i++ {
-			a := ""
-			if i == len(letters)-1 {
-				a = arg
+		alts := strings.Split(m[1], "|")
+		for k, flag := range alts {
+			arg := ""
+			if k == len(alts)-1 {
+				arg = m[2] // the argument belongs to the last alternative
 			}
-			add("-"+letters[i:i+1], a)
+			if strings.HasPrefix(flag, "--") || len(flag) == 2 {
+				add(flag, arg)
+				continue
+			}
+			letters := flag[1:] // a cluster such as -ers: one option per letter, the argument goes to the last
+			for i := 0; i < len(letters); i++ {
+				a := ""
+				if i == len(letters)-1 {
+					a = arg
+				}
+				add("-"+letters[i:i+1], a)
+			}
 		}
 	}
 	return opts
@@ -156,8 +182,17 @@ func ParseMan(name string, out []byte) (Doc, bool) {
 				tok = fields[0]
 				after = rest[strings.Index(rest, tok)+len(tok):]
 			}
-			if tok != "" && !strings.HasPrefix(tok, "-") && (after == "" || strings.HasPrefix(after, "  ")) {
+			switch {
+			case tok != "" && !strings.HasPrefix(tok, "-") && (after == "" || strings.HasPrefix(after, "  ")):
 				arg = strings.Trim(tok, "<>[]_")
+				rest = after
+			case placeholder.MatchString(tok) && strings.HasSuffix(tok, ","):
+				// "-A num, --after-context=num": the other spellings follow.
+				arg = strings.TrimSuffix(tok, ",")
+				rest = dropFlags(after)
+			case placeholder.MatchString(tok) && sentenceStart(after):
+				// "-c string If the -c option ...": a one-space gap, then a sentence.
+				arg = tok
 				rest = after
 			}
 		}
@@ -173,6 +208,42 @@ func ParseMan(name string, out []byte) (Doc, bool) {
 		d.Options = append(d.Options, Option{Flag: flag, Arg: arg, Text: clip(text, maxOptionText)})
 	}
 	return d, true
+}
+
+// placeholder is the lower-case word a man page uses for an argument: num,
+// string, file.
+var placeholder = regexp.MustCompile(`^[a-z][a-z0-9_]*,?$`)
+
+// sentenceStart reports whether s is one space and then a capital letter: the
+// start of a description after an argument.
+func sentenceStart(s string) bool {
+	return len(s) > 2 && s[0] == ' ' && s[1] >= 'A' && s[1] <= 'Z'
+}
+
+// dropFlags removes the other spellings of an option (`--after-context=num`,
+// `--suffix suffix`) that follow its first one and a comma. A lower-case word
+// after a spelling is that spelling's argument and goes with it when nothing
+// but blanks follows it or a comma ends it.
+func dropFlags(rest string) string {
+	for {
+		t := strings.TrimLeft(rest, " ")
+		if !strings.HasPrefix(t, "-") {
+			return rest
+		}
+		i := strings.IndexByte(t, ' ')
+		if i < 0 {
+			return ""
+		}
+		rest = t[i:]
+		fields := strings.Fields(rest)
+		if len(fields) == 0 || !placeholder.MatchString(fields[0]) {
+			continue
+		}
+		after := rest[strings.Index(rest, fields[0])+len(fields[0]):]
+		if strings.HasSuffix(fields[0], ",") || after == "" || strings.HasPrefix(after, "  ") {
+			rest = after
+		}
+	}
 }
 
 func isIndented(l string) bool { return l[0] == ' ' || l[0] == '\t' }

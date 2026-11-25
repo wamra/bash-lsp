@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -31,6 +32,27 @@ var (
 	// directories would otherwise add up, one time-out after the other.
 	profileTotalBudget = 5 * time.Second
 )
+
+// maxPlainName is the longest name PlainName accepts.
+const maxPlainName = 255
+
+// maxNamesExamined bounds the candidates one Names call looks at with a stat:
+// a directory of tens of thousands of data files costs a few calls, not one
+// long one on the message loop. Answers are kept, so the next call goes on.
+const maxNamesExamined = 1024
+
+var plainName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
+
+// PlainName reports whether name is a plain command word: it starts with a
+// letter or digit and holds only letters, digits and . _ + -, at most 255
+// bytes. It is the one rule for a name that is offered to the user or handed
+// to a program as an argument.
+func PlainName(name string) bool {
+	return len(name) <= maxPlainName && plainName.MatchString(name)
+}
+
+// statProgram is isProgram; a variable so a test can count or stall it.
+var statProgram = isProgram
 
 // dirReader is an open directory: *os.File, or a test's stand-in.
 type dirReader interface {
@@ -55,8 +77,11 @@ type Profile struct {
 	dirs    int      // directories given
 	exts    []string // Windows: PATHEXT, lower-cased; nil elsewhere
 
-	mu    sync.Mutex
-	known map[string]string // name -> the path of the program, "" when none; filled by Lookup
+	mu     sync.Mutex
+	known  map[string]string // name -> the path of the program, "" when none; filled by Lookup
+	sorted []string          // the names of cands in order, built by the first Names
+	logf   func(format string, args ...any)
+	logged bool
 }
 
 // NewProfile reads each directory of dirs once, in chunks of 1,024 entries
@@ -205,7 +230,7 @@ func (p *Profile) Lookup(name string) (string, bool) {
 	path, ok := p.known[name]
 	if !ok {
 		for _, c := range p.cands[name] {
-			if isProgram(c, p.exts) {
+			if statProgram(c, p.exts) {
 				path = c
 				break
 			}
@@ -279,4 +304,84 @@ func windowsExts() []string {
 		}
 	}
 	return out
+}
+
+// SetLogger sets where the one notice of a limit hit goes (nowhere by default).
+func (p *Profile) SetLogger(f func(format string, args ...any)) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.logf = f
+	p.mu.Unlock()
+}
+
+// Names lists, in order, the plain-named programs (see PlainName) whose name
+// starts with prefix: at most max of them, and more reports that another one
+// follows or that the call stopped early. A name counts under the rule of
+// Lookup (a data file or a directory does not), and nothing is run. A call
+// looks at no more than 1,024 names that no earlier call has settled; when it
+// stops there it says more and logs one notice, and the next call goes on from
+// the answers kept. No file is examined with the profile locked. Safe on a nil
+// Profile.
+func (p *Profile) Names(prefix string, max int) (names []string, more bool) {
+	if p == nil || max < 0 {
+		return nil, false
+	}
+	p.mu.Lock()
+	if p.sorted == nil {
+		p.sorted = make([]string, 0, len(p.cands))
+		for n := range p.cands {
+			p.sorted = append(p.sorted, n)
+		}
+		slices.Sort(p.sorted)
+	}
+	sorted := p.sorted
+	p.mu.Unlock()
+	examined := 0
+	for i, _ := slices.BinarySearch(sorted, prefix); i < len(sorted) && strings.HasPrefix(sorted[i], prefix); i++ {
+		name := sorted[i]
+		if !PlainName(name) {
+			continue
+		}
+		p.mu.Lock()
+		path, known := p.known[name]
+		cands := p.cands[name]
+		p.mu.Unlock()
+		if !known {
+			if examined == maxNamesExamined {
+				p.noteLimit()
+				return names, true
+			}
+			examined++
+			for _, c := range cands {
+				if statProgram(c, p.exts) {
+					path = c
+					break
+				}
+			}
+			p.mu.Lock()
+			p.known[name] = path
+			p.mu.Unlock()
+		}
+		if path == "" {
+			continue
+		}
+		if len(names) == max {
+			return names, true
+		}
+		names = append(names, name)
+	}
+	return names, false
+}
+
+// noteLimit logs, once, that a Names call stopped at its bound.
+func (p *Profile) noteLimit() {
+	p.mu.Lock()
+	f, first := p.logf, !p.logged
+	p.logged = true
+	p.mu.Unlock()
+	if f != nil && first {
+		f("path profile: a name listing stopped after examining %d names; it goes on in the next request", maxNamesExamined)
+	}
 }

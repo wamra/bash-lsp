@@ -1,10 +1,12 @@
 package extool
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -380,4 +382,157 @@ func TestProfileTimeoutReasonIsRounded(t *testing.T) {
 	if sk := p.Skipped(); len(sk) != 1 || !strings.HasSuffix(sk[0], ": timed out after 60ms") {
 		t.Errorf("Skipped() = %q", sk)
 	}
+}
+
+func TestProfileNamesCapped(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("execute bits are a Unix rule")
+	}
+	var dirs []string
+	for d := 0; d < 3; d++ {
+		dir := t.TempDir()
+		dirs = append(dirs, dir)
+		for i := 0; i < 1667; i++ {
+			write(t, dir, fmt.Sprintf("p%d-%04d", d, i), 0o755)
+		}
+	}
+	write(t, dirs[0], "data-file", 0o644)
+	if err := os.Mkdir(filepath.Join(dirs[1], "a-dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := NewProfile(dirs)
+	names, more := p.Names("", 100)
+	if len(names) != 100 || !more {
+		t.Fatalf("%d names, more %v", len(names), more)
+	}
+	if !sort.StringsAreSorted(names) {
+		t.Fatal("not sorted")
+	}
+	for _, n := range names {
+		if _, ok := p.Lookup(n); !ok || n == "data-file" || n == "a-dir" {
+			t.Fatalf("%q is not a program", n)
+		}
+	}
+	// The program rule: a data file and a directory are never listed.
+	var all []string
+	for i := 0; i < 10; i++ { // one call examines at most maxNamesExamined new names
+		if all, more = p.Names("", 10000); !more {
+			break
+		}
+	}
+	if more || len(all) != 3*1667 {
+		t.Fatalf("%d names, more %v", len(all), more)
+	}
+	if got, more := p.Names("p1-00", 5); len(got) != 5 || !more || got[0] != "p1-0000" {
+		t.Fatalf("prefix: %v %v", got, more)
+	}
+	if got, more := p.Names("data", 5); len(got) != 0 || more {
+		t.Fatalf("data file: %v %v", got, more)
+	}
+	if got, more := p.Names("p0", 0); len(got) != 0 || !more {
+		t.Fatalf("max 0: %v %v", got, more)
+	}
+	var nilp *Profile
+	if got, more := nilp.Names("", 5); got != nil || more {
+		t.Fatal("nil profile")
+	}
+}
+
+func TestProfileNamesSkipsHostileNames(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("execute bits")
+	}
+	dir := t.TempDir()
+	for _, n := range []string{"x\nrm -rf y", "-rf", ".hidden", "a b", "ok-prog", "tab\tname", "semi;colon", "dollar$x"} {
+		write(t, dir, n, 0o755)
+	}
+	p := NewProfile([]string{dir})
+	got, more := p.Names("", 100)
+	if more || len(got) != 1 || got[0] != "ok-prog" {
+		t.Fatalf("names %q, want only ok-prog", got)
+	}
+	if got, _ := p.Names("-", 10); len(got) != 0 {
+		t.Fatalf("leading dash offered: %q", got)
+	}
+	if got, _ := p.Names("x", 10); len(got) != 0 {
+		t.Fatalf("newline name offered: %q", got)
+	}
+	if !PlainName("ok-prog") || PlainName("-rf") || PlainName("a\nb") || PlainName("") || PlainName(strings.Repeat("a", 300)) {
+		t.Fatal("PlainName")
+	}
+}
+
+func TestProfileNamesStatsAreBoundedAndOffTheLock(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("execute bits")
+	}
+	dir := t.TempDir()
+	for i := 0; i < 60000; i++ {
+		write(t, dir, fmt.Sprintf("d%05d", i), 0o644)
+	}
+	write(t, dir, "zz-prog", 0o755)
+	var stats atomic.Int32
+	old := statProgram
+	statProgram = func(full string, exts []string) bool { stats.Add(1); return old(full, exts) }
+	defer func() { statProgram = old }()
+	var logged []string
+	p := NewProfile([]string{dir})
+	p.SetLogger(func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) })
+	names, more := p.Names("", 10)
+	if n := stats.Load(); n > int32(maxNamesExamined) {
+		t.Fatalf("%d stats in one call, bound %d", n, maxNamesExamined)
+	}
+	if len(names) != 0 || !more || len(logged) != 1 {
+		t.Fatalf("names %q more %v logged %q", names, more, logged)
+	}
+	// Each call moves on: the answers are kept, so the program is reached.
+	for i := 0; i < 60 && len(names) == 0; i++ {
+		names, _ = p.Names("", 10)
+	}
+	if len(names) != 1 || names[0] != "zz-prog" {
+		t.Fatalf("never reached the program: %q", names)
+	}
+	if len(logged) != 1 {
+		t.Fatalf("the limit notice was logged %d times", len(logged))
+	}
+}
+
+func TestProfileNamesHungStatDoesNotBlockLookup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("execute bits")
+	}
+	dir := t.TempDir()
+	write(t, dir, "aaa", 0o755)
+	write(t, dir, "bbb", 0o755)
+	hung := make(chan struct{})
+	release := make(chan struct{})
+	old := statProgram
+	statProgram = func(full string, exts []string) bool {
+		if filepath.Base(full) == "aaa" {
+			close(hung)
+			<-release
+		}
+		return old(full, exts)
+	}
+	defer func() { statProgram = old }()
+	p := NewProfile([]string{dir})
+	done := make(chan struct{})
+	go func() { p.Names("", 10); close(done) }()
+	select {
+	case <-hung:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stat never started")
+	}
+	got := make(chan bool, 1)
+	go func() { _, ok := p.Lookup("bbb"); got <- ok }()
+	select {
+	case ok := <-got:
+		if !ok {
+			t.Fatal("bbb not found")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Lookup blocked behind a hung stat in Names")
+	}
+	close(release)
+	<-done
 }

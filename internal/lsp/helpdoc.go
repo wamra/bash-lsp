@@ -97,20 +97,7 @@ func (s *server) runHelp(l *helpdoc.Lookup, kind, name string, rng Range, d *doc
 	ctx, cancel := context.WithCancel(s.baseCtx)
 	defer cancel() // ends the child of a lookup that is still running
 	res := make(chan helpResult, 1)
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				res <- helpResult{panicked: r}
-			}
-		}()
-		var r helpResult
-		if kind == "builtin" {
-			r.doc, r.found = l.Builtin(ctx, name)
-		} else {
-			r.doc, r.found = l.Command(ctx, name)
-		}
-		res <- r
-	}()
+	go func() { res <- lookupHelp(ctx, l, kind, name) }()
 	select {
 	case r := <-res:
 		s.post(func() { s.finishHelp(d, version, id, rng, r) })
@@ -118,6 +105,21 @@ func (s *server) runHelp(l *helpdoc.Lookup, kind, name string, rng Range, d *doc
 		s.post(func() { s.answer(id, nil, cancelledError()) })
 	case <-s.baseCtx.Done():
 	}
+}
+
+// lookupHelp runs the lookup and turns a panic into a result.
+func lookupHelp(ctx context.Context, l *helpdoc.Lookup, kind, name string) (r helpResult) {
+	defer func() {
+		if p := recover(); p != nil {
+			r = helpResult{panicked: p}
+		}
+	}()
+	if kind == "builtin" {
+		r.doc, r.found = l.Builtin(ctx, name)
+	} else {
+		r.doc, r.found = l.Command(ctx, name)
+	}
+	return r
 }
 
 // finishHelp answers a hover on the loop.
@@ -140,7 +142,12 @@ func (s *server) finishHelp(d *document, version int, id json.RawMessage, rng Ra
 // helpHoverResult is the hover text: the synopsis in a bash fence and where
 // it came from, redacted like every outward text.
 func helpHoverResult(d helpdoc.Doc, rng Range) hover {
+	return hover{Contents: helpMarkup(d), Range: rng}
+}
+
+// helpMarkup is the synopsis as Markdown.
+func helpMarkup(d helpdoc.Doc) markupContent {
 	syn := strings.ReplaceAll(d.Synopsis, "```", "'''")
 	md := "```bash\n" + syn + "\n```\n(from " + d.Source + " on this machine)"
-	return hover{Contents: markupContent{Kind: "markdown", Value: redact.String(md)}, Range: rng}
+	return markupContent{Kind: "markdown", Value: redact.String(md)}
 }
