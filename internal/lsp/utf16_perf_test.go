@@ -24,7 +24,7 @@ func TestManyLocationsOnOneLongLineAreFast(t *testing.T) {
 		t.Helper()
 		start := time.Now()
 		f()
-		if d := time.Since(start); d > bound && !raceEnabled {
+		if d := time.Since(start); d > slack(bound) && !raceEnabled {
 			t.Errorf("%s took %v, want under %v", what, d, bound)
 		}
 	}

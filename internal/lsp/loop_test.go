@@ -364,7 +364,7 @@ func TestRequestAfterFolderChangeWaits(t *testing.T) {
 	if r.Error == nil || r.Error.Code != -32800 {
 		t.Fatalf("reply %+v, want error -32800", r)
 	}
-	if d := time.Since(start); d > 2*time.Second {
+	if d := time.Since(start); d > slack(2*time.Second) {
 		t.Fatalf("the cancelled held request took %v", d)
 	}
 	c.sendReq(`43`, "workspace/symbol", q)

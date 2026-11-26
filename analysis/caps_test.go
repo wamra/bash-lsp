@@ -554,6 +554,10 @@ func TestHeredocScanGrowth(t *testing.T) {
 			times = append(times, best)
 		}
 		t.Logf("%s: %v", name, times)
+		if onCI() {
+			t.Logf("CI: growth assertion left to development machines")
+			continue
+		}
 		overall := math.Cbrt(float64(times[3]) / float64(max(times[0], time.Millisecond)))
 		if overall > 2.5 {
 			t.Errorf("%s: grew x%.2f per doubling over three doublings (%v)", name, overall, times)

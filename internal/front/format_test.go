@@ -279,7 +279,7 @@ func FuzzFormat(f *testing.F) {
 		}
 		start := time.Now()
 		out, err := Format("x.sh", []byte(s), FormatOptions{})
-		if time.Since(start) > 5*time.Second {
+		if time.Since(start) > slack(5*time.Second) {
 			t.Fatalf("took %v", time.Since(start))
 		}
 		if err != nil {

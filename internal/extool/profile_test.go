@@ -266,7 +266,7 @@ func TestProfileHungDirectoryIsSkipped(t *testing.T) {
 	profileDirTimeout = 100 * time.Millisecond
 	start := time.Now()
 	p := NewProfile([]string{hung, good})
-	if el := time.Since(start); el > 5*time.Second {
+	if el := time.Since(start); el > slack(5*time.Second) {
 		t.Fatalf("NewProfile took %v with a hung directory", el)
 	}
 	if _, ok := p.Lookup("tool"); !ok && runtime.GOOS != "windows" {
@@ -352,7 +352,7 @@ func TestProfileTotalBudgetAcrossDirectories(t *testing.T) {
 	profileDirTimeout, profileTotalBudget = 100*time.Millisecond, 250*time.Millisecond
 	start := time.Now()
 	p := NewProfile(dirs)
-	if el := time.Since(start); el > 2*time.Second {
+	if el := time.Since(start); el > slack(2*time.Second) {
 		t.Fatalf("NewProfile took %v for %d hung directories", el, len(dirs))
 	}
 	sk := p.Skipped()

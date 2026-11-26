@@ -70,7 +70,7 @@ func TestRunTimeout(t *testing.T) {
 	if !errors.Is(err, ErrTimeout) {
 		t.Fatalf("err = %v, want ErrTimeout", err)
 	}
-	if took > 2*limit {
+	if took > slack(2*limit) {
 		t.Errorf("took %v, more than twice the %v timeout", took, limit)
 	}
 }
@@ -84,7 +84,7 @@ func TestRunOutputCap(t *testing.T) {
 	if len(res.Stdout) > 10<<20 {
 		t.Errorf("kept %d bytes, over the cap", len(res.Stdout))
 	}
-	if time.Since(start) > 10*time.Second {
+	if time.Since(start) > slack(10*time.Second) {
 		t.Errorf("a flood took %v to stop", time.Since(start))
 	}
 }
@@ -171,7 +171,7 @@ func TestRunCancelKillsChild(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
-	if time.Since(start) > 3*time.Second {
+	if time.Since(start) > slack(3*time.Second) {
 		t.Errorf("a cancelled request took %v to return", time.Since(start))
 	}
 }

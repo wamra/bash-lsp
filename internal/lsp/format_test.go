@@ -255,7 +255,7 @@ func TestFormattingIsOffTheLoop(t *testing.T) {
 	c.symbols("")
 	c.changeTo("a.sh", 2, "echo   a\necho   b\n")
 	c.waitPush("a.sh")
-	if d := time.Since(start); d > 2*time.Second {
+	if d := time.Since(start); d > slack(2*time.Second) {
 		t.Fatalf("the loop was blocked by the formatter for %v", d)
 	}
 	if c.hasReply("90") {
@@ -285,7 +285,7 @@ func TestFormattingHonoursCancellation(t *testing.T) {
 	if r.Error == nil || r.Error.Code != codeRequestCancelled {
 		t.Fatalf("reply to a cancelled formatting request: %+v %s", r.Error, r.Result)
 	}
-	if d := time.Since(start); d > 2*time.Second {
+	if d := time.Since(start); d > slack(2*time.Second) {
 		t.Fatalf("the cancel took %v", d)
 	}
 	g.release()

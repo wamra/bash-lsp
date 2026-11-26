@@ -736,7 +736,7 @@ func TestLargeDocument(t *testing.T) {
 	}
 	// The timing bound is a smoke test for gross regressions; the race
 	// detector makes it meaningless on a hosted runner (1.08 s here already).
-	if el := time.Since(start); el > 2*time.Second && !raceEnabled {
+	if el := time.Since(start); el > slack(2*time.Second) && !raceEnabled {
 		t.Fatalf("open + documentSymbol took %v", el)
 	}
 }

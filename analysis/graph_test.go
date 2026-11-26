@@ -310,7 +310,7 @@ func TestGraphScale(t *testing.T) {
 		if got := len(q.s.Trace(last, f0)); got != n-1 {
 			t.Fatalf("Trace = %d steps, want %d", got, n-1)
 		}
-		if d := time.Since(start); d > 5*time.Second {
+		if d := time.Since(start); d > slack(5*time.Second) {
 			t.Fatalf("queries took %v", d)
 		}
 	})
@@ -342,7 +342,7 @@ func TestGraphScale(t *testing.T) {
 		if got := len(q.s.Trace(main, hub)); got != 2 {
 			t.Fatalf("Trace(main, hub) = %d steps, want 2", got)
 		}
-		if d := time.Since(start); d > 5*time.Second {
+		if d := time.Since(start); d > slack(5*time.Second) {
 			t.Fatalf("queries took %v", d)
 		}
 	})

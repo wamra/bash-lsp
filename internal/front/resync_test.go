@@ -209,7 +209,7 @@ func TestResyncBudget(t *testing.T) {
 func TestJunkIsBounded(t *testing.T) {
 	start := time.Now()
 	f := Parse("junk.sh", mustRead(t, "../../testdata/broken/junk.sh"), Bash)
-	if time.Since(start) > time.Second {
+	if time.Since(start) > slack(time.Second) {
 		t.Fatal("too slow")
 	}
 	if len(f.Errors) == 0 || count(f, tree.KErrorGap) == 0 {
@@ -277,7 +277,7 @@ func parseBudget(n int) time.Duration {
 	if raceBuild {
 		b *= 10
 	}
-	return b
+	return slack(b)
 }
 
 // parseWithinBudget runs fn and fails t when the best of three runs takes

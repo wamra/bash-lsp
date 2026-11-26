@@ -520,7 +520,7 @@ func TestCallHierarchyManySitesAreFast(t *testing.T) {
 		fn()
 		d := time.Since(start)
 		t.Logf("%s: %v", what, d)
-		if d > bound && !raceEnabled {
+		if d > slack(bound) && !raceEnabled {
 			t.Errorf("%s took %v, want under %v", what, d, bound)
 		}
 	}

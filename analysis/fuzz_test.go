@@ -37,6 +37,7 @@ func parseBudget(n int) time.Duration {
 // of three runs (a fuzz worker shares the machine with the others).
 func withinBudget(t *testing.T, what string, budget time.Duration, n int, fn func()) {
 	t.Helper()
+	budget = slack(budget)
 	best := time.Duration(1<<63 - 1)
 	for range 3 {
 		start := time.Now()

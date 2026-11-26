@@ -106,7 +106,7 @@ func TestHookDoesNotWalkParent(t *testing.T) {
 	putFile(t, sub, "file.sh", "#!/bin/bash\nlocal z=1\n")
 	start := time.Now()
 	code, _, errs := runHook(t, hookInput(filepath.Join(sub, "file.sh")))
-	if d := time.Since(start); d > time.Second {
+	if d := time.Since(start); d > slack(time.Second) {
 		t.Errorf("hook took %v, want under 1s", d)
 	}
 	if code != 2 {

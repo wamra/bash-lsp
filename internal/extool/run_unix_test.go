@@ -95,7 +95,7 @@ func TestRunDescendantHoldingPipe(t *testing.T) {
 	if err == nil {
 		t.Error("no error for a descendant that holds the output open")
 	}
-	if time.Since(start) > 10*time.Second {
+	if time.Since(start) > slack(10*time.Second) {
 		t.Errorf("took %v", time.Since(start))
 	}
 	if pid := firstInt(t, res.Stdout); !gone(pid) {

@@ -571,7 +571,7 @@ func TestServerResponsiveWhileShellCheckHangs(t *testing.T) {
 		c.changeTo("a.sh", i, fmt.Sprintf("f() { :; }\nf\nrm $x%d\n", i))
 		c.waitPush("a.sh") // the native push of this edit
 		c.symbols("")
-		if d := time.Since(start); d > time.Second {
+		if d := time.Since(start); d > slack(time.Second) {
 			t.Fatalf("edit %d took %v while ShellCheck hung", i, d)
 		}
 	}

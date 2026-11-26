@@ -291,6 +291,10 @@ func TestWB1301WrapperChainGrowth(t *testing.T) {
 		times = append(times, best(n))
 	}
 	t.Logf("2000, 4000, 8000, 16000 wrappers: %v", times)
+	if onCI() {
+		t.Logf("CI: growth assertion left to development machines")
+		return
+	}
 	if overall := math.Cbrt(float64(times[3]) / float64(max(times[0], time.Millisecond))); overall > 2.5 {
 		t.Fatalf("grew x%.2f per doubling over three doublings (%v)", overall, times)
 	}

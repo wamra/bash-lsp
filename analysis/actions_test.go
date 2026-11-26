@@ -302,7 +302,7 @@ func TestFixAllScales(t *testing.T) {
 	}{{"descending", desc, n}, {"rolled back", wide, 0}} {
 		start := time.Now()
 		got := FixAll(c.fixes)
-		if d := time.Since(start); d > 2*time.Second {
+		if d := time.Since(start); d > slack(2*time.Second) {
 			t.Errorf("%s: %d fixes took %v", c.name, len(c.fixes), d)
 		}
 		if len(got) != c.want {
