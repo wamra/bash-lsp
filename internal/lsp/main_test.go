@@ -78,9 +78,9 @@ func exeExt() string {
 	return ""
 }
 
-// fakeToolMode is the mode this process plays the fake ShellCheck in, or "".
-// On Unix the fake is a script that sets WB_FAKE_TOOL. On Windows it is a link
-// to the test binary named shellcheck.exe, and the mode and the extra
+// On Unix the fake is a script that sets WB_FAKE_TOOL. On Windows it is a copy
+// of the test binary named shellcheck.exe, and the mode and the extra
+// to (a copy of) the test binary named shellcheck.exe, and the mode and the extra
 // environment are in the file beside it, NAME.fake (see fakeShellCheck): the
 // runner passes the fake only a short list of environment variables.
 func fakeToolMode() string {
@@ -180,15 +180,31 @@ func fakeShellCheck(t *testing.T, mode string, env ...string) string {
 		t.Fatal(err)
 	}
 	if runtime.GOOS == "windows" {
-		p := filepath.Join(t.TempDir(), "shellcheck.exe")
-		if err := os.Link(exe, p); err != nil {
-			b, rerr := os.ReadFile(exe)
-			if rerr != nil {
-				t.Fatal(rerr)
+		// A copy, not a link: a link is the same file as the running test
+		// binary, and Windows does not delete a file whose image is mapped.
+		// The directory is removed with retries, as the copy's process may
+		// still be going away.
+		dir, err := os.MkdirTemp("", "bash-lsp-fake-shellcheck")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			var rerr error
+			for i := 0; i < 50; i++ {
+				if rerr = os.RemoveAll(dir); rerr == nil {
+					return
+				}
+				time.Sleep(100 * time.Millisecond)
 			}
-			if err := os.WriteFile(p, b, 0o755); err != nil {
-				t.Fatal(err)
-			}
+			t.Errorf("removing %s: %v", dir, rerr)
+		})
+		p := filepath.Join(dir, "shellcheck.exe")
+		b, rerr := os.ReadFile(exe)
+		if rerr != nil {
+			t.Fatal(rerr)
+		}
+		if err := os.WriteFile(p, b, 0o755); err != nil {
+			t.Fatal(err)
 		}
 		if err := os.WriteFile(p+".fake", []byte(mode+"\n"+strings.Join(env, "\n")+"\n"), 0o644); err != nil {
 			t.Fatal(err)

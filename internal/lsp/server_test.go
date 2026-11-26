@@ -140,13 +140,24 @@ func clientWith(t *testing.T, cfg clientCfg) *testClient {
 	if cfg.onServer != nil {
 		cfg.onServer(srv)
 	}
+	served := make(chan struct{})
 	go func() {
 		err := srv.serve()
 		outW.Close()
 		c.done <- err
+		close(served)
 	}()
 	go c.readLoop()
-	t.Cleanup(func() { inW.Close(); outR.Close() })
+	t.Cleanup(func() {
+		inW.Close()
+		outR.Close()
+		// Serve has killed and reaped its ShellCheck runs once it returns; the
+		// temporary directories (a fake ShellCheck program in one) go after.
+		select {
+		case <-served:
+		case <-time.After(15 * time.Second):
+		}
+	})
 
 	caps := map[string]any{"textDocument": map[string]any{
 		"documentSymbol": map[string]any{"hierarchicalDocumentSymbolSupport": cfg.hierarchical}}}
