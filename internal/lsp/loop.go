@@ -9,6 +9,7 @@ import (
 	"runtime/debug"
 	"slices"
 	"sync"
+	"time"
 )
 
 // ---- the message loop ----
@@ -375,7 +376,16 @@ func (s *server) serve() error {
 	go s.readLoop()
 	go s.forward()
 	defer close(s.done)
-	defer s.baseCancel() // kills the ShellCheck runs still going
+	defer func() {
+		s.baseCancel() // kills the ShellCheck runs still going
+		// A kill is delivered by the run's own goroutine, which then reaps the
+		// child; return only once they have, so that a server that exits right
+		// after Serve does not leave a ShellCheck behind (on Windows nothing
+		// else would end it before its own time limit).
+		for deadline := time.Now().Add(5 * time.Second); s.checking.Load() > 0 && time.Now().Before(deadline); {
+			time.Sleep(2 * time.Millisecond)
+		}
+	}()
 	for !s.exit {
 		in, quit := s.inbound, (<-chan struct{})(nil)
 		if len(s.held) >= inboundCap {

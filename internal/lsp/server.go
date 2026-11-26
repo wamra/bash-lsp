@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wamra/bash-lsp/analysis"
@@ -124,6 +125,7 @@ type server struct {
 	debounce     time.Duration        // quiet time before ShellCheck runs on an edited document
 	baseCtx      context.Context      // ends when Serve returns; every ShellCheck run derives from it
 	baseCancel   context.CancelFunc
+	checking     atomic.Int32      // ShellCheck runs on their goroutines: Serve waits for them after cancelling
 	loggedMsg    map[string]bool   // window/logMessage texts sent once (logMessageOnce)
 	fmtSem       chan struct{}     // bounds the formatter runs going at once (lint.go)
 	epoch        int               // settings reloads so far (part of a pull result id)

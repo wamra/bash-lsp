@@ -486,6 +486,8 @@ func (s *server) scheduleCheck(d *document) {
 // runCheck runs on its own goroutine: it touches no server state but the
 // document's lint.run mutex (a field it only locks) and posts its result.
 func (s *server) runCheck(ctx context.Context, d *document, tool *scTool, f *tree.File, ver, seq int) {
+	s.checking.Add(1)
+	defer s.checking.Add(-1)
 	defer func() {
 		if r := recover(); r != nil {
 			s.log.Printf("panic running shellcheck: %v", r)

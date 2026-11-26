@@ -1333,3 +1333,29 @@ func TestShellCheckTimeoutRangeStopsAtLoneCR(t *testing.T) {
 	}
 	t.Fatalf("no WB1004 in %v", codes(ds))
 }
+
+// When Serve returns, the ShellCheck run in flight has been killed and
+// reaped: the server does not leave it behind for the process to exit around.
+func TestShellCheckChildGoneWhenServeReturns(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("probing a process with signal 0 is Unix only")
+	}
+	setDebounce(t, 10*time.Millisecond)
+	for i := 0; i < 20; i++ {
+		root := t.TempDir()
+		put(t, filepath.Join(root, "a.sh"), "")
+		runlog := filepath.Join(t.TempDir(), "runs")
+		c := clientInit(t, root, false, scInit(fakeShellCheck(t, "hang", "WB_RUNLOG="+runlog), 60))
+		c.openText("a.sh", "#!/bin/bash\necho 1\n")
+		pid := waitPIDs(t, runlog, 1)[0]
+		c.in.Close()
+		select {
+		case <-c.done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("Serve did not return")
+		}
+		if p, err := os.FindProcess(pid); err == nil && p.Signal(syscall.Signal(0)) == nil {
+			t.Fatalf("round %d: the ShellCheck child %d is still running after Serve returned", i, pid)
+		}
+	}
+}
