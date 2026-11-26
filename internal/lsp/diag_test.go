@@ -105,7 +105,7 @@ func (c *testClient) waitPush(rel string) (int, []Diagnostic) {
 	defer c.mu.Unlock()
 	for len(c.diags[uri]) == 0 {
 		if c.closed {
-			c.t.Fatalf("no diagnostics pushed for %s", rel)
+			c.t.Fatalf("no diagnostics pushed for %s (messages received: %q)", rel, c.logMsgs)
 		}
 		c.cond.Wait()
 	}

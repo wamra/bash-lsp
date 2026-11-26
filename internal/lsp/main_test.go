@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -24,7 +25,9 @@ var testBin string
 // (fakeShellCheck): started with WB_FAKE_TOOL set it plays that part and exits.
 func TestMain(m *testing.M) {
 	if mode := fakeToolMode(); mode != "" {
+		fakeLog("mode %s, args %q", mode, os.Args[1:])
 		runFakeTool(mode)
+		fakeLog("answered")
 		os.Exit(0)
 	}
 	dir, err := os.MkdirTemp("", "bash-lsp-lsp-test")
@@ -49,6 +52,9 @@ func TestMain(m *testing.M) {
 	os.Setenv("BASH_LSP_CONFIG", cfg)
 	code := m.Run()
 	os.RemoveAll(dir)
+	if fakeBase != "" {
+		os.RemoveAll(filepath.Dir(fakeBase))
+	}
 	os.Exit(code)
 }
 
@@ -78,9 +84,32 @@ func exeExt() string {
 	return ""
 }
 
-// On Unix the fake is a script that sets WB_FAKE_TOOL. On Windows it is a copy
-// of the test binary named shellcheck.exe, and the mode and the extra
-// to (a copy of) the test binary named shellcheck.exe, and the mode and the extra
+// fakeLog appends a line to the record of this fake run (NAME.log beside the
+// program), when it plays the fake as a program of its own; fakeShellCheck's
+// cleanup prints the record of a failed test, so a run that never answered
+// can be told from one whose answer was lost.
+func fakeLog(format string, args ...any) {
+	exe, err := os.Executable()
+	if err != nil || os.Getenv("WB_FAKE_TOOL") != "" {
+		return
+	}
+	if f, err := os.OpenFile(exe+".log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+		fmt.Fprintf(f, "%s pid %d: %s\n", time.Now().Format("15:04:05.000"), os.Getpid(), fmt.Sprintf(format, args...))
+		f.Close()
+	}
+}
+
+// fakeBase is the one copy of the test binary the Windows fakes link to: a
+// new program is checked by the virus scanner when it first runs, and with a
+// fresh copy per test that cost fell on every test.
+var (
+	fakeBase     string
+	fakeBaseOnce sync.Once
+)
+
+// fakeToolMode is the mode this process plays the fake ShellCheck in, or "".
+// On Unix the fake is a script that sets WB_FAKE_TOOL. On Windows it is a link
+// to a copy of the test binary named shellcheck.exe, and the mode and the extra
 // environment are in the file beside it, NAME.fake (see fakeShellCheck): the
 // runner passes the fake only a short list of environment variables.
 func fakeToolMode() string {
@@ -150,6 +179,7 @@ func runFakeTool(mode string) {
 	case "exit2":
 		io.Copy(io.Discard, os.Stdin)
 		fmt.Fprint(os.Stderr, "\nfake failure: first line\nsecond line")
+		fakeLog("answered with exit 2")
 		os.Exit(2)
 	default:
 		os.Exit(64)
@@ -180,8 +210,8 @@ func fakeShellCheck(t *testing.T, mode string, env ...string) string {
 		t.Fatal(err)
 	}
 	if runtime.GOOS == "windows" {
-		// A copy, not a link: a link is the same file as the running test
-		// binary, and Windows does not delete a file whose image is mapped.
+		// Not a link to the test binary itself: that is the file whose image is
+		// mapped, and Windows does not delete any name of such a file.
 		// The directory is removed with retries, as the copy's process may
 		// still be going away.
 		dir, err := os.MkdirTemp("", "bash-lsp-fake-shellcheck")
@@ -199,13 +229,36 @@ func fakeShellCheck(t *testing.T, mode string, env ...string) string {
 			t.Errorf("removing %s: %v", dir, rerr)
 		})
 		p := filepath.Join(dir, "shellcheck.exe")
-		b, rerr := os.ReadFile(exe)
-		if rerr != nil {
-			t.Fatal(rerr)
+		fakeBaseOnce.Do(func() {
+			bd, err := os.MkdirTemp("", "bash-lsp-fake-base")
+			if err != nil {
+				return
+			}
+			b, err := os.ReadFile(exe)
+			if err != nil {
+				return
+			}
+			base := filepath.Join(bd, "base.exe")
+			if os.WriteFile(base, b, 0o755) == nil {
+				fakeBase = base
+			}
+		})
+		// Linked to the copy, never to the test binary itself.
+		if fakeBase == "" || os.Link(fakeBase, p) != nil {
+			b, rerr := os.ReadFile(exe)
+			if rerr != nil {
+				t.Fatal(rerr)
+			}
+			if err := os.WriteFile(p, b, 0o755); err != nil {
+				t.Fatal(err)
+			}
 		}
-		if err := os.WriteFile(p, b, 0o755); err != nil {
-			t.Fatal(err)
-		}
+		t.Cleanup(func() {
+			if t.Failed() {
+				rec, _ := os.ReadFile(p + ".log")
+				t.Logf("record of the fake ShellCheck runs (%s):\n%s", mode, rec)
+			}
+		})
 		if err := os.WriteFile(p+".fake", []byte(mode+"\n"+strings.Join(env, "\n")+"\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
