@@ -125,3 +125,26 @@ func TestReadFileLimits(t *testing.T) {
 		t.Fatalf("a file over %d bytes was read: %v", maxFileBytes, got)
 	}
 }
+
+// A Windows path (backslashes, a drive letter) finds the same sections as the
+// same path in slash form.
+func TestLookupWindowsPaths(t *testing.T) {
+	fs := files{
+		"C:/ws/.editorconfig":     "root = true\n[*]\nindent_style=space\n[b.sh]\nindent_style=tab\n[sub/*.sh]\nsimplify=true\n",
+		"C:/ws/sub/.editorconfig": "[*.sh]\nindent_size=2\n",
+		"/.editorconfig":          "[*]\nbinary_next_line=true\n",
+	}
+	for _, c := range []struct {
+		file, root string
+		want       map[string]string
+	}{
+		{`C:\ws\b.sh`, `C:\ws`, map[string]string{"indent_style": "tab"}},
+		{`C:/ws/b.sh`, `C:/ws`, map[string]string{"indent_style": "tab"}},
+		{`C:\ws\sub\a.sh`, `C:\ws`, map[string]string{"indent_style": "space", "simplify": "true", "indent_size": "2"}},
+		{`C:\ws\sub\a.sh`, `C:\ws\`, map[string]string{"indent_style": "space", "simplify": "true", "indent_size": "2"}},
+	} {
+		if got := Lookup(c.file, c.root, fs.read); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s (root %s): got %v, want %v", c.file, c.root, got, c.want)
+		}
+	}
+}

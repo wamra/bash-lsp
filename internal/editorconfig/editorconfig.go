@@ -40,6 +40,8 @@ func Lookup(path, root string, read func(string) ([]byte, bool)) map[string]stri
 // for an unsupported glob, as "FILE:LINE: glob X not supported".
 func LookupNotes(file, root string, read func(string) ([]byte, bool)) (map[string]string, []string) {
 	var dirs []string
+	file = strings.ReplaceAll(file, "\\", "/")
+	root = strings.ReplaceAll(root, "\\", "/")
 	dir := slashDir(file)
 	rootDir := strings.TrimRight(root, "/")
 	inside := root != "" && (dir == rootDir || strings.HasPrefix(dir, rootDir+"/"))
