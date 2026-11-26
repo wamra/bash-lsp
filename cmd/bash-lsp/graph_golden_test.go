@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -42,6 +43,33 @@ var goldenRuns = []struct {
 	{"missing", []string{"callers", "no_such_function"}, false},
 }
 
+// scrubDir replaces every spelling of the directory dir in out with token: as
+// given, made absolute, and with its links resolved (macOS reports a temp
+// directory as /private/var/..., Windows as a long name where the test holds
+// a short one), each also as it appears in JSON, where a backslash is doubled.
+// The longest spelling goes first, so a spelling that ends in another is not
+// left half replaced.
+func scrubDir(out, dir, token string) string {
+	forms := map[string]bool{dir: true}
+	if abs, err := filepath.Abs(dir); err == nil {
+		forms[abs] = true
+		if real, err := filepath.EvalSymlinks(abs); err == nil {
+			forms[real] = true
+		}
+	}
+	var list []string
+	for f := range forms {
+		list = append(list, f, strings.ReplaceAll(f, `\`, `\\`))
+	}
+	sort.Slice(list, func(i, j int) bool {
+		return len(list[i]) > len(list[j]) || len(list[i]) == len(list[j]) && list[i] < list[j]
+	})
+	for _, f := range list {
+		out = strings.ReplaceAll(out, f, token)
+	}
+	return out
+}
+
 // TestCLIOutputUnchanged pins the output of every graph command (stdout,
 // stderr and exit code, text and --json) to what testdata/graphgolden holds,
 // written before the encoders moved to internal/query.
@@ -63,10 +91,8 @@ func TestCLIOutputUnchanged(t *testing.T) {
 			}
 			code, out, errs := runCode(t, args...)
 			got := fmt.Sprintf("exit %d\n--- stdout\n%s--- stderr\n%s", code, out, errs)
-			got = strings.ReplaceAll(got, tempRoot, "TEMPROOT")
-			if abs, err := filepath.Abs(corpus); err == nil {
-				got = strings.ReplaceAll(got, abs, "CORPUS")
-			}
+			got = scrubDir(got, tempRoot, "TEMPROOT")
+			got = scrubDir(got, corpus, "CORPUS")
 			path := filepath.Join("testdata", "graphgolden", name)
 			if *updateGolden {
 				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

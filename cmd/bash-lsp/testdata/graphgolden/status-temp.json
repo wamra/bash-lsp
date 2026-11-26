@@ -2,7 +2,7 @@ exit 0
 --- stdout
 {
   "generation": 1,
-  "root": "/privateTEMPROOT",
+  "root": "TEMPROOT",
   "files": 3,
   "dialects": {
     "bash": 3

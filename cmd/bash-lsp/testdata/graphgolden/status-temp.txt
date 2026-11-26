@@ -1,7 +1,7 @@
 exit 0
 --- stdout
 generation: 1
-root: /privateTEMPROOT
+root: TEMPROOT
 files: 3
 bash: 3
 skipped: 0
