@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/wamra/bash-lsp/internal/paths"
 	"github.com/wamra/bash-lsp/tree"
 )
 
@@ -161,8 +162,10 @@ func (r *resolver) batsLoad(ref SourceRef) bool {
 // firstExisting tries p as-is when absolute, else against each directory in
 // the given groups in order.
 func (r *resolver) firstExisting(p string, groups ...any) string {
-	if filepath.IsAbs(p) {
-		if c := filepath.Clean(p); r.exists(c) {
+	if paths.Rooted(p) {
+		// On Windows "/etc/os-release" has no volume: it is neither absolute
+		// nor below a directory, and no file of the snapshot has that key.
+		if c := filepath.Clean(p); filepath.IsAbs(c) && r.exists(c) {
 			return c
 		}
 		return ""
@@ -345,7 +348,10 @@ func (r *resolver) loopGlob(ref SourceRef) []string {
 // expand globs one pattern against the file's directory, then root.
 func (r *resolver) expand(p string) []string {
 	bases := []string{r.dir, r.root}
-	if filepath.IsAbs(p) {
+	if paths.Rooted(p) {
+		if !filepath.IsAbs(p) {
+			return nil
+		}
 		bases = []string{""}
 	}
 	for _, b := range bases {
