@@ -3,7 +3,7 @@ Usage: uv run --no-project python repeat.py OUT.json LABEL N [--wall] [--env K=V
 Each run of CMD prints one JSON object on stdout (stored as is); with --wall the
 wall time of the command is stored instead and stdout is discarded. OUT.json
 holds {label, date, commit, machine, binary, cmd, n, runs:[...]} so every number
-quoted in docs/m1-acceptance.md can be recomputed from the file (summarize.py)."""
+quoted in a document can be recomputed from the file (summarize.py)."""
 import datetime, json, os, platform, subprocess, sys, time
 
 out, label, n = sys.argv[1], sys.argv[2], int(sys.argv[3])
@@ -27,7 +27,7 @@ for _ in range(n):
     runs.append({"wall_ms": ms} if wall else json.loads(p.stdout))
 rec = {"label": label, "date": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
        "commit": sh("git", "rev-parse", "--short", "HEAD"), "dirty": bool(sh("git", "status", "--porcelain", "--", "cmd", "internal", "analysis", "tree")),
-       "machine": f"{platform.node() and 'Mac Studio'} {sh('sysctl', '-n', 'machdep.cpu.brand_string')}, {platform.platform()}",
+       "machine": f"workstation {sh('sysctl', '-n', 'machdep.cpu.brand_string')}, {platform.platform()}",
        "cmd": [os.path.basename(c) if c.startswith("/") and i == 0 else c for i, c in enumerate(cmd)], "n": n, "runs": runs}
 json.dump(rec, open(out, "w"), indent=1)
 print(f"{label}: {n} runs -> {out}")

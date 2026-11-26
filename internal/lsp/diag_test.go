@@ -154,7 +154,7 @@ func hasSource(ds []Diagnostic, src string) bool {
 
 // ---- push ----
 
-func TestNativeOnOpenAndChange(t *testing.T) { // AC-12 shape: native findings, versioned, no ShellCheck
+func TestNativeOnOpenAndChange(t *testing.T) { // native findings, versioned, no ShellCheck
 	t.Setenv("PATH", t.TempDir())
 	root := t.TempDir()
 	put(t, filepath.Join(root, "a.sh"), "")

@@ -26,7 +26,7 @@ Standard output carries JSON-RPC messages, one per line, and nothing else. Log l
 
 A symbol is a function name, a root-relative file path, or `path:line:col` with a UTF-16 column, as the other answers print positions. A name defined in several files is refused with the list of `path:line:col` specs that tell the definitions apart.
 
-The graph answers are the documents the command line prints with `--json`, from the same encoder (`internal/query`): the same question gives the same bytes on both (`TestAC20`). `get_callers` on `lib/util.sh:4:1` equals `bash-lsp callers lib/util.sh:4:1 --json`; `preview_rename` with `build_release` and `ship` equals `bash-lsp rename build_release ship --json` (`TestMCPPreviewRenameParity`). The text content of a result is that document.
+The graph answers are the documents the command line prints with `--json`, from the same encoder (`internal/query`): the same question gives the same bytes on both (`TestCLIAndMCPAnswersAreIdentical`). `get_callers` on `lib/util.sh:4:1` equals `bash-lsp callers lib/util.sh:4:1 --json`; `preview_rename` with `build_release` and `ship` equals `bash-lsp rename build_release ship --json` (`TestMCPPreviewRenameParity`). The text content of a result is that document.
 
 Another package adds a tool by calling `mcp.Register`; a tool reaches the refreshed snapshot, the root and the settings through `mcp.SessionFrom(ctx)`.
 

@@ -263,7 +263,7 @@ func TestLoopGlobFallsBackToRoot(t *testing.T) {
 
 // Options.Oversize turns the not-found of a source naming an existing file
 // the caller skipped for its size into skipped-for-size, with that file as
-// ToFile; the source still counts as unresolved for the FDS-008 fallback.
+// ToFile; the source still counts as unresolved for the fallback.
 func TestSourceOfOversizeFile(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "w")
 	big, main := filepath.Join(root, "big.sh"), filepath.Join(root, "m.sh")

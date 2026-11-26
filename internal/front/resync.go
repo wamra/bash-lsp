@@ -118,7 +118,7 @@ func (r *resyncer) raw(off int) (attempt, int) {
 //
 // What cannot be recovered from, a stack overflow, the parser rules out
 // itself: it counts nesting and returns an error past 10,000 levels
-// (internal/front/syntax, docs/m2a-nesting-design.md).
+// (internal/front/syntax, docs/library.md).
 //
 // read is the number of bytes the parser took from its reader (it reads in
 // chunks, so a run that stops at an early error reads little of a long tail).

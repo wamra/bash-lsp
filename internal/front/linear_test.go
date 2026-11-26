@@ -15,7 +15,7 @@ func allocated(fn func()) uint64 {
 	return after.TotalAlloc - before.TotalAlloc
 }
 
-// review I3: pipeStages re-copied the stages at every level of a pipeline
+// pipeStages re-copied the stages at every level of a pipeline
 // (200 KB of `a | a | ...`: 2.3 s, 800 KB: 33 s). Four times the stages must
 // cost about four times the bytes, not sixteen.
 func TestPipelineIsLinear(t *testing.T) {

@@ -48,7 +48,7 @@ type lowerer struct {
 // maxDepth bounds the lowerer's recursion, counted in lowering levels: each
 // statement, word, word part and if or elif clause inside another is one, so
 // a user-level construct costs one to four (bench/results/
-// lowerer-depth-m2a-final.txt). A statement nested deeper is dropped and reported, so the tree handed to analysis is at most about
+// lowerer-depth.txt). A statement nested deeper is dropped and reported, so the tree handed to analysis is at most about
 // 3*maxDepth nodes deep (a level adds a statement, its command and a block at
 // most) and every recursive walk over it (tree.Node.Walk, Bind, hover, the
 // ast view) stays within a few megabytes of stack. The parser has already

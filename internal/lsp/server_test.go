@@ -505,7 +505,7 @@ func TestInitializeCapabilities(t *testing.T) {
 	}
 }
 
-func TestFirstDocumentSymbolNotEmpty(t *testing.T) { // AC-07, C13: no sleep between initialized, didOpen and the request
+func TestFirstDocumentSymbolNotEmpty(t *testing.T) { // C13: no sleep between initialized, didOpen and the request
 	c := client(t, copyCorpus(t))
 	c.open("main.sh")
 	if n := len(c.docSymbols("main.sh")); n == 0 {
@@ -629,7 +629,7 @@ func TestHierarchicalAndFlatSymbols(t *testing.T) {
 	}
 }
 
-func TestSyntaxDiagnostics(t *testing.T) { // AC-11, C20
+func TestSyntaxDiagnostics(t *testing.T) { // C20
 	c := client(t, copyCorpus(t))
 	c.open("broken_exp.sh")
 	d := c.waitDiag("broken_exp.sh")

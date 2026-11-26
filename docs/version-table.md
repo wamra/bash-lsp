@@ -1,16 +1,14 @@
 # Bash version table (WB1301) and bash-only list (WB1302)
 
-Source of every first version: FDS-016 in
-`docs/internal/specs/2026-11-22-bash-lsp-brd-fds-v0.2.md`, which takes the
-table from the bash NEWS file. **The first versions are confirmed against real
-builds.** `bench/version_probe.py <bash>` runs one fixed snippet per row under
+The first versions come from the bash NEWS file. **They are confirmed against
+real builds.** `bench/version_probe.py <bash>` runs one fixed snippet per row under
 `env -i PATH=/usr/bin:/bin <bash> --noprofile --norc` and records the result in
 `bench/results/version-probe-<v>.json`. It was run on `/bin/bash` 3.2.57 and
 on builds of bash 4.0, 4.2, 4.3, 4.4, 5.0, 5.1 and 5.3 made from the
 ftp.gnu.org tarballs (bash 4.1 and 5.2 were not built). In all eight runs every
 row fails below its first version and passes from it
 (`TestTableMatchesProbeResults` re-checks this against the result files). One
-row was wrong and is fixed: `negative-subscript` was 4.3 in FDS-016 and is
+row was wrong and is fixed: `negative-subscript` was 4.3 and is
 4.2 (it passes on 4.2.0 and fails on 4.0 and 3.2.57; there is no 4.1 build, so
 4.1 itself is not measured).
 
@@ -42,8 +40,8 @@ probed. The "On 3.2.57" column keeps the exact message.
 
 ## Left out of the table
 
-- **`mapfile` / `readarray`.** FDS-016 records "one conflicting source" for
-  their first version. The probe shows
+- **`mapfile` / `readarray`.** The sources conflict on their first version.
+  The probe shows
   `mapfile` fails on 3.2.57 (`command not found`, exit 127), so a script that
   uses it does not run on 3.2, but WB1301 does not name a version for it. The
   probe (`mapfile -t a </dev/null`) passes on every build from 4.0 up, which
@@ -189,15 +187,15 @@ behind `env` (its options `-i`, `-v`, `-0`, `-C dir`, `-P path`, `-u name`,
   - `$BASHPID`: empty on 3.2.57.
   - bats files: a bats dialect gets neither rule.
   - the `@` operators other than `Q`, `${v@U}`, `${v@u}`, `${v@L}`,
-    `${v@K}`, `${v@k}` (and `@a`, `@A`, `@E`, `@P`): FDS-016 names only
-    `${v@Q}`, and no source on this machine dates the others. Each fails on
+    `${v@K}`, `${v@k}` (and `@a`, `@A`, `@E`, `@P`): only `${v@Q}`
+    has a cited first version, and no source dates the others. Each fails on
     3.2.57 with `bad substitution` (checked for `@U`, `@L`, `@u`, `@K`, `@k`,
     `@Q`). **Unverified:** `@U`, `@u`, `@L`, `@K`, `@k`. They are neither
     flagged by WB1301 nor reported by WB1302 until a source is cited.
-- **The release gate is open.** FDS-016 requires each row to be confirmed
-  against real bash 4.x and 5.x builds before release. Only 3.2.57 is
-  installed here and installing another bash needs the network, so this needs
-  the owner.
+- **Two bash versions were not built.** Bash 4.1 and 5.2 were not built, so a
+  first version is confirmed against the builds on either side of it, not
+  against every release. The signatures of the downloaded source tarballs
+  were not verified.
 - **A directive after a command on the same line covers nothing** for WB1301
   and WB1302, as for every rule. ShellCheck 0.11.0 on a file with `echo $x #
   shellcheck disable=SC2086` prints `SC1126: Place shellcheck directives
@@ -243,11 +241,10 @@ behind `env` (its options `-i`, `-v`, `-0`, `-C dir`, `-P path`, `-u name`,
 `bash.target` is a range `MIN-MAX`; a feature is reported when its first
 version is above MIN (message: "associative arrays (`declare -A`) need bash
 4.0; the target range starts at 3.2"). With no setting the target is `3.2-5.3`
-(spec D-8), so the rule is on by default. `DiagOptions` with a zero `Target`
+so the rule is on by default. `DiagOptions` with a zero `Target`
 means the same default.
 
 **Only MIN drives WB1301.** MAX is parsed and checked (MIN must not exceed
-MAX) and shown in the settings, but no rule reads it. Neither the spec (FDS-004,
-D-8) nor the task brief gives it a use; it is kept for rules about what newer
-bash changes or removes, which do not exist yet. Narrowing MAX therefore does
+MAX) and shown in the settings, but no rule reads it. It is kept for rules
+about what newer bash changes or removes, which do not exist yet. Narrowing MAX therefore does
 not change any finding.

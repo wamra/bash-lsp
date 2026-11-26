@@ -56,7 +56,7 @@ func (q *qworld) refuses(code, file, needle string, occ, off int, newName string
 	return r
 }
 
-func TestAC19RenamePlan(t *testing.T) {
+func TestRenamePlanOnCorpus(t *testing.T) {
 	q := buildCorpus(t)
 	p, err := q.s.PlanRenameByName("build_release", "ship")
 	if err != nil {

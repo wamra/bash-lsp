@@ -79,7 +79,7 @@ func parseClean(t *testing.T, name, src string) *FileFacts {
 	return Bind(f)
 }
 
-// m2b shapes found by the merge's shape run: each must bind, build and list
+// Shapes found by a shape run: each must bind, build and list
 // its edges in bounded time. "$cmd" calls each scanned every declaration of
 // the variable's symbol: O(calls x assignments), 9.3 s at 128 KiB. The
 // dynamic-scope pass listed the targets of every call of a function once

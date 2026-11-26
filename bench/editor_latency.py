@@ -1,6 +1,6 @@
 """Latency of the editor requests: 30 warm calls of each, medians and p95.
 
-Measures every request added in milestone 4 (completion, completionItem/resolve,
+Measures every request added in 0.4.0 (completion, completionItem/resolve,
 signatureHelp, semanticTokens full/range/delta, foldingRange, selectionRange,
 documentHighlight, documentLink, inlayHint, prepareRename, rename and the
 deferred hover, warm: answered from the help cache) on three inputs:

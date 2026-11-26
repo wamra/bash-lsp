@@ -46,7 +46,7 @@ func TestDeeplyNestedFileKeepsServerAlive(t *testing.T) {
 	}
 }
 
-// review C1 / T9: an open document is held to the same size limit as a file
+// An open document is held to the same size limit as a file
 // on disk, so the parser never sees more than 2 MiB from either.
 func TestOversizeDocumentIsSkipped(t *testing.T) {
 	big := "too_big_fn() { :; }\n" + strings.Repeat("# pad\n", (2<<20)/6+1)

@@ -287,7 +287,7 @@ func TestRulesRegistry(t *testing.T) {
 	}
 }
 
-// Review Focus 1: unused findings stay silent in a library nothing sources,
+// unused findings stay silent in a library nothing sources,
 // near a dynamic call, and in a file whose graph is incomplete.
 func TestNoUnusedInLibraries(t *testing.T) {
 	cases := map[string]map[string]string{
@@ -370,7 +370,7 @@ func TestSuppressionScope(t *testing.T) {
 	}
 }
 
-// T4-2: a statement straddling the failing line is inside the gap, and the
+// A statement straddling the failing line is inside the gap, and the
 // syntax finding covers both lines.
 func TestStraddlingGap(t *testing.T) {
 	src := "x=$(foo \\\n\"bar\nf() { :; }\n"
@@ -385,7 +385,7 @@ func TestStraddlingGap(t *testing.T) {
 	}
 }
 
-// T3-5, T4-3: a recovered parser panic is WB1003, not also WB1001.
+// A recovered parser panic is WB1003, not also WB1001.
 func TestRecoveredPanicIsDiagnostic(t *testing.T) {
 	src := "A=$((0 A\nf() { :; }\n"
 	ds := diagsIn(map[string]string{"x.sh": src}, "x.sh")

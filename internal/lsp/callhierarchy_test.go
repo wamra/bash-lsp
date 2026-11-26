@@ -173,8 +173,7 @@ func TestCallHierarchyPrepare(t *testing.T) { // C09
 
 // The file's top-level item answers incoming and outgoing calls with the
 // steps `bash-lsp callers` and `callees` give for the file (both come from
-// analysis Callers and Callees at depth 1): calls, invokes and sources (FDS-012
-// takes the call hierarchy "from FDS-010", whose edges include `sources`).
+// analysis Callers and Callees at depth 1): calls, invokes and sources.
 func TestCallHierarchyFileItemMatchesCLI(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "lib.sh", "# lib\nlib_fn() { :; }\n")
@@ -268,7 +267,7 @@ func TestCallHierarchyPrepareAmbiguous(t *testing.T) {
 	}
 }
 
-func TestCallHierarchyIncomingOutgoing(t *testing.T) { // C10, C11, AC-05
+func TestCallHierarchyIncomingOutgoing(t *testing.T) { // C10, C11
 	c := client(t, copyCorpus(t))
 	c.open("lib/util.sh")
 	br := c.prepare("lib/util.sh", "build_release() {", 2)[0]
@@ -402,7 +401,7 @@ func TestCallHierarchyAfterEdit(t *testing.T) {
 	}
 }
 
-func TestReferencesResolvedOnly(t *testing.T) { // AC-03 both ways
+func TestReferencesResolvedOnly(t *testing.T) { // both ways
 	root := copyCorpus(t)
 	all := client(t, root)
 	all.open("main.sh")
@@ -468,7 +467,7 @@ func (c *testClient) hoverAt(rel string, p Position) string {
 	return h.Contents.Value
 }
 
-func TestHoverLabelLines(t *testing.T) { // AC-01, AC-02, FDS-011
+func TestHoverLabelLines(t *testing.T) {
 	c := client(t, copyCorpus(t))
 	c.open("main.sh")
 	for _, tc := range []struct {

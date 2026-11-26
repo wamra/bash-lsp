@@ -93,7 +93,7 @@ func TestHookUsageErrors(t *testing.T) {
 	}
 }
 
-// Review Focus 5: the hook analyses the one file it is given. Thousands of
+// the hook analyses the one file it is given. Thousands of
 // shell files two levels up, with no repository marker around, are not read.
 func TestHookDoesNotWalkParent(t *testing.T) {
 	emptyPath(t)

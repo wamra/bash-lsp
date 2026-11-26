@@ -139,7 +139,7 @@ nested more than three strings deep, is a `Dynamic`/`expansion` edge.
   `PlanRename` and `PlanRenameByName` refuse with `skipped-file`; the refusal's
   `Sites` are those places, each `Location.Why` holding the reason (at most 100
   are listed). `Options.Excluded Excluded{Files, Dirs}` counts the shell files
-  and directories the caller left out because its owner excluded them
+  and directories the caller left out because the settings or `.gitignore` excluded them
   (`files.exclude`, `.gitignore`); the rename is not refused, and its plan has
   a warning that they were not checked.
 - Four queries return a second result, `cut bool`, true when the answer was
@@ -312,15 +312,14 @@ The same code runs as `Example_consumer` in `example_test.go`, and
 
 ## Go version
 
-This module's `go.mod` says `go 1.26.0`. `~/dev/code-index/go.mod`
-says `go 1.24.1`. A module cannot import one that needs a newer Go than its own
-`go` line, so linking bash-lsp into code-index needs a toolchain bump there.
+This module's `go.mod` says `go 1.26.0`. A module cannot import one that needs
+a newer Go than its own `go` line, so a module that imports bash-lsp needs a
+`go` line of at least 1.26.0.
 
 ## Deep nesting: what a host can rely on, and its limits
 
 The shell parser is recursive, and a Go stack overflow ends the process. The
-parser therefore counts its own nesting and stops at 10,000 levels (design:
-`m2a-nesting-design.md`). Past that it reports the syntax error `nesting is
+parser therefore counts its own nesting and stops at 10,000 levels. Past that it reports the syntax error `nesting is
 deeper than 10000 levels` at the place the limit was passed.
 
 What a host can rely on:
@@ -337,8 +336,8 @@ What a host can rely on:
   errors and no statements.
 - Each operator of a chain is a level, so a pipeline, an `&&`/`||` list or
   an arithmetic chain of about 10,000 operators is that same syntax error.
-  The exact figure per construct is in the design note ("The limit, per
-  construct").
+  The figure per construct is pinned by `TestNestingLimit` in
+  `internal/front`.
 - Comment blocks, heredocs, strings and long runs of statements are not
   nesting and have no limit.
 - The lowerer, which turns the parser's tree into `tree.Node`s, has a lower
@@ -349,7 +348,7 @@ What a host can rely on:
   statement, word, word part (expansion, quote or literal) and if or elif
   clause inside another`; the rest of the file is analysed. A construct costs
   one to four lowering levels, so the depth a user meets depends on the
-  construct. The first refused depth (`bench/results/lowerer-depth-m2a-final.txt`,
+  construct. The first refused depth (`bench/results/lowerer-depth.txt`,
   from `TestLowererLimitPerConstruct`, which pins each figure):
 
   | Construct, nested n times | Refused from n = |
@@ -365,7 +364,7 @@ What a host can rely on:
 What it assumes of the host:
 
 - The parser runs on the calling goroutine. At the limit it uses up to
-  about 42 MiB of stack (measured; the design note has the figures) on top
+  about 42 MiB of stack (measured) on top
   of what the caller already uses.
 - `debug.SetMaxStack` is left at 64 MiB or more (the default is 1 GB). Under
   a lower limit, input nested close to 10,000 levels is a fatal stack
@@ -373,7 +372,7 @@ What it assumes of the host:
 - Parsing one file takes time in proportion to its size, except after a
   syntax error the parser cannot recover from: the rest of the file is then
   parsed again from up to 50 later lines. A 2 MiB file built for that takes
-  up to 17.5 s (`bench/results/resync-cost-m2a-task5.txt`: one `front.Parse`
+  up to 17.5 s (`bench/results/resync-cost.txt`: one `front.Parse`
   of the slowest input known, 17.46 to 17.63 s over three runs).
 
 ## `bash-lsp ast` on deep trees

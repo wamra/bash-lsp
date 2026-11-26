@@ -12,7 +12,7 @@ import (
 	"github.com/wamra/bash-lsp/tree"
 )
 
-// rules is the native rule table (FDS-015). Severities are LSP
+// rules is the native rule table. Severities are LSP
 // DiagnosticSeverity values; ShellCheck lists the codes that report the same
 // problem, so a ShellCheck finding with one of them replaces the native one
 // (Merge) and `# shellcheck disable=` with one of them silences it.

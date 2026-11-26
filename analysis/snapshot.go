@@ -94,7 +94,7 @@ type Options struct {
 	// What is in them is in no file's view, yet may use any name, so a rename
 	// is refused while there is one.
 	Unanalysed []Unanalysed
-	// Excluded counts what the caller left out because the owner asked: the
+	// Excluded counts what the caller left out because the settings asked: the
 	// paths matched by files.exclude or a .gitignore. A rename goes on, and its
 	// plan carries a warning that they were not checked.
 	Excluded Excluded
@@ -107,7 +107,7 @@ type Unanalysed struct {
 }
 
 // Excluded counts the shell files (named like one) and the directories the
-// caller left out by the owner's exclusion settings. Files inside an excluded
+// caller left out by the exclusion settings. Files inside an excluded
 // directory are not counted.
 type Excluded struct {
 	Files, Dirs int
@@ -695,7 +695,7 @@ func (s *Snapshot) bindAll() {
 }
 
 // privateOf returns, for each use of ff, the symbol of the innermost private
-// scope around it that declares its name (rules S1, S2), nil when none; nil
+// scope around it that declares its name, nil when none; nil
 // for a file without private symbols. Bind numbered each scope with the uses
 // recorded while it was open, so a scope encloses use j exactly when
 // first <= j < last, and the enclosing scopes of a name form a stack swept once
@@ -776,8 +776,7 @@ func (s *Snapshot) bindVar(out []Binding, file int, u *Use, priv *Symbol) []Bind
 			return append(out, b)
 		}
 	}
-	// Innermost private scope with a declaration of the name wins (rules S1,
-	// S2; privateOf). The enclosing function's locals are not visible to a
+	// Innermost private scope with a declaration of the name wins (privateOf). The enclosing function's locals are not visible to a
 	// nested function.
 	if priv != nil {
 		b.Sym = priv

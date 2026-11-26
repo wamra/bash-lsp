@@ -35,9 +35,9 @@ func mcpText(t *testing.T, root, tool string, args map[string]any) (text string,
 	return r.Result.Content[0].Text, r.Result.IsError
 }
 
-// TestAC20: a question asked on the command line and over MCP gets the same
+// TestCLIAndMCPAnswersAreIdentical: a question asked on the command line and over MCP gets the same
 // bytes, because one encoder writes both.
-func TestAC20(t *testing.T) {
+func TestCLIAndMCPAnswersAreIdentical(t *testing.T) {
 	for _, c := range []struct {
 		tool string
 		args map[string]any

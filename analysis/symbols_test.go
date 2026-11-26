@@ -22,7 +22,7 @@ func childNames(ds []DocSymbol, parent string) []string {
 	return []string{"<no such symbol>"}
 }
 
-func TestDocumentSymbolsNestLocals(t *testing.T) { // AC-06
+func TestDocumentSymbolsNestLocals(t *testing.T) {
 	q := buildCorpus(t)
 	ds := q.s.DocumentSymbols(q.abs("main.sh"))
 	if names := topNames(ds); !eq(names, "br", "deploy", "other", "unquoted") {
@@ -64,7 +64,7 @@ FOO=1 env
 read line
 `})
 	ds := q.s.DocumentSymbols(q.abs("a.sh"))
-	// Each function definition is listed (review T8: the second one keeps its
+	// Each function definition is listed (the second one keeps its
 	// own locals); other names once.
 	if got := topNames(ds); !eq(got, "X", "Y", "f", "f", "line") {
 		t.Fatal(got)

@@ -147,7 +147,7 @@ func TestCorpusQueries(t *testing.T) {
 	}
 	wantContains(t, r, loc("lib/util.sh", "build_release() {"), loc("main.sh", `  build_release "$name"`),
 		loc("main.sh", "alias br="), loc("main.sh", `  br "$name"`), loc("dyn.sh", "build_release dyn"))
-	// C08 / AC-04: exactly the three occurrences inside deploy()
+	// C08: exactly the three occurrences inside deploy()
 	wantEq(t, refs("main.sh", `local name="$1"`, 0, 6), loc("main.sh", `local name="$1"`), loc("main.sh", `  build_release "$name"`), loc("main.sh", `  br "$name"`))
 	// C15, C16: library calls a function its sourcing script defines
 	wantEq(t, def("lib/hooks.sh", "  on_start", 0, 3), loc("app.sh", "on_start() {"))
@@ -400,7 +400,7 @@ func (s *Snapshot) hitBindings(path string, offset int) []Binding {
 	return h.binds
 }
 
-// review I1: in a NUL-free file a name holding a line continuation is the name
+// in a NUL-free file a name holding a line continuation is the name
 // the shell reads, as at b414076, so its uses bind: the call `foo`, the read
 // `$myvar`, and in POSIX sh the read of a `local` (a plain call there).
 func TestContinuationNamesBind(t *testing.T) {

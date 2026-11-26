@@ -50,7 +50,7 @@ func fill(prefix, unit, suffix string) string {
 }
 
 // Each of these drove the recursive-descent parser past Go's stack limit (a
-// fatal error no recover() catches; review finding C1) before it counted its
+// fatal error no recover() catches) before it counted its
 // own nesting. Now it stops at 10,000 levels with a syntax error that
 // carries the parser's text. These files hold nothing else, so they are
 // skipped, unless resync finds a statement on a later line.
@@ -193,7 +193,7 @@ func TestNestingErrorKeepsTheRestOfTheFile(t *testing.T) {
 // a statement) or three reaches it sooner, and what surrounds the repeated
 // part takes a few. Every operator of a chain and every elif is a level too:
 // a chain or ladder longer than this is a syntax error (real scripts do not
-// have them). docs/m2a-nesting-design.md has the table.
+// have them).
 var limits = []struct {
 	name, pre, open, mid, close, post string
 	ok                                int
@@ -415,7 +415,7 @@ func TestParserPanicIsReported(t *testing.T) {
 
 // TestStackPerLevel measures, for each construct, the stack one level of it
 // costs, and so what a parse at the limit uses. It prints; it asserts
-// nothing. Run with WB_MEASURE_STACK=1 (bench/results has the output).
+// nothing. Run with WB_MEASURE_STACK=1.
 //
 // The runtime doubles a goroutine's stack when it is full, so the stack
 // memory of the process steps up when the parse passes a power of two. The

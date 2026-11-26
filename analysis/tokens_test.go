@@ -331,7 +331,7 @@ func BenchmarkTokensBig(b *testing.B) {
 // TestTokensRangeSubsetBroken repeats the range check on the other test
 // trees, which hold broken and odd scripts, with many windows per file.
 func TestTokensRangeSubsetBroken(t *testing.T) {
-	for _, dir := range []string{"../testdata/broken", "../testdata/diag", "../testdata/ac13", "../testdata/corpus-annotated"} {
+	for _, dir := range []string{"../testdata/broken", "../testdata/diag", "../testdata/lint-fixture", "../testdata/corpus-annotated"} {
 		w := loadDir(t, dir)
 		files := map[string]*FileFacts{}
 		for _, ff := range w.facts {

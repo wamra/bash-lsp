@@ -14,9 +14,9 @@ Only `internal/front` imports it (`boundary_test.go` at the repository root).
 - Copied from the module's `syntax/` directory: `doc.go`, `lexer.go`,
   `nodes.go`, `parser.go`, `parser_arithm.go`, `tokens.go`, `tokens_parse.go`,
   `token_string.go`, `walk.go` and `simplify.go`, and `LICENSE` from the
-  module root. Commit 67e84c7 is the copy of the first nine, byte for byte
-  (`cmp` against the module cache); `simplify.go` is copied unchanged too.
-  `printer.go` is copied and patched (its import of
+  module root. Apart from the four files the patch changes (`lexer.go`, `parser.go`,
+  `parser_arithm.go`, `printer.go`) the copies are byte for byte.
+  `printer.go` is patched (its import of
   `mvdan.cc/sh/v3/fileutil` is gone and its one `fileutil.Shebang` call is
   `Shebang`), so no commit holds it pristine: the patch has the hunk.
 - Why each: `parser.go`, `parser_arithm.go` and `lexer.go` are the parser;
@@ -79,8 +79,7 @@ release would not fix either. They are the patch.
 
 Items 1 and 2 are bugs in upstream at `0e0eb36bb6dd`, and also at `v3.14.1`
 and at `95154f9b8122` (the tip when this was written). They are worth
-reporting upstream. Nobody has been contacted: whether to file is the
-repository owner's decision.
+reporting upstream; nobody has been contacted yet.
 
 ## Upgrading
 
@@ -103,8 +102,7 @@ index holds it instead.
    tree against the pristine index:
    `git diff -- internal/front/syntax/lexer.go internal/front/syntax/parser.go internal/front/syntax/parser_arithm.go internal/front/syntax/printer.go > internal/front/syntax/bash-lsp.patch`.
    Commit the copied files, the patched files and the patch together.
-5. Update the version, hashes and commit ids in this file, in `NOTICE` and in
-   `docs/m2a-nesting-design.md`.
+5. Update the version, hashes and commit ids in this file and in `THIRD_PARTY_NOTICES.md`.
 
 ## The tests that prove an upgrade
 
@@ -130,7 +128,7 @@ index holds it instead.
   - `TestNestingLimit` pins, per construct, how many repetitions parse and
     that one more is the nesting error. If upstream starts or stops counting
     something, the numbers move: update them and the table in
-    `docs/m2a-nesting-design.md`, and check that nothing in
+    `docs/library.md`, and check that nothing in
     `TestNoFalseRefusal` became an error.
   - `TestNoCrashSubprocess` parses every known crash input, every construct
     at its limit and megabytes of comments in a child process whose stack is

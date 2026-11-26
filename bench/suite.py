@@ -1,4 +1,4 @@
-"""Truth-file suite runner (Task 12).
+"""Truth-file suite runner.
 
 Usage: uv run --no-project python bench/suite.py NAME -- SERVER_CMD [ARGS...]
 Env:   BENCH_CORPUS  absolute path of the corpus for the 28 original cases

@@ -97,3 +97,28 @@ func TestNoAttributionLines(t *testing.T) {
 		}
 	}
 }
+
+// Nothing tracked may name the person or the machine the project was built
+// on, or a path on it. The patterns are assembled from pieces so that this
+// file does not match them.
+func TestNoPersonalIdentifiers(t *testing.T) {
+	res := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)` + "we" + "sam"),
+		regexp.MustCompile(`(?i)` + "abdal" + "lah"),
+		regexp.MustCompile(`(?i)` + "gmail" + `\.com`),
+		regexp.MustCompile(`(?i)` + "mac" + "studio"),
+		regexp.MustCompile(`(?i)` + "mac" + "[ -]" + "studio"),
+		regexp.MustCompile(`(?i)` + "one" + "drive"),
+		regexp.MustCompile(`/Users/` + "wam" + "ra"),
+	}
+	for name, b := range trackedTextFiles(t) {
+		for n, line := range strings.Split(string(b), "\n") {
+			for _, re := range res {
+				if re.MatchString(line) {
+					t.Errorf("%s:%d matches %s", name, n+1, re)
+					break
+				}
+			}
+		}
+	}
+}

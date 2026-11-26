@@ -23,9 +23,9 @@ func diagsWith(t *testing.T, files map[string]string, file, target string) []Dia
 
 func oneFile(src string) map[string]string { return map[string]string{"x.sh": src} }
 
-// AC-10: `declare -A m` against the range 3.2-5.3 is one WB1301 that names
+// `declare -A m` against the range 3.2-5.3 is one WB1301 that names
 // bash 4.0, in the documented message form.
-func TestAC10(t *testing.T) {
+func TestVersionRuleDeclareAssoc(t *testing.T) {
 	src := "declare -A m\n"
 	ds := ofRule(diagsWith(t, oneFile(src), "x.sh", "3.2-5.3"), "WB1301")
 	if len(ds) != 1 {
@@ -49,8 +49,8 @@ func TestAC10(t *testing.T) {
 	}
 }
 
-// With no target given (a zero DiagOptions) the default range of D-8 applies:
-// 3.2-5.3, so the rule is on, as in AC-10.
+// With no target given (a zero DiagOptions) the default range applies:
+// 3.2-5.3, so the rule is on.
 func TestDefaultTargetIsD8(t *testing.T) {
 	src := "declare -A m\n"
 	if got := ofRule(diagsWith(t, oneFile(src), "x.sh", ""), "WB1301"); len(got) != 1 {
@@ -141,7 +141,7 @@ func TestFeatureTable(t *testing.T) {
 			t.Errorf("no row for %s", key)
 		}
 	}
-	// FDS-016 records one conflicting source for the first version of mapfile:
+	// The sources conflict for the first version of mapfile:
 	// it is left out until a real bash of that series confirms it.
 	if seen["mapfile"] {
 		t.Error("mapfile has a row")

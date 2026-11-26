@@ -1,4 +1,4 @@
-"""Accuracy benchmark for bash language servers (M0 of the bash-lsp BRD/FDS).
+"""Accuracy benchmark for bash language servers .
 
 Usage: uv run --no-project python bench.py NAME -- SERVER_CMD [ARGS...]
 Runs every case against the corpus/ workspace (copied to a temp dir) and

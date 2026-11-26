@@ -694,7 +694,7 @@ func (s *Snapshot) unanalysedRefusal(old string) *RenameRefusal {
 }
 
 // excludedWarning is the warning of a plan made while the workspace leaves
-// out what the owner's settings or .gitignore exclude: those files were not
+// out what the settings or .gitignore exclude: those files were not
 // checked for a use of the name. It is empty when nothing was left out.
 func (s *Snapshot) excludedWarning() string {
 	e := s.excluded

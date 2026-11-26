@@ -82,7 +82,7 @@ func (s *Snapshot) Diagnostics(path string, opt DiagOptions) []Diagnostic {
 	}
 	c := &diagCtx{s: s, file: file, ff: ff, f: ff.File, target: opt.Target, disabled: opt.Disabled, extraRoots: opt.Roots}
 	if c.target == (VersionRange{}) {
-		c.target = DefaultTarget // no target given: the default range (D-8)
+		c.target = DefaultTarget // no target given: the default range
 	}
 	c.run()
 	for _, d := range suppress(ff.File, c.out) {

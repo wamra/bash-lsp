@@ -447,7 +447,7 @@ func (s *Snapshot) hoverVariable(sym *Symbol) string {
 }
 
 // hoverDynamicScope describes a variable read that no declaration in view
-// explains, bound only to callers' locals through dynamic scope (FDS-006):
+// explains, bound only to callers' locals through dynamic scope:
 // labelled candidate/dynamic-scope, with every candidate local listed (in
 // path and offset order, the first maxCallSites shown and the rest counted).
 func (s *Snapshot) hoverDynamicScope(binds []Binding) string {

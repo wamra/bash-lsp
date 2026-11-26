@@ -72,7 +72,7 @@ func (l *lowerer) paramFeatures(p *syntax.ParamExp, n *tree.Node) {
 }
 
 // transformQ reports whether the operator word of an `@` expansion is `Q`,
-// the only one whose first bash version is cited (FDS-016): the others have
+// the only one whose first bash version is cited: the others have
 // no citable source and are left out of the rule (docs/version-table.md).
 func transformQ(w *syntax.Word) bool {
 	if w == nil || len(w.Parts) != 1 {

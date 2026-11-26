@@ -212,7 +212,7 @@ func TestRenameFilesSayWhy(t *testing.T) {
 	}
 }
 
-// Excluded files are the owner's choice: the plan is made, with a warning
+// Excluded files are a choice made in the settings: the plan is made, with a warning
 // that says they were not checked.
 func TestRenamePlanWarnsOfExcludedAndIgnoredFiles(t *testing.T) {
 	root := callerRoot(t)

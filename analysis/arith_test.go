@@ -222,7 +222,7 @@ func TestArithmeticFollowsScopeRules(t *testing.T) {
 		t.Fatalf("reason %q", r)
 	}
 	// declared outside: the subshell write declares a private n, like n=2
-	// there would (review M1), so neither the outer read nor n=1 sees it
+	// there would, so neither the outer read nor n=1 sees it
 	q = buildMem(t, map[string]string{"m.sh": "n=1\n( (( n++ )) )\necho \"$n\"\n"})
 	wantEq(t, q.def("m.sh", "$n", 0, 1), "m.sh:1")
 	wantEq(t, q.refs("m.sh", "n=1", 0, 0), "m.sh:1", "m.sh:3")
@@ -346,7 +346,7 @@ func TestArrayLiteralSubscripts(t *testing.T) {
 	}
 }
 
-// review M1: an arithmetic write inside a private scope declares a variable
+// An arithmetic write inside a private scope declares a variable
 // private to it, exactly like a plain assignment there: the read inside binds
 // to it, the read after the scope to the outer declaration. For every private
 // scope kind and every arithmetic write form.
@@ -377,7 +377,7 @@ func TestArithmeticWriteInPrivateScopeIsPrivate(t *testing.T) {
 }
 
 // In arithmetic the binder reads the source text, and a NUL ends a name: the
-// bytes after it start the next (docs/m2a-acceptance.md, NUL name rules).
+// bytes after it start the next (the NUL name rules).
 func TestArithmeticSplitsNameAtNUL(t *testing.T) {
 	for src, want := range map[string]string{
 		"((A\x00B=1))\n":       "read A 2-3, write B 4-5, decl B 4-5",

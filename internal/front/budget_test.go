@@ -26,7 +26,7 @@ func limitNamed(ls []tree.Limit, name string) *tree.Limit {
 	return nil
 }
 
-// Review Focus 3, T4-9: a 2 MiB file whose every candidate fails re-parsed
+// A 2 MiB file whose every candidate fails re-parsed
 // about 2 MiB fifty times (17.58 s). The byte budget stops it after what
 // 4 MiB + 2 x size allows, and says so.
 func TestResyncByteBudget(t *testing.T) {
@@ -135,7 +135,7 @@ func TestParseSafelyRead(t *testing.T) {
 	}
 }
 
-// T3-5, T4-3: a recovered panic is an internal error, marked as such.
+// A recovered panic is an internal error, marked as such.
 func TestParserPanicIsInternal(t *testing.T) {
 	f := Parse("x.sh", []byte("A=$((0 A\nf() { :; }\n"), Bash)
 	n := 0
@@ -149,7 +149,7 @@ func TestParserPanicIsInternal(t *testing.T) {
 	}
 }
 
-// T4-2: a statement that starts before the failing line and runs into it is
+// A statement that starts before the failing line and runs into it is
 // dropped; the gap now starts where it starts, so no code goes missing
 // without a gap.
 func TestStraddlingStatementInGap(t *testing.T) {

@@ -2,7 +2,7 @@ package analysis
 
 import "testing"
 
-// review I4: locals were keyed by {file, function name}, so a function defined
+// locals were keyed by {file, function name}, so a function defined
 // twice in one file (once per branch of an if) shared one set of locals.
 const twoBodies = `if x; then
 f() { local a=1; echo "$a"; }
@@ -22,7 +22,7 @@ func TestLocalsBelongToTheirBody(t *testing.T) {
 	wantEq(t, q.refs("a.sh", "a=top", 0, 0), "a.sh:4", "a.sh:4", "a.sh:6")
 }
 
-// review T8: the second same-file definition of a function kept no locals in
+// The second same-file definition of a function kept no locals in
 // the outline. Each definition is its own entry, holding its own locals.
 func TestEachDefinitionKeepsItsLocals(t *testing.T) {
 	src := "f() { local one=1; }\nf() { local two=2; }\n"

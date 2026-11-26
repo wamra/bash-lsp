@@ -208,7 +208,7 @@ func TestShDashFormsUnchanged(t *testing.T) {
 	}
 }
 
-// Only `@Q` has a citable first version (FDS-016); the other `@` operators
+// Only `@Q` has a citable first version; the other `@` operators
 // are not recorded at all, and `@Q` is.
 func TestTransformOpsRecorded(t *testing.T) {
 	for _, op := range []string{"U", "u", "L", "K", "k", "a", "A", "E", "P"} {

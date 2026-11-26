@@ -12,7 +12,7 @@ import (
 )
 
 // docSymbolsByWalk is DocumentSymbols as it was before Bind recorded each
-// scope's function (review of m2a, leftover A): the enclosing function of a
+// scope's function: the enclosing function of a
 // local found by walking up the tree per declaration. Kept as the oracle of
 // TestDocumentSymbolsMatchWalk.
 func docSymbolsByWalk(s *Snapshot, path string) []DocSymbol {

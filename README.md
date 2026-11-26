@@ -1,81 +1,179 @@
 # bash-lsp
 
-A Bash language server written in Go. It resolves definitions, references and
-symbols across `source`d files, over LSP on stdio.
+A Bash language server and analysis toolkit written in Go. It finds
+definitions, references and symbols across `source`d files, reports syntax and
+lint problems, formats scripts, renames functions and variables safely, and
+answers call-graph questions, over the Language Server Protocol on stdio, on
+the command line and through an MCP server. It is packaged as a Claude Code
+plugin.
 
-Status: version 0.4.0 (`VERSION`) is a release candidate, built and verified
-on this machine only (`release/0.4.0/verify.txt`). Nothing is published: no
-binary is released, there is no remote, CI has never run, and the interface is
-not stable. The one milestone 4 exit criterion that is not met is the check in
-one real editor (a VS Code run); the owner deferred it, so it is recorded as
-pending (`docs/m4-acceptance.md`).
+It reads shell files and never runs them. The syntax tree comes from a vendored
+copy of the `mvdan.cc/sh` parser; the part bash-lsp adds is the layer above
+it: which definition a call reaches, through `source` (static,
+`$(dirname "$0")`-relative and glob loaders), aliases, `"$cmd"` calls and the
+strings of `eval`, `trap` and `sh -c` (reported as candidates, with the reason).
+The binary has no dependencies beyond the Go standard library and needs no
+CGO.
 
-What works: go to definition, references, implementation, hover (with the
-`help` or `man` synopsis of a builtin or command), call hierarchy, document and
-workspace symbols across `source`d files (static, `$(dirname "$0")`-relative
-and glob loaders), through aliases, through `"$cmd"` calls, and through the
-strings of `eval`, `trap` and `sh -c`, which are reported as candidates with
-their reason; locals are scoped to their function, and a read in a callee that
-no declaration in view explains is linked, as a candidate, to a caller's
-`local`. Syntax errors are reported and the files around them still analysed;
-the parser stops at 10,000 levels of nesting with a syntax error
-(`docs/m2a-nesting-design.md`). Native lint rules with a ShellCheck bridge
-(`check`, and diagnostics in the editor), a formatter (`fmt`, and LSP
-formatting), the graph CLI commands, `extract` (the call graph as code-index's
-JSON lines), `search` (names plus code-index full-text hits), an MCP server
-(`mcp`, with `preview_rename`), watched files and several workspace folders are
-in. Milestone 4 adds the editor features of [Editor features](#editor-features)
-and a safe [rename](#rename) on the command line, in the editor and as an MCP
-preview. `check --hook` (the plugin's optional `PostToolUse` fallback, off
-unless `hook.enabled` is set in the user settings) is in. SARIF output is not
-built (`--format sarif` exits 2). Linking into code-index (AC-14, AC-21) needs
-a patch in code-index first (`docs/code-index-integration.md`).
+Status: version 0.4.0, preview. The command line, the settings keys and the
+JSON output may still change between versions. What it does not do, or does
+differently from bash, is in [docs/limitations.md](docs/limitations.md).
 
-Measured: the 28-case comparison benchmark, the larger suite, the latency
-budgets and the competitor and real-bash comparisons are in
-`docs/m4-acceptance.md` and `docs/benchmark.md`, each number next to its result
-file under `bench/results/`. The suite has cases bash-lsp fails; they are
-listed, with their cause, in `docs/benchmark.md`.
+## Install
 
-Known gaps (also in `docs/m4-acceptance.md`): the lexer reads a lone `\r` as a
-blank where bash reads a character; `prepareRename` builds the rename plan and
-`rename` builds it again; every edit re-parses the whole file; `selectionRange`
-answers only the first 1,000 positions of a request (each later one gets an
-empty range); four helpers that cut a text to a length (in `internal/lsp`,
-`internal/query`, `cmd/bash-lsp` and `internal/mcp`) have drifted apart; the rename warning about excluded directories repeats on
-every rename in a repository that has an ignored directory; `$(else)` is an
-error although bash 3.2 to 5.1 accept it (only 5.3 rejects it), so it is stricter than those versions. Real bash
-builds checked: 3.2.57, 4.0, 4.2, 4.3, 4.4, 5.0, 5.1 and 5.3; 4.1 and 5.2 were
-not built, and the signatures of the downloaded source tarballs were not
-verified (`docs/version-table.md`).
+**As a Claude Code plugin** (macOS, Linux, Windows):
 
-Licence: MIT (see `LICENSE`). Third-party attribution is in `NOTICE`.
-
-## Turning a diagnostic off
-
-A comment directive silences findings:
-
-```bash
-# bash-lsp disable=WB1401,WB1202 -- why, in your words
-# shellcheck disable=SC2086
+```
+claude plugin marketplace add wamra/wammy-plugins
+claude plugin install bash-lsp@wammy-plugins
 ```
 
-- `# bash-lsp disable=` takes rule ids (such as `WB1401`), separated by commas
-  or spaces. The list runs to the end of the line, or to the first whitespace
-  that is followed by `#` or `--`: what follows is your comment. Every other
-  word in the list is taken as an id, and one that names no rule is reported
-  (WB1008).
-- `# shellcheck disable=` takes ShellCheck codes (`SC2086` or `2086`), ranges
-  (`SC3000-SC4000`) and `all`, and silences the native rules that report the
-  same problem as one of the codes.
-- Placement follows ShellCheck: before the first command, a directive applies
-  to the whole file; otherwise to the next command or compound command (a
-  whole `if`, loop or function). It may stand alone on its line or after an
-  opener on it (`then`, `do`, `else`, `{`, `(`, a case pattern, a function
-  header). After a command on the same line, before `else` or `elif`, between
-  case arms, or with no command after it in its block, it applies to nothing.
-- The settings key `diagnostics.disable` turns a rule off everywhere.
-- The settings key `files.exclude` skips files and directories (gitignore syntax). The user file and the repo file each have their own list with their own `!` negations, and a path is skipped when either list skips it: a repo negation cannot bring back what the user excluded, and a repo pattern skips a file the user's list re-included (user `["*", "!keep.sh"]` with repo `["*.sh"]` skips `keep.sh`).
+The plugin registers the language server for `.sh`, `.bash`, `.bats` and `.ksh`
+files and an optional hook that checks a file after Claude edits it. It
+contains a small launcher and six binaries (macOS, Linux and Windows, each for
+amd64 and arm64). What the hook does, and when it does nothing, is in
+[plugin/README.md](plugin/README.md).
+
+**Release archives:** `scripts/build-release.sh [VERSION] [OUT]` cross-builds
+six archives (macOS, Linux, Windows; amd64, arm64) into `OUT` (default `dist/`)
+with `checksums.txt` (the archives) and `binaries.txt` (each binary). Each
+archive holds the binary, `LICENSE`, `THIRD_PARTY_NOTICES.md` and `README.md`.
+VERSION defaults to the `VERSION` file. The script refuses a tree with
+uncommitted or untracked files and an `OUT` that is not a previous output.
+Archives carry modification times, so two builds differ in `checksums.txt`; the
+binaries are reproducible, so compare `binaries.txt`. The CI workflow runs the
+script and keeps the result for a week as a build artifact. No prebuilt
+archive is published yet.
+
+**Build from source** (Go 1.26.0 or newer, the version in `go.mod`; no CGO):
+
+```
+go build -o bash-lsp ./cmd/bash-lsp
+./bash-lsp version
+./bash-lsp doctor        # what it found: files, dialects, limits, ShellCheck, help and man
+```
+
+`scripts/build-plugin.sh OUT [VERSION]` stages the plugin tree, with all six
+binaries, into `OUT`, and `scripts/check-plugin.sh OUT` checks it.
+
+Any editor that speaks LSP can run `bash-lsp serve` (or `bash-lsp` with no
+arguments) as the server for shell files.
+
+## Platforms
+
+macOS is the development platform. The Linux and Windows binaries are built,
+and `.github/workflows/ci.yml` runs `go vet` and the tests on Linux and
+Windows, and on macOS when started by hand; that workflow has not run yet, so
+no Linux or Windows result is recorded. Nothing is started on Windows for the
+`help` and `man` lookups. How Claude Code on Windows should start the plugin's
+`.exe` is not settled, so launching the plugin there is untested. See
+[docs/limitations.md](docs/limitations.md).
+
+## Features
+
+**Language server.** `bash-lsp serve` answers these requests; the table in
+[Editor features](#editor-features) lists what each answers.
+
+| Group | Methods |
+|---|---|
+| Navigation | `textDocument/definition`, `references`, `implementation`, `documentSymbol`, `workspace/symbol`, `prepareCallHierarchy`, `callHierarchy/incomingCalls`, `callHierarchy/outgoingCalls`, `documentHighlight`, `documentLink` |
+| Information | `textDocument/hover`, `completion`, `completionItem/resolve`, `signatureHelp`, `inlayHint`, `semanticTokens/full`, `semanticTokens/full/delta`, `semanticTokens/range`, `foldingRange`, `selectionRange` |
+| Diagnostics and edits | pushed diagnostics, `textDocument/diagnostic` (pull), `codeAction`, `formatting`, `rangeFormatting`, `prepareRename`, `rename` |
+| Workspace | `didOpen`, `didChange`, `didClose`, `didSave`, `workspace/didChangeWatchedFiles`, `didChangeConfiguration`, `didChangeWorkspaceFolders`; several workspace folders |
+
+**Analysis.** Go to definition, references, implementation and hover (with the
+`help` or `man` synopsis of a builtin or command); locals scoped to their
+function; a read in a callee that no declaration in view explains is linked, as
+a candidate, to a caller's `local`. Syntax errors are reported and the files
+around them still analysed.
+
+**Lint.** Native rules (`WB` ids) for syntax, `source`, commands, scope,
+quoting and bash versions (the version table is in
+[docs/version-table.md](docs/version-table.md)), plus a ShellCheck bridge when
+ShellCheck is installed. A [comment directive](#turning-a-diagnostic-off)
+silences a finding.
+
+**Formatter.** `bash-lsp fmt` and LSP formatting, with a printer that refuses
+what it cannot print back to the same tree ([Formatting](#formatting)).
+
+**Rename.** A safe rename on the command line, in the editor and as an MCP
+preview ([Rename](#rename)).
+
+**Command line.** The graph commands (`status`, `callers`, `callees`, `refs`,
+`impact`, `trace`, `unresolved`, `cycles`), `check`, `fmt`, `symbols`, `ast`,
+`doctor`, `search`, `rename`, `extract` and `mcp` ([Command line](#command-line)).
+
+**MCP server.** `bash-lsp mcp [--root DIR]` serves eleven read-only tools on
+stdio: `find_symbol`, `find_references`, `get_callers`, `get_callees`,
+`trace_dependency`, `analyze_impact`, `list_unresolved`, `get_index_status`,
+`search_code`, `get_diagnostics` and `preview_rename`. See
+[docs/mcp.md](docs/mcp.md).
+
+**Library.** The packages `bash-lsp`, `analysis`, `parse` and `tree` are
+importable ([docs/library.md](docs/library.md)). `bash-lsp extract` prints the
+call graph as JSON lines for code-index
+([docs/code-index-integration.md](docs/code-index-integration.md)).
+
+SARIF output is not built (`--format sarif` exits 2).
+
+## Configure
+
+Settings are TOML. Three places are read, in this order, each overriding the
+one before:
+
+1. the **user file**: `<user config dir>/bash-lsp/config.toml` (on macOS
+   `~/Library/Application Support/bash-lsp/config.toml`), or the file named by
+   the `BASH_LSP_CONFIG` environment variable (an empty value means no user
+   file). It serves the language server, the command line and the hook alike.
+2. the **repository file** `<root>/.bash-lsp.toml`, which can arrive with a
+   clone and is therefore untrusted (see [Privacy and
+   security](#privacy-and-security));
+3. the client's `initializationOptions` (the same keys as JSON, sent by the
+   editor to the language server only). The Claude Code plugin sends none.
+
+Each file is read up to 64 KiB. A file that does not parse is ignored whole; an
+unknown key, a value of the wrong type and a value a file may not set are
+ignored one by one, and each is reported with its line (on standard error by
+the commands).
+Example:
+
+```toml
+[shellcheck]
+enabled = false
+
+[hook]
+enabled = true
+
+[severity]
+WB1103 = "warning"
+```
+
+| Key | Type | What it does | Set by |
+|---|---|---|---|
+| `bash.target` | string `"MIN-MAX"` | The bash versions a script must run on (default `3.2-5.3`). Only MIN drives the version rule WB1301. | any |
+| `bash.dialect` | `bash`, `sh`, `mksh` or `bats` | Dialect of a file with no directive, no shebang and a `.sh` or no extension. | any |
+| `diagnostics.disable` | list of rule ids | Rules turned off everywhere. A repository's list is added to the user's, never subtracted. | any |
+| `[severity]` | rule id = `error`, `warning`, `info` or `hint` | Severity of a native rule. A repository cannot change a rule the user disabled or gave a severity. | any |
+| `shellcheck.enabled` | bool (default true) | Add ShellCheck findings. | any; a repository can turn it off, not on again |
+| `shellcheck.path` | string | The ShellCheck program. | user only |
+| `shellcheck.timeout_seconds` | integer 1 to 120 (default 10) | Time limit of one ShellCheck run. | any; a repository can only lower it |
+| `codeindex.path` | string | The code-index program that `search` and `search_code` start. | user only |
+| `path.profile` | list of directories | Directories searched for commands (default `PATH`). | user only |
+| `hook.enabled` | bool (default false) | Turns on `check --hook`, the plugin's `PostToolUse` hook. | user only |
+| `files.include`, `files.exclude` | list of gitignore patterns | Files and directories to read, relative to the root. The user's and the repository's `files.exclude` are two lists with their own `!` negations; a path is excluded when either excludes it. | any |
+| `sources.paths` | list of directories | Extra directories searched by `source`, relative to the root; one that is absolute, uses `~` or `$`, or resolves outside the root is dropped with a notice. | any |
+| `limits.max_files`, `limits.max_file_bytes` | integer | Lower the built-in limits (20,000 files, 2 MiB per file). | any; a repository can only lower them |
+| `format.indent`, `format.binary_next_line`, `format.switch_case_indent`, `format.space_redirects`, `format.function_next_line`, `format.simplify` | integer, bool | Formatter options ([Formatting](#formatting)). | any |
+| `inlay_hints.source_targets` | bool (default true) | `-> lib/util.sh` hints after dynamic `source` paths. | any |
+| `inlay_hints.parameter_names` | bool (default false) | Parameter-name hints on calls of script functions. | any |
+| `completion.path_commands` | bool (default true) | Offer commands found on the `PATH`. | any; a repository can turn it off, not on again |
+| `help.enabled` | bool (default true) | The `help` and `man` lookups ([below](#editor-features)). | any; a repository can turn it off, not on again |
+| `help.bash_path`, `help.man_path` | string | The programs for those lookups. | user only |
+| `references.resolved_only` | bool | Leave candidate sites out of find-references (`references.resolvedOnly` is accepted as an alias). | any |
+
+bash-lsp also reads the `source-path=` entries of the nearest `.shellcheckrc`
+(held to the same rules as `sources.paths`). ShellCheck itself reads the user's
+own `~/.shellcheckrc`; a repository's `.shellcheckrc` is never handed to it.
 
 ## Command line
 
@@ -154,6 +252,32 @@ WB1002, which counts under `--fail-on info` or `hint`): `no shell files checked:
 parsed (over the size limit, or a shell the server does not support), the
 workspace limits met, and the workspace notices.
 
+## Turning a diagnostic off
+
+A comment directive silences findings:
+
+```bash
+# bash-lsp disable=WB1401,WB1202 -- why, in your words
+# shellcheck disable=SC2086
+```
+
+- `# bash-lsp disable=` takes rule ids (such as `WB1401`), separated by commas
+  or spaces. The list runs to the end of the line, or to the first whitespace
+  that is followed by `#` or `--`: what follows is your comment. Every other
+  word in the list is taken as an id, and one that names no rule is reported
+  (WB1008).
+- `# shellcheck disable=` takes ShellCheck codes (`SC2086` or `2086`), ranges
+  (`SC3000-SC4000`) and `all`, and silences the native rules that report the
+  same problem as one of the codes.
+- Placement follows ShellCheck: before the first command, a directive applies
+  to the whole file; otherwise to the next command or compound command (a
+  whole `if`, loop or function). It may stand alone on its line or after an
+  opener on it (`then`, `do`, `else`, `{`, `(`, a case pattern, a function
+  header). After a command on the same line, before `else` or `elif`, between
+  case arms, or with no command after it in its block, it applies to nothing.
+- The settings key `diagnostics.disable` turns a rule off everywhere.
+- The settings key `files.exclude` skips files and directories (gitignore syntax). The user file and the repo file each have their own list with their own `!` negations, and a path is skipped when either list skips it: a repo negation cannot bring back what the user excluded, and a repo pattern skips a file the user's list re-included (user `["*", "!keep.sh"]` with repo `["*.sh"]` skips `keep.sh`).
+
 ## Formatting
 
 `bash-lsp fmt [-w] [--root DIR] [--] FILE...` formats with the in-process
@@ -210,7 +334,7 @@ is never run. Neither program runs on Windows. `doctor` reports which are
 available. Set `help.enabled = false` to turn this off; `help.bash_path` and
 `help.man_path` (user settings only) name the programs.
 
-The new settings keys are `inlay_hints.source_targets`,
+The settings keys for these features are `inlay_hints.source_targets`,
 `inlay_hints.parameter_names`, `completion.path_commands`, `help.enabled`,
 `help.bash_path` and `help.man_path`. A repository's `.bash-lsp.toml` can turn
 `completion.path_commands` and `help.enabled` off but never on when the user
@@ -422,14 +546,130 @@ out for a reference that is not a call edge to the function (such as the
 `cmd=name` value that a `"$cmd"` call later reaches). The definition itself
 is not listed.
 
-## Packaging
+## Privacy and security
 
-`scripts/build-release.sh [VERSION] [OUT]` cross-builds six archives into `OUT`
-(default `dist/`), with `checksums.txt` (the archives) and `binaries.txt` (each
-binary). VERSION defaults to the `VERSION` file. It refuses a tree with
-uncommitted or untracked files and an `OUT` that is not a previous output.
-Archives carry modification times, so two builds differ in `checksums.txt`;
-the binaries are reproducible, so compare `binaries.txt`.
-`scripts/build-plugin.sh OUT [VERSION]` stages the Claude Code plugin (see
-`plugin/README.md`). `release/0.4.0/` holds the lists of the verified build and
-`docs/release-checklist.md` the steps left to the owner.
+**It never executes the code it analyses.** It reads files as text and builds
+a tree. It does not run, source or evaluate a script, a function body or an
+`eval` string, and `bash-lsp extract` and every other command only read. It
+opens no network connection: `boundary_test.go` fails when any package imports a
+network package (`net`, `net/http`, ...), or any package other than
+`internal/extool` imports `os/exec`.
+
+**Programs it may start.** The language server, `check` and the plugin's hook
+start these, and only these:
+
+- **ShellCheck**, to add its findings: only when it is found, and unless
+  `shellcheck.enabled` is false. Without it the native findings are shown
+  alone.
+- **`bash --noprofile --norc -c 'help -- "$1"' bash NAME`**, to show the
+  synopsis of a shell builtin or keyword on hover and in completion details.
+- **`man -- NAME`**, with `MANPAGER=cat` and `PAGER=cat`, for the same on an
+  external command that exists on the `PATH`.
+
+`bash-lsp search` and the MCP tool `search_code` also start **code-index**
+(`code-index search --mode fts --lang bash --k 20 --json -- TEXT`, the lexical
+mode, with the text as one argument after `--`), when it is found. Nothing else
+is started.
+
+How a program is found: from the setting in the user file (`shellcheck.path`,
+`help.bash_path`, `help.man_path`, `codeindex.path`: an absolute path, or a bare
+name looked up on the `PATH` profile), else from the `PATH`. The result has its
+links resolved, and a program that lies inside a workspace root is refused,
+whether by its own path, through a link, or through a `PATH` entry that lists
+a directory of the repository. A repository decides nothing about what runs.
+The name asked of `help` and `man` is one separate argument, never part of a
+command line, and must be a plain name; `--help` is never run (it would execute
+the command being asked about). Each program runs with a filtered environment,
+a neutral working directory, a time limit and an output limit (the help and man
+answers: 2 seconds and 256 KiB), and on Unix in its own process group, which is
+killed on timeout. Their output is redacted, kept in memory only (at most 1,024
+names) and never written to disk. Nothing is started on Windows for the `help`
+and `man` lookups.
+
+What is not limited: the memory and CPU of such a program while it runs, its
+writes to files and its use of the network. Only the program you configured or
+installed is run, but it should be one you trust. ShellCheck reads your own
+`~/.shellcheckrc`; if that sets `external-sources=true`, ShellCheck may read
+files outside the workspace for a repository's `source` lines, and
+`bash-lsp doctor` prints a warning. A repository's `.shellcheckrc` is never
+given to it.
+
+**Repository settings cannot turn a spawning feature on or choose a program.**
+`<root>/.bash-lsp.toml` can arrive with a clone. The program paths
+(`shellcheck.path`, `help.bash_path`, `help.man_path`, `codeindex.path`),
+`path.profile` and `hook.enabled` are accepted only from the user file and the
+client's initialization options; a repository file that names one is refused
+and reported. A repository can switch ShellCheck, the `help` and `man` lookups
+and `PATH` completion off, but not on again once the user turned them off, and
+it can only lower the limits and the ShellCheck time limit. The hook does
+nothing unless the user file has `hook.enabled = true`.
+
+**What leaves the process.** Text that bash-lsp prints or sends outward passes
+through a redaction step: every string of every MCP answer and of `search`,
+every error text and log line of the MCP server, the program output shown on
+hover, and the site text of a rename plan (cut to 200 bytes). It removes, by pattern:
+`AKIA[0-9A-Z]{16}`, `gh[pousr]_[A-Za-z0-9]{36,}`, `github_pat_[A-Za-z0-9_]{22,}`,
+`xox[abprs]-[A-Za-z0-9-]{10,}`, `-----BEGIN [A-Z ]*PRIVATE KEY-----`, and the
+value of `password=`, `passwd=`, `secret=`, `token=` and `api_key=` (case
+insensitive). A secret in a format not listed passes through. The MCP tools
+read only inside the root: every path argument is resolved with its links and
+refused when it lies outside.
+
+**What `rename --apply` writes, and refuses.** It writes only files of its plan,
+each by a temporary file beside it and a rename, after checking again that the
+file still holds the bytes the plan was built from. It refuses the whole
+rename, writing nothing, when a file of the plan lies outside the root once
+links are resolved, is not a regular file (a symbolic link included), has a
+setuid, setgid or sticky bit, has more than one hard link, belongs to another
+user, cannot be written, holds a NUL byte or text that is not valid UTF-8, or
+changed since the plan. It preserves permission bits, owner and group where it
+can and line endings; it does not keep extended attributes, ACLs or
+timestamps. If a replacement fails midway, the files already replaced are put
+back from saved originals. The details and the stable refusal codes are in
+[Rename](#rename).
+
+Report a vulnerability as described in [SECURITY.md](SECURITY.md).
+
+## Benchmark
+
+The 28-case comparison benchmark passes 28 of 28 for bash-lsp; the installed
+bash-language-server passes 11 of 28 (`bench/bench.py`). A second suite of 155
+cases, with expectations written from the bash manual and the LSP typings
+before any result was seen, passes 127 of 138 gating cases and 17 of 17 design
+cases for bash-lsp, against 94 of 138 (14 not offered) and 7 of 17 for
+bash-language-server with its default settings. The 11 failing cases are known
+limits, each listed with its cause. A run oracle checks the expectations that a
+run of the script can decide against real bash builds 3.2.57 to 5.3; no case
+disagreed. Everything was measured on one macOS machine. The method, every
+number and its result file under `bench/results/` are in
+[docs/benchmark.md](docs/benchmark.md); the tools are described in
+[bench/README.md](bench/README.md).
+
+## Tests
+
+```
+go vet ./...
+BASH_LSP_CONFIG=/nonexistent/bash-lsp.toml go test ./...
+go test -race ./...
+```
+
+Pointing `BASH_LSP_CONFIG` at a file that does not exist keeps the tests from
+reading the settings file of the machine they run on. The tests need no
+network. Those that use ShellCheck skip when it is not installed. The fuzz targets (`FuzzParse`, `FuzzBind`, `FuzzEdges`,
+`FuzzDiagnostics`, `FuzzFormat`, `FuzzNestingGuard` and others) run over their
+seed corpus as ordinary tests; run one with, for example,
+`go test -run '^$' -fuzz FuzzParse ./internal/front`. A crash-input suite
+parses every known crash case in a child process with a small stack. Tests that
+quote documents (the JSON records table, the library example, the cited result
+files) fail when a document and the code disagree.
+
+## Third-party software
+
+The binary contains a modified copy of the `mvdan.cc/sh/v3/syntax` package
+(BSD 3-Clause) and the Go standard library and runtime (BSD 3-Clause). The
+license texts and the list of changes are in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## License
+
+MIT, see [LICENSE](LICENSE). Contributing: [CONTRIBUTING.md](CONTRIBUTING.md).

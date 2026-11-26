@@ -25,15 +25,13 @@ type FeatureInfo struct {
 	Name     string
 }
 
-// The first versions below are FDS-016's table (docs/internal/specs/
-// 2026-11-22-bash-lsp-brd-fds-v0.2.md, row FDS-016), which takes them from
-// the bash NEWS file, as confirmed by probing real builds of bash 3.2.57,
+// The first versions below are taken from the bash NEWS file and confirmed by probing real builds of bash 3.2.57,
 // 4.0, 4.2, 4.3, 4.4, 5.0, 5.1 and 5.3 (bench/results/version-probe-*.json,
 // docs/version-table.md): each row fails below its first version and passes
 // from it, on the builds listed there. Bash 4.1 and 5.2 were not built, so
 // a first version is confirmed against the builds on either side of it, not
-// against every release. `mapfile` and `readarray` are left out: FDS-016
-// records one conflicting source for their first version.
+// against every release. `mapfile` and `readarray` are left out: the
+// sources conflict on their first version.
 var featureTable = []FeatureInfo{
 	{"assoc-array", BashVersion{4, 0}, false, "associative arrays"},
 	{"case-modification", BashVersion{4, 0}, true, "case-modification expansions"},

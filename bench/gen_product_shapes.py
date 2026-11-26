@@ -1,5 +1,4 @@
-"""Write one shape whose call-graph output grows with a product of two counts (docs/m1-deferred.md,
-"M3 limits"). Usage:
+"""Write one shape whose call-graph output grows with a product of two counts. Usage:
   gen_product_shapes.py defs_calls OUT D C   D definitions of f, then C calls of f: C x D
                                              candidate/conditional-definition edges
   gen_product_shapes.py unset OUT N          N lines `f() { :; }; unset -f f; f`: N x N

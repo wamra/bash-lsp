@@ -30,7 +30,7 @@ func numbered(n int, format string) string {
 // P2: valid but unusual files are analysed, with no nesting error. The first
 // two were refused whole by a pre-scan that counted brackets (an unclosed `[`
 // made every later operator count as nesting); the rest are shapes a nesting
-// count is tempted to refuse. bench/repro-c1/fp.py holds the same list.
+// count is tempted to refuse.
 func TestNoFalseRefusal(t *testing.T) {
 	cases := map[string]string{
 		"param-unclosed-bracket": "x=${y//[/_}\n" + numbered(1200, "export A%d=b\n"),
@@ -91,7 +91,7 @@ func TestNoFalseRefusal(t *testing.T) {
 	}
 }
 
-// wraps are the constructs the parser recurses on (docs/m2a-nesting-design.md),
+// wraps are the constructs the parser recurses on (docs/library.md),
 // as text to repeat before and after a seed.
 var wraps = []struct{ pre, open, close, post string }{
 	{"", "(", ")", "\n"},
@@ -355,7 +355,7 @@ func TestDeepFileBesideOthers(t *testing.T) {
 // quote open, so resync runs 50 candidate re-parses over 2 MiB of lines that
 // each nest 2,000 arithmetic subscripts inside `$(( ))`, and each of those
 // parses is deep, long and lowers to nothing. It is a benchmark, not a test:
-// one Parse takes about 16 s (bench/results/resync-cost-m2a-task5.txt).
+// one Parse takes about 16 s (bench/results/resync-cost.txt).
 func resyncArith() string {
 	line := "echo $(( " + strings.Repeat("(a[", 2000) + "1" + strings.Repeat("])", 2000) + " ))\n"
 	return fill("echo '\n", line, "")

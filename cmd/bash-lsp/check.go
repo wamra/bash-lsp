@@ -579,7 +579,7 @@ func doctorTools(root string, st config.Settings, prof *extool.Profile, stdout i
 			fmt.Fprintf(stdout, "warning: %s: external-sources=true lets ShellCheck read files outside the workspace for a repository's source lines, and a script can make it read very large ones; the server never sends the key but your own file still applies\n", f)
 		}
 	}
-	fmt.Fprintln(stdout, "shellcheck memory guard: none (FDS-017 unmet, see docs/m3-acceptance.md)")
+	fmt.Fprintln(stdout, "shellcheck memory limit: none (a run is bounded by time, output size and concurrency only)")
 	for _, r := range st.Refused {
 		fmt.Fprintf(stdout, "refused setting: %s %s: %s\n", r.File, r.Key, r.Reason)
 	}

@@ -1,0 +1,19 @@
+# The cost of resync on the slowest input known.
+# Apple M1 Ultra workstation, go1.26.0, darwin/arm64, 2026-11-23.
+#
+# Input (internal/front/safety_test.go, resyncArith; 2 MiB): line 1 `echo '`, then lines each
+#   `echo $(( ` + `(a[` x 2000 + `1` + `])` x 2000 + ` ))`   (about 10 KB a line)
+# The open quote makes the first parse fail; resync then re-parses the rest of the file from up to 50
+# candidate lines, each parse deep and long, each lowering to nothing.
+#
+# go test ./internal/front -run '^$' -bench BenchmarkResyncArith -benchtime=1x -count=3
+goos: darwin
+goarch: arm64
+cpu: Apple M1 Ultra
+BenchmarkResyncArith-20    	       1	17584161167 ns/op
+BenchmarkResyncArith-20    	       1	17633898791 ns/op
+BenchmarkResyncArith-20    	       1	17460225250 ns/op
+ok  	github.com/wamra/bash-lsp/internal/front	52.898s
+done
+
+# One front.Parse: 17.5 s median (17.46, 17.58, 17.63). Braces are not the slowest construct.

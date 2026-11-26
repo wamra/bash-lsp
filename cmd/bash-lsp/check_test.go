@@ -66,11 +66,11 @@ func checkJSONOf(t *testing.T, out string) checkJSON {
 	return d
 }
 
-func TestAC12Doctor(t *testing.T) {
+func TestDoctorWithoutShellCheck(t *testing.T) {
 	emptyPath(t)
 	root := t.TempDir()
 	putFile(t, root, "a.sh", "#!/bin/bash\nlocal x=1\n")
-	wantLines(t, runOK(t, "doctor", root), "shellcheck: absent", "shellcheck memory guard: none (FDS-017 unmet, see docs/m3-acceptance.md)",
+	wantLines(t, runOK(t, "doctor", root), "shellcheck: absent", "shellcheck memory limit: none (a run is bounded by time, output size and concurrency only)",
 		"target: 3.2-5.3", "path profile: 1 dirs (0 skipped)", "code-index: absent", "config: none")
 	code, out, errs := runCode(t, "check", root)
 	if code != 1 || !strings.Contains(out, "a.sh:2:1: error WB1105 ") {
@@ -78,7 +78,7 @@ func TestAC12Doctor(t *testing.T) {
 	}
 }
 
-func TestAC18(t *testing.T) {
+func TestCheckNeverRunsScripts(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("executable scripts")
 	}

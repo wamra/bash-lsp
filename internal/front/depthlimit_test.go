@@ -66,8 +66,8 @@ func firstRefused(shape func(int) string) (n int, parserFirst bool) {
 // The lowerer's limit counts lowering levels, not what a user sees as nesting:
 // every statement, word, word part and if or elif clause inside another is a
 // level. These are the first depths each construct is refused at
-// (bench/results/lowerer-depth-m2a-final.txt is this test's -v output), the
-// figures docs/library.md and docs/m2a-acceptance.md state.
+// (bench/results/lowerer-depth.txt is this test's -v output), the
+// figures docs/library.md states.
 func TestLowererLimitPerConstruct(t *testing.T) {
 	want := map[string]int{ // 0: the parser's own limit refuses it first
 		"{ }": 3998, "( )": 3998, "while": 3998, "for": 3998, "case": 3998, "elif (flat)": 3996,

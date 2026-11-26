@@ -163,7 +163,7 @@ func TestStructureUTF16(t *testing.T) {
 	}
 }
 
-func TestAC09DocumentLink(t *testing.T) {
+func TestDocumentLinks(t *testing.T) {
 	c := client(t, copyCorpus(t))
 	c.open("dyn.sh")
 	raw := c.call("textDocument/documentLink", map[string]any{"textDocument": map[string]any{"uri": c.uri("dyn.sh")}})

@@ -26,12 +26,12 @@ const (
 // safetyStack is the stack limit the children run under: an eighth of the
 // 512 MiB a stack can reach under the runtime's default limit. The parser
 // stops at 10,000 levels, which is 42 MiB of stack for the costliest
-// construct (docs/m2a-nesting-design.md).
+// construct (docs/library.md).
 const safetyStack = 64 << 20
 
 // crashCases are inputs under the 2 MiB file limit that overflowed the stack
-// at some point, or come as close to it as the parser now lets them: the first four in review finding C1, the rest in the
-// re-review of its first fix (bench/repro-c1) or in deep_test.go. Each is
+// at some point, or come as close to it as the parser now lets them: the first four in the first report, the rest
+// found later or in deep_test.go. Each is
 // built on demand: a child needs one, not a hundred megabytes of them.
 func crashCases() map[string]func() string {
 	const ternary = 900000
@@ -42,13 +42,13 @@ func crashCases() map[string]func() string {
 		"brace":    func() string { return strings.Repeat("{ ", 500000) + "\n" },
 		"andor":    func() string { return strings.Repeat("a && ", 400000) + "a\n" },
 		"if":       func() string { return strings.Repeat("if a;then\n", 200000) },
-		// bench/repro-c1/gen.py: an unterminated quote on line 1 hides the
+		// An unterminated quote on line 1 hides the
 		// rest from the first parse; resync re-parses from line 2.
 		"resync_ternary": func() string { return "echo '\n" + "echo $(( " + strings.Repeat("a?", ternary) + "1 ))\n" },
 		"resync_not":     func() string { return "echo '\n" + "[[ " + strings.Repeat("! ", ternary) + "x ]]\n" },
 		"resync_if":      func() string { return "echo '\n" + strings.Repeat("if x; then ", 150000) + "\n" },
 		// A comment or a heredoc inside $(( $(...) )) holds an apostrophe the
-		// old pre-scan read as an open quote (m1-deferred.md, gen2.py).
+		// old pre-scan read as an open quote.
 		"comment_in_arith": func() string {
 			return "x=$(( $(echo 1 # it's\n) ))\necho $(( " + strings.Repeat("a?", ternary) + "1 ))\n"
 		},

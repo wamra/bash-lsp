@@ -145,8 +145,8 @@ type callGroup struct {
 }
 
 // groupCalls groups calls, invokes and sources steps (the steps `bash-lsp
-// callers` and `callees` list; FDS-012 takes the call hierarchy from the
-// FDS-010 edges) by the node at the other end: From for incoming, To for
+// callers` and `callees` list; the call hierarchy is built from the
+// call-graph edges) by the node at the other end: From for incoming, To for
 // outgoing. Steps come in site order, so groups are in the order of their
 // first site.
 func groupCalls(steps []analysis.Step, incoming bool) []*callGroup {

@@ -473,9 +473,9 @@ func analyse(t *testing.T, root, path string) (*tree.File, []analysis.Diagnostic
 	return parse.File(path, files[path]), s.Diagnostics(path, analysis.DiagOptions{})
 }
 
-func TestAC13(t *testing.T) {
+func TestShellCheckOnLintFixture(t *testing.T) {
 	r := realRunner(t)
-	root, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "ac13"))
+	root, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "lint-fixture"))
 	path := filepath.Join(root, "main.sh")
 	f, native := analyse(t, root, path)
 	sc, err := r.Check(context.Background(), f)
@@ -550,7 +550,7 @@ func BenchmarkCheck(b *testing.B) {
 	}
 	isolateHome(b)
 	r := New(tool, Options{})
-	path, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "ac13", "main.sh"))
+	path, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "lint-fixture", "main.sh"))
 	src, err := os.ReadFile(path)
 	if err != nil {
 		b.Fatal(err)

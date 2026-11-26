@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Cross-build the six release archives with plain Go tooling.
-# Each archive holds the binary, LICENSE, NOTICE and README.md.
+# Each archive holds the binary, LICENSE, THIRD_PARTY_NOTICES.md and README.md.
 #
 # Usage: scripts/build-release.sh [VERSION] [OUT]
 #
@@ -65,7 +65,7 @@ for t in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64 windows
   exe=bash-lsp; [ "$os" = windows ] && exe=bash-lsp.exe
   ( cd "$ROOT" && CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -buildvcs=false -ldflags "-s -w -X main.version=$VERSION" -o "$stage/$exe" ./cmd/bash-lsp )
   ( cd "$OUT" && sum "$name/$exe" ) >> "$OUT/binaries.txt"
-  cp "$ROOT/LICENSE" "$ROOT/NOTICE" "$ROOT/README.md" "$stage/"
+  cp "$ROOT/LICENSE" "$ROOT/THIRD_PARTY_NOTICES.md" "$ROOT/README.md" "$stage/"
   if [ "$os" = windows ]; then ( cd "$OUT" && zip -qr "$name.zip" "$name" ); else tar -C "$OUT" -czf "$OUT/$name.tar.gz" "$name"; fi
   rm -rf "$stage"
 done

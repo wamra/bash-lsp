@@ -22,7 +22,7 @@ func allocated(fn func()) uint64 {
 	return after.TotalAlloc - before.TotalAlloc
 }
 
-// review I3: docAbove prepended one line at a time, so a declaration under a
+// docAbove prepended one line at a time, so a declaration under a
 // block of n comment lines cost O(n^2) (400 KB: 40 s). Binding four times the
 // lines must cost about four times the bytes, not sixteen.
 func TestDocAboveIsLinear(t *testing.T) {

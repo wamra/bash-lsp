@@ -1,4 +1,4 @@
-"""Run-based cross-check of the `bash-trace` and `manual` expectations (Task 14).
+"""Run-based cross-check of the `bash-trace` and `manual` expectations.
 
 Usage (from the repository root):
   uv run --no-project python bench/oracle_trace.py [OUT.json]      (default bench/results/oracle-trace.json)

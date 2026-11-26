@@ -3,7 +3,7 @@
  "date": "2026-11-25T00:43:23-05:00",
  "commit": "7c1c0b5",
  "dirty": true,
- "machine": "Mac Studio Apple M1 Ultra, macOS-26.5.1-arm64-arm-64bit-Mach-O",
+ "machine": "Apple M1 Ultra workstation, macOS-26.5.1-arm64-arm-64bit-Mach-O",
  "cmd": [
   "uv",
   "run",

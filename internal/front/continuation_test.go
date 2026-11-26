@@ -23,7 +23,7 @@ func dumpNodes(sb *strings.Builder, f *tree.File) {
 	walk(f.Root, 0)
 }
 
-// review I1: the NUL fix (a602bb9) took a name's source bytes whenever they
+// the NUL fix (a602bb9) took a name's source bytes whenever they
 // differed from the lexer's value, so in a NUL-free file a name holding a line
 // continuation became `fo\<newline>o` (a function), `my\<newline>v` (an
 // assignment) or `fo\` (a POSIX `local`). On NUL-free sources every node must

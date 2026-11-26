@@ -123,7 +123,7 @@ func TestLiteralRangeWithoutNULIsTheParsers(t *testing.T) {
 
 // A NUL earlier in an assignment, before a line continuation or between `+`
 // and `=` after an index, still moves the value's start: the parser computed
-// it from lexer lengths, which count neither (a re-review asked whether a
+// it from lexer lengths, which count neither (whether a
 // boundary byte between the NUL and the value stopped the correction; the
 // newline of `\<newline>` did).
 func TestValueAfterNULAndContinuationInName(t *testing.T) {
@@ -146,7 +146,7 @@ func TestValueAfterNULAndContinuationInName(t *testing.T) {
 }
 
 // Lowering costs O(1) per node on a NUL-free source and O(log n) with NULs: a
-// re-review measured the word-start scan of each literal at 22.6 s for 256 KB
+// measurement of the word-start scan of each literal at 22.6 s for 256 KB
 // of `a${b}` and over 400 s for 2 MiB (about 0.2 s before that scan existed).
 // Each input is about 2 MiB, the file limit; the bound is generous. Under the
 // race detector a quarter of the size and no wall-clock bound.
@@ -227,7 +227,7 @@ func TestNULIndexMatchesScan(t *testing.T) {
 	}
 }
 
-// The per-kind NUL name rules of docs/m2a-acceptance.md, pinned: in an
+// The per-kind NUL name rules, pinned: in an
 // assignment, Bash `declare` and mksh `typeset` the parser ends the name at
 // the NUL (`A\0B=1` names `A`, range text `A`); a heredoc tag is the shell's
 // word, NUL removed (`<<E\0F` names `EF`), with the source bytes as range.

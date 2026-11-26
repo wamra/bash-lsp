@@ -77,7 +77,7 @@ func TestForbiddenExec(t *testing.T) {
 // imports the upstream module it was copied from, or if a non-test file
 // imports a network package or, outside internal/extool, os/exec.
 func TestOnlyFrontImportsParser(t *testing.T) {
-	skip := map[string]bool{".git": true, ".scratch": true, "testdata": true}
+	skip := map[string]bool{".git": true, "testdata": true}
 	checked := 0
 	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -177,7 +177,7 @@ func TestPlanRefDetector(t *testing.T) {
 // a fix round: the code outlives the plan, and exported doc comments are what
 // `go doc` shows.
 func TestNoPlanReferencesInComments(t *testing.T) {
-	skip := map[string]bool{".git": true, ".scratch": true, "testdata": true}
+	skip := map[string]bool{".git": true, "testdata": true}
 	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err

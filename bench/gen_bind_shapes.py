@@ -1,12 +1,12 @@
 """Write the adversarial inputs of the final review's Bind/Build hunt (review C1 and its siblings), each about
 2 MiB, one file per shape. Usage: gen_bind_shapes.py OUTDIR [BYTES]
 BYTES (default 2 MiB - 64) is the size budget of each shape; at the default the output is byte for byte what
-m2a's final review probed. Pass half of it to time each shape at n and 2n. Counts that are not sizes (depths,
+the binder probes. Pass half of it to time each shape at n and 2n. Counts that are not sizes (depths,
 int_assign_100k) do not scale.
 Shapes the parser refuses at its nesting limit (long `$((`, `${a[` runs, a 2 MiB `(( a+a+... ))`) are kept: their
 row shows the input never reaches Bind. A 2 MiB single expression of names is reached through `let "..."`.
-The m2b shapes stress edges, string bodies, variable calls, `unset -f`, aliases and many
-definitions of one name; the m3 shapes (diag_*, last block) the native diagnostic rules."""
+The edge shapes stress edges, string bodies, variable calls, `unset -f`, aliases and many
+definitions of one name; the diagnostic shapes (diag_*, last block) the native diagnostic rules."""
 import os, sys
 out = sys.argv[1]
 M0 = 2 * 1024 * 1024 - 64
@@ -60,7 +60,7 @@ d = 3900
 shapes["deep_source_vars_3900"] = deep(d, "source $f;" * ((M - 4 * d) // 10))
 shapes["deep_int_assigns_3900"] = deep(d, "x=1;" * ((M - 4 * d - 20) // 4), "declare -i q\n")
 shapes["deep_func_assigns_3900"] = deep(d, "((y=1));" * ((M - 4 * d - 20) // 8), "f() { ", " }\n")
-# m2b: edges, strings, variable calls, unset -f, aliases, many definitions of one name.
+# Edge shapes: edges, strings, variable calls, unset -f, aliases, many definitions of one name.
 def lines(unit, n0, pre=""):  # n0 lines at the default size, scaled with M
     return pre + unit * (n0 * M // M0)
 fdef = "f() { :; }\n"
@@ -85,20 +85,20 @@ shapes["alias_fn_70k"] = fdef + "".join(f"alias a{i}=f\n" for i in range(70000 *
 shapes["func_defs_reads_20k"] = lines("f() { x=1; echo $y; }\n", 20000) + "f\n"
 shapes["deep_func_sources_3900"] = deep(3900, ". $f;" * ((M - 4 * 3900 - 20) // 5), "g() { ", " }\n")
 shapes["deep_aliases_3900"] = deep(3900, "alias a=f;" * ((M - 4 * 3900 - 20) // 10), fdef)
-# dynamic scope (fix round 1): unresolved reads in f, calls of f from h or from many callers
+# dynamic scope: unresolved reads in f, calls of f from h or from many callers
 q = M // 2
 shapes["dyn_reads_calls"] = "f() { " + "echo $y;" * (q // 8) + " }\nh() { " + "f;" * (q // 2) + " }\n"
 shapes["dyn_reads_calls_local"] = "f() { " + "echo $y;" * (q // 8) + " }\nh() { local y; " + "f;" * (q // 2) + " }\n"
 shapes["dyn_reads_callers"] = "f() { " + "echo $y;" * (q // 8) + " }\n" + "".join(f"h{i}() {{ f; }}\n" for i in range(q // 17))
 shapes["dyn_names_callers_local"] = ("f() { " + "".join(f"echo $v{i};" for i in range(q // 14)) + " }\n"
                                      + "".join(f"h{i}() {{ local w; f; }}\n" for i in range(q // 26)))
-# fix round 2: the read name is a local of many callers
+# the read name is a local of many callers
 shapes["dyn_local_callers"] = "f() { echo $y; }\n" + "".join(f"h{i}() {{ local y; f; }}\n" for i in range(M // 27))
 shapes["dyn_local_callers_3"] = ("f() { echo $y; }\ng() { echo $y; }\nk() { echo $y; }\n"
                                  + "".join(f"h{i}() {{ local y; f; g; k; }}\n" for i in range(M // 33)))
 for d in (1000, 1990):
     shapes[f"nested_funcs_defs_{d}"] = "f() { " * d + "h() { :; };" * ((M - 8 * d) // 11) + " }" * d + "\n"
-# m3 shapes: the native diagnostic rules (analysis/rules.go) that walk scopes, bindings, declarations or
+# Diagnostic shapes: the native diagnostic rules (analysis/rules.go) that walk scopes, bindings, declarations or
 # suppression directives, each with the input that would multiply a careless rule.
 shapes["diag_unused_locals_dyn"] = rep('f() { local u=1; "$h"; }\n')
 shapes["diag_reads_after_subshells"] = rep('( y=1 ); echo "$y"\n')

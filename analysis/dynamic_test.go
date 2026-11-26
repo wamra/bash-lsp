@@ -370,7 +370,7 @@ func TestStringLineContinuationInDoubleQuotes(t *testing.T) {
 }
 
 func TestStringBodySizeCap(t *testing.T) {
-	// The reviewer's shape: `eval "$a$a…"` filling the file cap. Each `$a`
+	// The shape: `eval "$a$a…"` filling the file cap. Each `$a`
 	// would become a 7-byte placeholder; over MaxFileBytes the string is a
 	// dynamic/expansion site and is not parsed.
 	n := (MaxFileBytes - 8) / 2
@@ -490,8 +490,8 @@ func TestDynamicScopeReasonIsNoEdgeReason(t *testing.T) {
 }
 
 // A `"$cmd"` call reads the variable by the variable rules, so a private
-// declaration around the call (rules S1, S2) is the one it reads. Build
-// finds it through privateOf (merge of m2's linear private-scope lookup).
+// declaration around the call is the one it reads. Build
+// finds it through privateOf (the linear private-scope lookup).
 func TestVariableCallSeesPrivateVariable(t *testing.T) {
 	q := buildMem(t, map[string]string{
 		"m.sh": "f() { :; }\ng() { :; }\ncmd=f\n" +

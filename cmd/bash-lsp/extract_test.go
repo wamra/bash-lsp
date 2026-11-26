@@ -15,10 +15,9 @@ import (
 
 var update = flag.Bool("update", false, "rewrite testdata/extract.golden.jsonl from the current output")
 
-// astRec is a copy of the decode struct code-index uses for the output of its
-// PowerShell extractor: ~/dev/code-index/internal/indexer/ast.go:34-52
-// at code-index HEAD d6ba2fd (comments on the fields dropped). Copied so a test
-// can prove every line `bash-lsp extract` writes decodes into it.
+// astRec is the record shape that code-index decodes from an extractor's
+// output, with the comments on the fields dropped. A test uses it to prove
+// every line `bash-lsp extract` writes decodes into it.
 type astRec struct {
 	T       string `json:"t"`
 	File    string `json:"file"`
@@ -144,7 +143,7 @@ func TestExtractCorpusDecodes(t *testing.T) {
 			t.Errorf("no %q record for the corpus; counts %v", typ, counts)
 		}
 	}
-	// Every site AC-03 names is there with its label.
+	// Every site of the corpus is there with its label.
 	for _, w := range []struct {
 		line          int
 		resolution    string
@@ -509,7 +508,7 @@ func keyOrder(t *testing.T, line string) []string {
 }
 
 // The key order of a record is documented (docs/code-index-integration.md
-// section 3 and the golden-file note): pin it on raw output.
+// section 2 and the golden-file note): pin it on raw output.
 func TestExtractRawKeyOrder(t *testing.T) {
 	root := writeRoot(t, map[string]string{
 		"a.sh":    "alias g=f\nf() { :; }\nrun() {\n  f\n  \"$x\"\n  ./tool.sh\n}\nsource ./gone.sh\n",
@@ -546,9 +545,8 @@ func TestExtractRawKeyOrder(t *testing.T) {
 	}
 }
 
-// A name match outside the sourced closure is a candidate (spec 4.2 maps it
-// to code-index confidence `possible`; AC-17: candidates are returned, not
-// dropped): written as `call` with its resolution and reason, one record per
+// A name match outside the sourced closure is a candidate (candidates are
+// returned, not dropped): written as `call` with its resolution and reason, one record per
 // candidate definition, as `callers` lists it.
 func TestExtractOutsideClosureCandidates(t *testing.T) {
 	root := writeRoot(t, map[string]string{

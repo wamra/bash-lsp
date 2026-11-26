@@ -8,6 +8,19 @@ signature help, semantic tokens, folding, selection ranges, highlights, links,
 inlay hints, code actions, safe rename). It reads files and never runs them,
 and opens no network connection.
 
+## Install
+
+```
+claude plugin marketplace add wamra/wammy-plugins
+claude plugin install bash-lsp@wammy-plugins
+```
+
+On every push to `main`, CI builds the installable tree with
+`scripts/build-plugin.sh` (the launcher, the six binaries, `.lsp.json`, the hook,
+`LICENSE`, `THIRD_PARTY_NOTICES.md` and this README), checks it with
+`scripts/check-plugin.sh`, and publishes it as the `plugin` branch of this
+repository.
+
 ## Programs it may start
 
 Three, and only these, each found outside the workspace (a program inside a
@@ -75,9 +88,8 @@ the settings file above is the recommended place.
 
 macOS and Linux: the launcher is a `sh` script, so `.lsp.json` works as shipped.
 
-Windows: the binaries are built and tested in CI, but how Claude Code on Windows
-should start the `.exe` is not settled (spec decision D-9). Plugin launch on
-Windows is unverified.
+Windows: the binaries are built, but how Claude Code on Windows should start
+the `.exe` is not settled. Launching the plugin on Windows is untested.
 
 ## Build
 

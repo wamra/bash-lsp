@@ -29,7 +29,7 @@ func (q *qworld) hover(file, needle string, occ, off int) (string, bool) {
 	return md, ok
 }
 
-func TestHoverFunction(t *testing.T) { // AC-08, C14, C14b
+func TestHoverFunction(t *testing.T) { // C14, C14b
 	q := buildCorpus(t)
 	md, ok := q.hover("lib/util.sh", "build_release() {", 0, 2)
 	if !ok {
@@ -217,7 +217,7 @@ func TestHoverLongDeclarationCut(t *testing.T) {
 	}
 }
 
-// A read bound only through dynamic scope is labelled as such (FDS-006) and
+// A read bound only through dynamic scope is labelled as such and
 // lists every candidate caller local, up to maxCallSites with a count of the
 // rest; it is not presented as the caller's local for certain.
 func TestHoverDynamicScopeRead(t *testing.T) {

@@ -504,7 +504,7 @@ func TestReadBounded(t *testing.T) {
 	}
 }
 
-// review C1 / T9: an overlay over MaxFileBytes is skipped like a disk file of
+// An overlay over MaxFileBytes is skipped like a disk file of
 // that size, and hides the disk entry while it lasts.
 func TestOverlayOverSizeLimit(t *testing.T) {
 	root := t.TempDir()
@@ -529,7 +529,7 @@ func TestOverlayOverSizeLimit(t *testing.T) {
 	}
 }
 
-// review M4: the tree of an oversize document carries the dialect detection
+// The tree of an oversize document carries the dialect detection
 // gives it, as tree.File.Dialect promises for every parse, skipped or not.
 func TestOversizeFileHasDialect(t *testing.T) {
 	root := t.TempDir()

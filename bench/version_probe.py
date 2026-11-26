@@ -11,7 +11,7 @@ a command that needs nothing but the shell (`sleep 0`, `/dev/null`). A snippet
 fails. The `control` rows are forms bash 3.2 has: they must pass, and a
 failing control means the probe itself is broken.
 
-OUT defaults to bench/results/version-probe-m3.json. The file holds, per
+OUT defaults to bench/results/version-probe-<version>.json. The file holds, per
 key: the snippet, how it ran, the exit status, the first stderr line and
 the verdict, with the bash path, its `$BASH_VERSION` and the date.
 """
@@ -22,10 +22,10 @@ import re
 import subprocess
 import sys
 
-# key, first version FDS-016 names ("" for a control), parse-only?, snippet
+# key, first version the table names ("" for a control), parse-only?, snippet
 PROBES = [
     ("assoc-array", "4.0", False, "declare -A m"),
-    ("mapfile", "4.0 (FDS-016: one conflicting source; not in the table)", False, "mapfile -t a </dev/null"),
+    ("mapfile", "4.0 (one conflicting source; not in the table)", False, "mapfile -t a </dev/null"),
     ("case-modification", "4.0", False, 'x=ab; echo "${x^^}" >/dev/null'),
     ("coproc", "4.0", True, "coproc { :; }"),
     ("globstar", "4.0", False, "shopt -s globstar"),
@@ -78,7 +78,7 @@ def main():
         sys.exit(__doc__)
     bash = sys.argv[1]
     out = sys.argv[2] if len(sys.argv) > 2 else os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "results", "version-probe-m3.json")
+        os.path.dirname(os.path.abspath(__file__)), "results", "version-probe.json")
     version = subprocess.run([bash, "-c", "echo $BASH_VERSION"], stdin=subprocess.DEVNULL,
                              stdout=subprocess.PIPE, text=True, timeout=10).stdout.strip()
     rows, bad = [], []

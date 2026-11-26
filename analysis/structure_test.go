@@ -166,7 +166,7 @@ func linkStrs(q *qworld, ls []Link) []string {
 	return out
 }
 
-func TestAC09DocumentLink(t *testing.T) {
+func TestDocumentLinks(t *testing.T) {
 	q := buildCorpus(t)
 	got := linkStrs(q, lkOf(q.s, q.abs("dyn.sh")))
 	found := false

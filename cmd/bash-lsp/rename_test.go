@@ -1103,7 +1103,7 @@ func TestCLIRenameRefusesWhenADirectoryWasNotListed(t *testing.T) {
 	}
 }
 
-// Files the owner excluded are not read: the rename goes on and says so, in
+// Files the settings exclude are not read: the rename goes on and says so, in
 // the text and in the JSON.
 func TestCLIRenameWarnsOfExcludedFiles(t *testing.T) {
 	for name, setup := range map[string]func(t *testing.T, root string){

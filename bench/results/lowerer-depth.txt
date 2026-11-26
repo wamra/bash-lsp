@@ -1,0 +1,26 @@
+# go test -count=1 -run 'TestLowererLimitPerConstruct|TestLoweringLimitErrorSaysWhatItCounts' -v ./internal/front/
+# 2026-11-23T18:21Z; Apple M1 Ultra
+=== RUN   TestLowererLimitPerConstruct
+    depthlimit_test.go:95: 
+        lowerer limit 4000 levels; first refused depth per construct:
+          "$( )"            1000 levels (4.00 lowering levels each)
+          $( )              1333 levels (3.00 lowering levels each)
+          $( ) in ( )      refused by the parser's limit first
+          ${x:-}            1999 levels (2.00 lowering levels each)
+          ( )               3998 levels (1.00 lowering levels each)
+          <( )              1333 levels (3.00 lowering levels each)
+          case              3998 levels (1.00 lowering levels each)
+          elif (flat)       3996 levels (1.00 lowering levels each)
+          f() { }           1999 levels (2.00 lowering levels each)
+          for               3998 levels (1.00 lowering levels each)
+          if                1999 levels (2.00 lowering levels each)
+          if in f() { }     1000 levels (4.00 lowering levels each)
+          pipeline of ( )   1999 levels (2.00 lowering levels each)
+          while             3998 levels (1.00 lowering levels each)
+          { }               3998 levels (1.00 lowering levels each)
+        
+--- PASS: TestLowererLimitPerConstruct (0.57s)
+=== RUN   TestLoweringLimitErrorSaysWhatItCounts
+--- PASS: TestLoweringLimitErrorSaysWhatItCounts (0.00s)
+PASS
+ok  	github.com/wamra/bash-lsp/internal/front	0.799s

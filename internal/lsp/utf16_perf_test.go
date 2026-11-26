@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// A reviewer's 2 MiB single-line file with a million references did not
+// A 2 MiB single-line file with a million references did not
 // finish: every location was converted to UTF-16 by rescanning its line from
 // the start. Every request that converts many positions must stay linear.
 func TestManyLocationsOnOneLongLineAreFast(t *testing.T) {

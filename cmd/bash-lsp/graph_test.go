@@ -121,7 +121,7 @@ func TestCallersACLabelSets(t *testing.T) {
 	if got := labels(fromMain); !slices.Equal(got, want) {
 		t.Fatalf("labels %v, want %v\n%v", got, want, edgeLines(r.Results))
 	}
-	// Each label sits on the site AC-03 names.
+	// Each label sits on a site of the corpus.
 	at := map[string]int{}
 	for _, e := range fromMain {
 		if e.Site.Path == "main.sh" {
