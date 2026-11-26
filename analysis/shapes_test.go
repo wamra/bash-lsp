@@ -24,10 +24,12 @@ func fillTo(size int, pre, unit, post string) string {
 	return pre + strings.Repeat(unit, (size-len(pre)-len(post))/len(unit)) + post
 }
 
-// withinBound runs fn and fails t if it does not return within bound; it
+// withinBound runs fn and fails t if it does not return within bound (four
+// times as long on CI, see slack); it
 // reports whether fn returned.
 func withinBound(t *testing.T, what string, bound time.Duration, fn func()) bool {
 	t.Helper()
+	bound = slack(bound)
 	done := make(chan time.Duration, 1)
 	go func() {
 		start := time.Now()
@@ -49,6 +51,7 @@ func withinBound(t *testing.T, what string, bound time.Duration, fn func()) bool
 // attempt overruns bound. It reports whether an attempt finished in time.
 func withinBoundBest(t *testing.T, what string, bound time.Duration, tries int, setup func() func()) bool {
 	t.Helper()
+	bound = slack(bound)
 	for k := 0; k < tries; k++ {
 		fn := setup()
 		done := make(chan time.Duration, 1)

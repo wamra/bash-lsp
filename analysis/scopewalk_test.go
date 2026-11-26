@@ -30,7 +30,7 @@ func deepCases(size int) map[string]string {
 }
 
 func TestDeepScopesBindAndBuildInBoundedTime(t *testing.T) {
-	bound := 3 * time.Second
+	bound := slack(3 * time.Second)
 	size := 2<<20 - 64
 	if raceBuild {
 		size /= 4

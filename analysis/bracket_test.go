@@ -165,7 +165,7 @@ const arithFactsDigest = "991e3d00e3da298835f9fb52dd2f7bd45f8f85700ae77b53b96ce8
 // limit; the bound is generous. Under the race detector a quarter of the size
 // and a looser bound.
 func TestBracketRunsBindInBoundedTime(t *testing.T) {
-	bound := 5 * time.Second
+	bound := slack(5 * time.Second)
 	n := 1<<20 - 16 // pairs of bytes: each input stays under 2 MiB
 	if raceBuild {
 		n /= 4

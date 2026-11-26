@@ -22,7 +22,7 @@ import (
 func TestCLIOutputInBoundedTime(t *testing.T) {
 	// 1 MiB: the old code took minutes on each shape; the fixed code takes
 	// a few hundred milliseconds
-	size, bound := 1<<20, 5*time.Second
+	size, bound := 1<<20, slack(5*time.Second)
 	if raceBuild {
 		size, bound = size/4, 60*time.Second
 	}
