@@ -14,14 +14,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # macOS is left out of the automatic run on purpose: it is the development
-  # platform and its hosted runners cost about ten times the Linux rate. The
-  # `test-macos` job below runs on manual dispatch only.
   test:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -40,22 +37,6 @@ jobs:
         env:
           BASH_LSP_CONFIG: ${{ runner.temp }}/bash-lsp-no-such-file.toml
         run: go test -race ./...
-
-  # Manual only: the same steps as `test`, once per release, for the cost
-  # reason above.
-  test-macos:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
-        with:
-          go-version-file: go.mod
-      - run: go vet ./...
-      - name: Test
-        env:
-          BASH_LSP_CONFIG: ${{ runner.temp }}/bash-lsp-no-such-file.toml
-        run: go test ./...
 
   # Cross-builds the six release archives and keeps them for a week.
   build:
