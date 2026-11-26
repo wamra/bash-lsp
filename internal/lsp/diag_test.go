@@ -450,7 +450,7 @@ func (c *testClient) logsContaining(sub string) []string {
 
 func (c *testClient) waitLog(sub string) string {
 	c.t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(slack(10 * time.Second))
 	for time.Now().Before(deadline) {
 		if l := c.logsContaining(sub); len(l) > 0 {
 			return l[0]
@@ -1148,7 +1148,7 @@ func startedPIDs(t *testing.T, runlog string) []int {
 
 func waitPIDs(t *testing.T, runlog string, n int) []int {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(slack(10 * time.Second))
 	for time.Now().Before(deadline) {
 		if p := startedPIDs(t, runlog); len(p) >= n {
 			return p
@@ -1161,7 +1161,7 @@ func waitPIDs(t *testing.T, runlog string, n int) []int {
 
 func waitGone(t *testing.T, pid int, why string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(slack(10 * time.Second))
 	for time.Now().Before(deadline) {
 		p, err := os.FindProcess(pid)
 		if err != nil || p.Signal(syscall.Signal(0)) != nil {

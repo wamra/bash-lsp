@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -94,17 +96,28 @@ func Run(ctx context.Context, t Tool, args []string, o RunOptions) (Result, erro
 	var capped atomic.Bool
 	out := &capWriter{max: o.MaxOutput, over: func() { capped.Store(true); cancel() }}
 	errw := &capWriter{max: MaxStderr}
-	cmd := exec.CommandContext(runCtx, t.Path, args...)
-	cmd.Dir = o.Dir
-	cmd.Env = o.Env
-	if o.Stdin != nil {
-		cmd.Stdin = bytes.NewReader(o.Stdin)
+	var cmd *exec.Cmd
+	var group procGroup
+	var werr error
+	for attempt := 0; ; attempt++ {
+		// A Cmd cannot start twice, so each attempt builds its own.
+		cmd = exec.CommandContext(runCtx, t.Path, args...)
+		cmd.Dir = o.Dir
+		cmd.Env = o.Env
+		if o.Stdin != nil {
+			cmd.Stdin = bytes.NewReader(o.Stdin)
+		}
+		cmd.Stdout, cmd.Stderr = out, errw
+		cmd.WaitDelay = waitDelay
+		group = setGroup(cmd)
+		if werr = startCmd(cmd); werr == nil {
+			werr = cmd.Wait()
+			break
+		}
+		if attempt >= startRetries || !transientStart(werr, onWindows) || sleepCtx(runCtx, startBackoff<<attempt) != nil {
+			break
+		}
 	}
-	cmd.Stdout, cmd.Stderr = out, errw
-	cmd.WaitDelay = waitDelay
-	group := setGroup(cmd)
-
-	werr := cmd.Run()
 	res := Result{Stdout: out.bytes(), Stderr: errw.bytes(), Exit: -1}
 	if cmd.ProcessState != nil {
 		res.Exit = cmd.ProcessState.ExitCode()
@@ -168,4 +181,40 @@ func (w *capWriter) bytes() []byte {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return append([]byte(nil), w.buf.Bytes()...)
+}
+
+// onWindows tells transientStart which system the start errors come from; a
+// test sets it.
+var onWindows = runtime.GOOS == "windows"
+
+// startCmd starts a prepared command; a test replaces it to make a start fail.
+var startCmd = func(c *exec.Cmd) error { return c.Start() }
+
+// A start that fails because another process still holds the program's file
+// (on Windows, ERROR_SHARING_VIOLATION: a virus scanner or the writer of a
+// program that was just created) is tried again after startBackoff, twice that,
+// and so on, startRetries times in all.
+const (
+	startRetries = 4
+	startBackoff = 50 * time.Millisecond
+)
+
+// transientStart reports whether err from starting a program is the sharing
+// violation of Windows. Errno 32 means something else on other systems, so
+// windows says which one the error comes from.
+func transientStart(err error, windows bool) bool {
+	const errorSharingViolation = syscall.Errno(32)
+	return windows && errors.Is(err, errorSharingViolation)
+}
+
+// sleepCtx waits d or until ctx ends, and returns ctx's error in that case.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	tm := time.NewTimer(d)
+	defer tm.Stop()
+	select {
+	case <-tm.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

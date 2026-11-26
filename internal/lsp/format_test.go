@@ -126,7 +126,7 @@ func TestFormattingRefusalLogsReason(t *testing.T) {
 
 func (c *testClient) waitLogCount(sub string, n int) {
 	c.t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(slack(10 * time.Second))
 	for time.Now().Before(deadline) {
 		if len(c.logsContaining(sub)) >= n {
 			return
