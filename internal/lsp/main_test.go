@@ -52,6 +52,20 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+// absPath is p, written as a Unix absolute path ("/x/a.sh"), as an absolute
+// path of the host: unchanged on Unix; on Windows it takes the current volume
+// and uses backslashes.
+func absPath(p string) string {
+	if runtime.GOOS != "windows" {
+		return p
+	}
+	a, err := filepath.Abs(filepath.FromSlash(p))
+	if err != nil {
+		return p
+	}
+	return a
+}
+
 // tomlLiteral is p as a TOML literal string: nothing in it is an escape, so a
 // Windows path ("C:\Users\x") reads back as it is written.
 func tomlLiteral(p string) string { return "'" + p + "'" }

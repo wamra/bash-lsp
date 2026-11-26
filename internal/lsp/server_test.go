@@ -1162,7 +1162,8 @@ func TestUnknownRuleShownOnce(t *testing.T) {
 // inside the workspace: a warning, not the information of a path elsewhere.
 func TestSourceIntoOtherFolderIsWarning(t *testing.T) {
 	a, b := t.TempDir(), t.TempDir()
-	src := "source " + filepath.Join(b, "lib", "none.sh") + "\nsource /elsewhere/none.sh\n"
+	// A script spells paths with forward slashes; a backslash would be an escape.
+	src := "source " + filepath.ToSlash(filepath.Join(b, "lib", "none.sh")) + "\nsource /elsewhere/none.sh\n"
 	if err := os.WriteFile(filepath.Join(a, "m.sh"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}

@@ -191,6 +191,12 @@ func progDir(t *testing.T, names ...string) string {
 	t.Helper()
 	dir := t.TempDir()
 	for _, n := range names {
+		if runtime.GOOS == "windows" {
+			if strings.ContainsAny(n, "\n") { // not a file name there; the test uses it as a hostile label only
+				continue
+			}
+			n += ".exe" // what makes a name a program there
+		}
 		if err := os.WriteFile(filepath.Join(dir, n), []byte("#!/bin/sh\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}

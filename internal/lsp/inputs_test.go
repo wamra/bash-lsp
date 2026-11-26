@@ -12,7 +12,7 @@ func profileDir(t *testing.T, names ...string) string {
 	t.Helper()
 	dir := t.TempDir()
 	for _, n := range names {
-		if err := os.WriteFile(filepath.Join(dir, n), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, n+exeExt()), []byte("#!/bin/sh\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}

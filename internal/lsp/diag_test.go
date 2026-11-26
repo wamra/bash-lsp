@@ -961,11 +961,11 @@ func TestPullDoesNotHideAPush(t *testing.T) {
 	var out bytes.Buffer
 	s := newServer(strings.NewReader(""), &out, nil, "test")
 	s.loose = newDocsOnly()
-	main, lib := "/x/main.sh", "/x/lib.sh"
+	main, lib := absPath("/x/main.sh"), absPath("/x/lib.sh")
 	s.loose.SetOverlay(lib, 1, []byte("deploy_it() { :; }\n"))
 	text := []byte("#!/bin/bash\nsource ./lib.sh\ndeploy_it\n")
 	s.loose.SetOverlay(main, 1, text)
-	d := &document{uri: "file:///x/main.sh", path: main, be: s.loose, version: 1, text: text}
+	d := &document{uri: workspace.URIFromPath(main), path: main, be: s.loose, version: 1, text: text}
 	s.docs[main] = d
 	s.publishDoc(d, true)
 	if strings.Contains(out.String(), "WB1101") {
