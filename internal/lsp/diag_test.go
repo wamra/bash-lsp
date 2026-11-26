@@ -99,19 +99,30 @@ func TestResolvedOnlyCanonicalKey(t *testing.T) {
 func (c *testClient) waitPush(rel string) (int, []Diagnostic) {
 	c.t.Helper()
 	uri := c.uri(rel)
-	deadline := time.AfterFunc(10*time.Second, func() { c.mu.Lock(); c.closed = true; c.cond.Broadcast(); c.mu.Unlock() })
+	deadline := time.AfterFunc(slack(10*time.Second), func() { c.mu.Lock(); c.closed = true; c.cond.Broadcast(); c.mu.Unlock() })
 	defer deadline.Stop()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for len(c.diags[uri]) == 0 {
 		if c.closed {
-			c.t.Fatalf("no diagnostics pushed for %s (messages received: %q)", rel, c.logMsgs)
+			c.t.Fatalf("no diagnostics pushed for %s\n%s", rel, c.stalled())
 		}
 		c.cond.Wait()
 	}
 	d, v := c.diags[uri][0], c.vers[uri][0]
 	c.diags[uri], c.vers[uri] = c.diags[uri][1:], c.vers[uri][1:]
 	return v, d
+}
+
+// stalled describes where a session stands when a wait ran out: every push
+// received (with its version), the log messages, the server's own log and the
+// stacks of all goroutines, which show where a ShellCheck run is stuck. The
+// caller holds c.mu.
+func (c *testClient) stalled() string {
+	stacks := make([]byte, 256<<10)
+	stacks = stacks[:runtime.Stack(stacks, true)]
+	return fmt.Sprintf("pushes received (%d):\n  %s\nwindow/logMessage: %q\nserver log:\n%s\ngoroutines:\n%s",
+		len(c.history), strings.Join(c.history, "\n  "), c.logMsgs, c.logs.String(), stacks)
 }
 
 // waitPushWhere returns the first push for rel that satisfies ok, dropping the
@@ -583,6 +594,12 @@ func TestShellCheckBurstRunsOnce(t *testing.T) {
 	put(t, filepath.Join(root, "a.sh"), "")
 	runlog := filepath.Join(t.TempDir(), "runs")
 	c := clientInit(t, root, false, scInit(fakeShellCheck(t, "mark", "WB_RUNLOG="+runlog), 0))
+	t.Cleanup(func() {
+		if t.Failed() {
+			b, _ := os.ReadFile(runlog)
+			t.Logf("run log of the fake (%s):\n%s", runlog, b)
+		}
+	})
 	c.openText("a.sh", "#!/bin/bash\n# MARK 0\n")
 	for i := 2; i <= 12; i++ {
 		c.changeTo("a.sh", i, fmt.Sprintf("#!/bin/bash\n# MARK %d\n", i))

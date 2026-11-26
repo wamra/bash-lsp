@@ -34,6 +34,7 @@ type testClient struct {
 	diags   map[string][][]Diagnostic
 	vers    map[string][]int  // the version of each push in diags, -1 when absent
 	logMsgs []string          // window/logMessage texts, in arrival order
+	history []string          // every push, as "time uri vN: messages", kept after waitPush takes it
 	shown   []json.RawMessage // params of window/showMessage notifications
 	closed  bool
 
@@ -217,6 +218,7 @@ func (c *testClient) readLoop() {
 				v = *p.Version
 			}
 			c.vers[p.URI] = append(c.vers[p.URI], v)
+			c.history = append(c.history, fmt.Sprintf("%s %s v%d: %q", time.Now().Format("15:04:05.000"), filepath.Base(p.URI), v, messages(p.Diagnostics)))
 		} else if m.Method == "window/logMessage" {
 			var p logMessageParams
 			_ = json.Unmarshal(m.Params, &p)

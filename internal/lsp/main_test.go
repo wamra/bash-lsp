@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -262,6 +263,20 @@ func fakeShellCheck(t *testing.T, mode string, env ...string) string {
 		if err := os.WriteFile(p+".fake", []byte(mode+"\n"+strings.Join(env, "\n")+"\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
+		// Start the program once now, in a mode that writes no record, so that
+		// whatever Windows does the first time a new program runs (a scan, a
+		// slow image load) happens before the test's own timers; its duration
+		// is kept for a failed test's output.
+		began := time.Now()
+		warm := exec.Command(p)
+		warm.Env = append(os.Environ(), "WB_FAKE_TOOL=clean")
+		werr := warm.Run()
+		took := time.Since(began)
+		t.Cleanup(func() {
+			if t.Failed() {
+				t.Logf("first start of the fake took %s (error: %v)", took, werr)
+			}
+		})
 		return p
 	}
 	var sb strings.Builder
