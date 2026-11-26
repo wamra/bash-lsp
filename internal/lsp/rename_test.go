@@ -563,11 +563,11 @@ func TestRenameLatency(t *testing.T) {
 	if raceEnabled {
 		return
 	}
-	if rn > 200*time.Millisecond {
-		t.Errorf("rename took %v, budget 200 ms", rn)
+	if rn > slack(200*time.Millisecond) {
+		t.Errorf("rename took %v, budget %v", rn, slack(200*time.Millisecond))
 	}
-	if prep > 20*time.Millisecond {
-		t.Errorf("prepareRename took %v, budget 20 ms", prep)
+	if prep > slack(20*time.Millisecond) {
+		t.Errorf("prepareRename took %v, budget %v", prep, slack(20*time.Millisecond))
 	}
 }
 

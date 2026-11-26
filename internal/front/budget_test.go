@@ -60,7 +60,7 @@ func TestResyncByteBudget(t *testing.T) {
 	if !strings.HasPrefix(l.Detail, want) || !strings.Contains(l.Detail, "-byte file)") {
 		t.Fatalf("detail %q", l.Detail)
 	}
-	if took > 6*time.Second {
+	if took > slack(6*time.Second) {
 		t.Fatalf("took %v", took)
 	}
 }
@@ -87,7 +87,7 @@ func TestResyncByteBudgetMidSize(t *testing.T) {
 	if len(r.reads) != 9 {
 		t.Fatalf("%d attempts ran, want 9 (reads %v)", len(r.reads), r.reads)
 	}
-	if took > 3*time.Second {
+	if took > slack(3*time.Second) {
 		t.Fatalf("took %v", took)
 	}
 }

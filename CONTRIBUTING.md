@@ -15,6 +15,11 @@ The tests need no network. Pointing `BASH_LSP_CONFIG` at a file that does not
 exist keeps them from reading your own settings file. Tests that use ShellCheck
 skip when it is not installed. `go test -race ./...` is run in CI on Linux.
 
+A few tests measure time. The budgets and growth bounds hold on a development
+machine; where `CI` is set (hosted runners are shared two-core VMs) the latency
+budgets are four times as long and the growth assertions only log, while the
+tests keep their correctness checks.
+
 Some tests read the documents and fail when a document and the code disagree:
 the JSON records table in `README.md`, the example in `docs/library.md`, and the
 result files cited by name. `docs/benchmark.md` is generated from the files

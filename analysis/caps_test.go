@@ -876,6 +876,10 @@ func TestVersionGuardManyTopCallsGrowth(t *testing.T) {
 		times = append(times, best)
 	}
 	t.Logf("best of 5 at n, 2n, 4n, 8n: %v", times)
+	if onCI() {
+		t.Logf("CI: growth assertion left to development machines")
+		return
+	}
 	if overall := math.Cbrt(float64(times[3]) / float64(max(times[0], time.Millisecond))); overall > 2.5 {
 		t.Errorf("grew x%.2f per doubling over three doublings (%v)", overall, times)
 	}
