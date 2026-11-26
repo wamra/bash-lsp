@@ -20,6 +20,7 @@ import (
 
 	"github.com/wamra/bash-lsp/analysis"
 	"github.com/wamra/bash-lsp/internal/ignore"
+	"github.com/wamra/bash-lsp/internal/paths"
 	"github.com/wamra/bash-lsp/parse"
 	"github.com/wamra/bash-lsp/tree"
 )
@@ -1457,7 +1458,7 @@ func (w *Workspace) sourceDirs(entries []string) (dirs, notes []string) {
 		case e == "":
 			drop(e, "empty entry")
 			continue
-		case filepath.IsAbs(e) || filepath.VolumeName(e) != "" || strings.HasPrefix(e, "/") || strings.HasPrefix(e, `\\`):
+		case paths.Rooted(e) || filepath.IsAbs(e) || filepath.VolumeName(e) != "":
 			drop(e, "an absolute path; use a path relative to the workspace root")
 			continue
 		case strings.HasPrefix(e, "~") || strings.Contains(e, "$"):
@@ -1580,7 +1581,7 @@ func (w *Workspace) readRC(dir string) rcInfo {
 		if p == "" {
 			continue
 		}
-		if filepath.IsAbs(p) && !w.insideRoot(filepath.Clean(p)) {
+		if paths.Rooted(p) && !w.insideRoot(filepath.Clean(p)) {
 			w.noteRC(dir, p)
 			continue
 		}
