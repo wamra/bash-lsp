@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wamra/bash-lsp"
+	bashlsp "github.com/wamra/bash-lsp"
 )
 
 func TestLoad(t *testing.T) {

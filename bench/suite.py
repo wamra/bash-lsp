@@ -640,7 +640,7 @@ def main():
     if "BENCH_CORPUS" not in os.environ:
         os.environ["BENCH_CORPUS"] = os.path.join(os.path.dirname(HERE), "testdata", "corpus")
     out = bench.run(name, cmd) if not only else {"name": name, "caps": {}, "timings": {}, "results": {}}
-    root = os.path.realpath(tempfile.mkdtemp(prefix="bashlsp-corpus2-"))
+    root = os.path.realpath(tempfile.mkdtemp(prefix="bash-lsp-corpus2-"))
     shutil.rmtree(root)
     shutil.copytree(os.path.join(HERE, "testdata", "corpus2"), root)
     meta = {}

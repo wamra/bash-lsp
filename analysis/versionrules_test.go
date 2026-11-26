@@ -375,7 +375,7 @@ func TestWB1302Suppression(t *testing.T) {
 		"SC3010":        "#!/bin/sh\n# shellcheck disable=SC3010\n[[ -n $x ]]\n",
 		"SC3000-SC3999": "#!/bin/sh\n# shellcheck disable=SC3000-SC3999\n[[ -n $x ]]\n",
 		"SC2113":        "#!/bin/sh\n# shellcheck disable=SC2113\nfunction f { :; }\n",
-		"bash-lsp":     "#!/bin/sh\n# bash-lsp disable=WB1302\n[[ -n $x ]]\n",
+		"bash-lsp":      "#!/bin/sh\n# bash-lsp disable=WB1302\n[[ -n $x ]]\n",
 	} {
 		if got := ofRule(diagsWith(t, oneFile(src), "x.sh", ""), "WB1302"); len(got) != 0 {
 			t.Errorf("%s: %s", dir, describe(src, got))

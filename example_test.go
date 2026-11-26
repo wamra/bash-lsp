@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wamra/bash-lsp"
+	bashlsp "github.com/wamra/bash-lsp"
 	"github.com/wamra/bash-lsp/analysis"
 	"github.com/wamra/bash-lsp/parse"
 	"github.com/wamra/bash-lsp/tree"

@@ -705,7 +705,7 @@
    "category": "editor features",
    "method": "textDocument/documentLink",
    "file": "editor/links.sh",
-   "detail": " links=[(1, 'file:///bin/bash'), (3, 'file:///private/var/folders/fj/0ylqgxln0wq73n90y4qflx300000gn/T/bashlsp-corpus2-e1i2kykk/editor/helper.sh'), (4, 'file:///private/var/folders/fj/0ylqgxln0wq73n90y4qflx300000gn/T/bashlsp-corpus2-e1i2kykk/editor/helper.sh')]",
+   "detail": " links=[(1, 'file:///bin/bash'), (3, 'file:///private/var/folders/fj/0ylqgxln0wq73n90y4qflx300000gn/T/bash-lsp-corpus2-e1i2kykk/editor/helper.sh'), (4, 'file:///private/var/folders/fj/0ylqgxln0wq73n90y4qflx300000gn/T/bash-lsp-corpus2-e1i2kykk/editor/helper.sh')]",
    "ms": 2547
   },
   "S137": {
@@ -1299,7 +1299,7 @@
    "category": "source resolution",
    "method": "textDocument/documentLink",
    "file": "source/s_static.sh",
-   "detail": " links=[(1, 'file:///bin/bash'), (3, 'file:///private/var/folders/fj/0ylqgxln0wq73n90y4qflx300000gn/T/bashlsp-corpus2-e1i2kykk/source/lib/a.sh'), (4, 'file:///private/var/folders/fj/0ylqgxln0wq73n90y4qflx300000gn/T/bashlsp-corpus2-e1i2kykk/source/lib/b.sh'), (5, 'file:///private/var/folders/fj/0ylqgxln0wq73n90y4qflx300000gn/T/bashlsp-corpus2-e1i2kykk/source/lib/deep/c.sh')]",
+   "detail": " links=[(1, 'file:///bin/bash'), (3, 'file:///private/var/folders/fj/0ylqgxln0wq73n90y4qflx300000gn/T/bash-lsp-corpus2-e1i2kykk/source/lib/a.sh'), (4, 'file:///private/var/folders/fj/0ylqgxln0wq73n90y4qflx300000gn/T/bash-lsp-corpus2-e1i2kykk/source/lib/b.sh'), (5, 'file:///private/var/folders/fj/0ylqgxln0wq73n90y4qflx300000gn/T/bash-lsp-corpus2-e1i2kykk/source/lib/deep/c.sh')]",
    "ms": 2535
   },
   "S050": {

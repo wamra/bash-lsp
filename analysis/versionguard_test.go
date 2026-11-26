@@ -118,7 +118,7 @@ func TestVersionRulesTrailingDirective(t *testing.T) {
 		t.Fatalf("trailing directive silenced something:\n%s", describe(src, got))
 	}
 	for dir, line := range map[string]string{
-		"bash-lsp":  "[[ -n $x ]] # bash-lsp disable=WB1302",
+		"bash-lsp":   "[[ -n $x ]] # bash-lsp disable=WB1302",
 		"shellcheck": "[[ -n $x ]] # shellcheck disable=SC3010",
 	} {
 		src := "#!/bin/sh\necho start\n" + line + "\n[[ -n $y ]]\n"

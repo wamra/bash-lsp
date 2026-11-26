@@ -183,7 +183,7 @@ def err(r):
 
 
 def run(name, cmd):
-    root = tempfile.mkdtemp(prefix="bashlsp-corpus-")
+    root = tempfile.mkdtemp(prefix="bash-lsp-corpus-")
     root = os.path.realpath(root)
     shutil.rmtree(root)
     shutil.copytree(os.path.join(HERE, os.environ.get("BENCH_CORPUS", "corpus")), root)
