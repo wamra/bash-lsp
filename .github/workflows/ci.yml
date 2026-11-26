@@ -3,6 +3,7 @@ name: ci
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -58,9 +59,12 @@ jobs:
 
   # Builds the installable plugin (launcher plus the six binaries) and
   # force-pushes it as the orphan "plugin" branch, which the marketplace entry
-  # installs from. One commit, so history stays small.
+  # installs from. One commit, so history stays small. Runs for a version tag
+  # (git tag v0.4.1 && git push --tags) or by hand, not for every push: with no
+  # pinned version, every new plugin commit is an update that every machine
+  # downloads (about 90 MB), so docs-only pushes must not publish.
   plugin:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: test
     runs-on: ubuntu-latest
     permissions:
@@ -70,8 +74,10 @@ jobs:
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
         with:
           go-version-file: go.mod
-      - run: scripts/build-plugin.sh "$RUNNER_TEMP/plugin"
-      - run: scripts/check-plugin.sh "$RUNNER_TEMP/plugin"
+      - name: Build and check the plugin tree
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then scripts/build-plugin.sh "$RUNNER_TEMP/plugin" "${GITHUB_REF_NAME#v}"; else scripts/build-plugin.sh "$RUNNER_TEMP/plugin"; fi
+          scripts/check-plugin.sh "$RUNNER_TEMP/plugin"
       - name: Push the plugin branch
         working-directory: ${{ runner.temp }}/plugin
         run: |

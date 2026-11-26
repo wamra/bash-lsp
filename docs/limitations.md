@@ -125,8 +125,9 @@ not been run in VS Code yet, and no other editor was tried.
 macOS is the development platform and the only one the benchmarks were run on.
 The Linux and Windows binaries are built (`scripts/build-release.sh` produces
 all six), and the continuous-integration workflow in `.github/workflows/ci.yml`
-runs `go vet` and the tests on Linux and Windows, and on macOS when started by
-hand. At the time of writing that workflow has not run, so no Linux or Windows
-result is recorded. Nothing is started on Windows for `help` and `man` lookups.
+runs `go vet` and the tests on Linux (also with the race detector), Windows and
+macOS on every push and pull request. On CI the latency budgets are four times
+as long and the growth assertions only log; the budgets in this documentation
+are checked on the development machine. Nothing is started on Windows for `help` and `man` lookups.
 How Claude Code on Windows should start the plugin's `.exe` is not settled, so
 launching the plugin on Windows is untested.

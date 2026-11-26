@@ -61,10 +61,11 @@ arguments) as the server for shell files.
 
 ## Platforms
 
-macOS is the development platform. The Linux and Windows binaries are built,
-and `.github/workflows/ci.yml` runs `go vet` and the tests on Linux and
-Windows, and on macOS when started by hand; that workflow has not run yet, so
-no Linux or Windows result is recorded. Nothing is started on Windows for the
+macOS is the development platform. `.github/workflows/ci.yml` runs `go vet` and
+the tests on Linux (also with the race detector), Windows and macOS on every
+push and pull request. Timing assertions are checked on the development
+machine; on CI the latency budgets are four times as long and the growth
+checks only log. Nothing is started on Windows for the
 `help` and `man` lookups. How Claude Code on Windows should start the plugin's
 `.exe` is not settled, so launching the plugin there is untested. See
 [docs/limitations.md](docs/limitations.md).
