@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/wamra/bash-lsp/internal/paths"
 	"github.com/wamra/bash-lsp/tree"
 )
 
@@ -641,7 +640,7 @@ func (s *Snapshot) sourceItems(st site, path string) []ranked {
 	dirPart := w[:len(w)-len(st.prefix)]
 	dir := filepath.Dir(path)
 	if dirPart != "" {
-		if paths.Rooted(dirPart) && !filepath.IsAbs(filepath.FromSlash(dirPart)) {
+		if rooted(dirPart) && !filepath.IsAbs(filepath.FromSlash(dirPart)) {
 			return nil
 		}
 		d := filepath.FromSlash(dirPart)

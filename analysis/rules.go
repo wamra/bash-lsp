@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/wamra/bash-lsp/internal/paths"
 	"github.com/wamra/bash-lsp/parse"
 	"github.com/wamra/bash-lsp/tree"
 )
@@ -294,7 +293,7 @@ func (c *diagCtx) outsideWorkspace(lit string, ref SourceRef) bool {
 		return true
 	case !strings.Contains(lit, "/"):
 		return !c.batsLoad(ref)
-	case paths.Rooted(lit):
+	case rooted(lit):
 		return !c.inWorkspace(lit)
 	}
 	return false

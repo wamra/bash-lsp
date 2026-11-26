@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/wamra/bash-lsp/internal/paths"
 	"github.com/wamra/bash-lsp/tree"
 )
 
@@ -433,7 +432,7 @@ func (c *diagCtx) loopWordLoads(w *tree.Node, src []byte, dir, path string) bool
 		return true
 	}
 	var pats []string
-	if paths.Rooted(lit) {
+	if rooted(lit) {
 		if !c.inWorkspace(lit) {
 			return false
 		}
