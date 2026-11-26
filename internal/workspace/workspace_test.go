@@ -720,9 +720,10 @@ func TestRCSourcePathOnePath(t *testing.T) {
 			t.Errorf("%s: %v, want %v", name, got, want)
 		}
 	}
-	// The path-list separator is part of the one path.
+	// The path-list separator is part of the one path. (On Windows ":" is
+	// not that separator, and "a:b" would be a path on a drive.)
 	root := t.TempDir()
-	write(t, filepath.Join(root, ".shellcheckrc"), "source-path=a:b\n")
+	write(t, filepath.Join(root, ".shellcheckrc"), "source-path=a"+string(os.PathListSeparator)+"b\n")
 	write(t, filepath.Join(root, "a.sh"), "echo\n")
 	w := open(t, root)
 	if got := w.searchPaths(filepath.Join(w.Root(), "a.sh")); len(got) != 1 {
