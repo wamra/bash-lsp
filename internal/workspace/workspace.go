@@ -561,7 +561,6 @@ type listing struct {
 	names map[string]string // keyFor(name, true) -> name; an exact name maps to itself
 }
 
-// maxListings bounds the listing cache; past it the cache starts over.
 // listingByMtime says whether a cached listing is reused while the
 // directory's modification time is unchanged. On Windows it is not: NTFS keeps
 // directory times coarse and updates the copy that os.Stat reads late, so two
@@ -569,6 +568,7 @@ type listing struct {
 // listing would hide the second one.
 var listingByMtime = !windows
 
+// maxListings bounds the listing cache; past it the cache starts over.
 const maxListings = 64
 
 // names lists dir through the cache: a directory is read again only when
