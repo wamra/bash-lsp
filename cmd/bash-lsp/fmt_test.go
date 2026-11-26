@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -51,7 +52,8 @@ func TestFmtWriteIsAtomicAndKeepsMode(t *testing.T) {
 	if string(b) != "#!/bin/sh\nif true; then echo a; fi\n" {
 		t.Fatalf("got %q", b)
 	}
-	if st, _ := os.Stat(p); st.Mode().Perm() != 0o750 {
+	// Windows keeps no permission bits besides read-only: every file reads 0666.
+	if st, _ := os.Stat(p); runtime.GOOS != "windows" && st.Mode().Perm() != 0o750 {
 		t.Fatalf("mode %v", st.Mode())
 	}
 	if ents, _ := os.ReadDir(dir); len(ents) != 1 {

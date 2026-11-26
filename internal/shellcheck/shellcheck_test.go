@@ -433,12 +433,13 @@ func TestParseCodesLevelsAndFiles(t *testing.T) {
 
 // --- against the installed ShellCheck ---
 
-// isolateHome points HOME and XDG_CONFIG_HOME at an empty directory: a test
+// isolateHome points HOME (USERPROFILE on Windows) and XDG_CONFIG_HOME at an empty directory: a test
 // that runs the real ShellCheck must not read the developer's own rc.
 func isolateHome(t testing.TB) {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir on Windows
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 }
 
@@ -924,6 +925,7 @@ func TestCheckRepoRCDisableAndUserRC(t *testing.T) {
 	home := t.TempDir()
 	writeFile(t, home, ".shellcheckrc", "disable=SC2154\n", 0o644)
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir on Windows
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	ds, err = r.Check(context.Background(), bashFile(filepath.Join(ws, "a.sh"), src))
 	if err != nil || slices.Contains(rules(ds), "SC2154") {

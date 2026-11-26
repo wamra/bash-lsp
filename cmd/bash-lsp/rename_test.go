@@ -63,7 +63,7 @@ func treeBytes(t *testing.T, root string) map[string]string {
 		if err == nil && d.Type().IsRegular() {
 			b, _ := os.ReadFile(p)
 			rel, _ := filepath.Rel(root, p)
-			m[rel] = string(b)
+			m[filepath.ToSlash(rel)] = string(b)
 		}
 		return nil
 	})
@@ -205,12 +205,15 @@ func TestCLIRenameApply(t *testing.T) {
 	if left, _ := filepath.Glob(filepath.Join(root, "*", ".bash-lsp-fmt-*")); len(left) != 0 {
 		t.Errorf("temp files %v", left)
 	}
-	if fi, _ := os.Stat(filepath.Join(root, "main.sh")); fi.Mode().Perm() != 0o644 {
+	if fi, _ := os.Stat(filepath.Join(root, "main.sh")); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o644 {
 		t.Errorf("mode %v", fi.Mode())
 	}
 }
 
 func TestCLIRenameApplyKeepsMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no permission bits besides read-only")
+	}
 	root := corpusCopy(t)
 	if err := os.Chmod(filepath.Join(root, "main.sh"), 0o755); err != nil {
 		t.Fatal(err)
@@ -381,6 +384,9 @@ func TestCLIRenameApplyRefusesReadOnly(t *testing.T) {
 // A directory that cannot take the temporary file stops the apply before any
 // file is replaced.
 func TestCLIRenameStagingFailureWritesNothing(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a directory cannot be made read-only through its mode on Windows")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("root can write anywhere")
 	}
@@ -623,6 +629,9 @@ func TestCLIRenameApplyByNameRefusesWhenOthersExist(t *testing.T) {
 }
 
 func TestCLIRenameApplyRefusesHardLink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the hard-link check needs a Unix system and is skipped on Windows (README, rename --apply)")
+	}
 	root := corpusCopy(t)
 	h := hooks(t)
 	h.afterPlan = func() {
@@ -640,6 +649,9 @@ func TestCLIRenameApplyRefusesHardLink(t *testing.T) {
 }
 
 func TestCLIRenameApplyRefusesSpecialMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("setuid, setgid and sticky bits do not exist on Windows")
+	}
 	root := corpusCopy(t)
 	h := hooks(t)
 	h.afterPlan = func() {
@@ -658,6 +670,9 @@ func TestCLIRenameApplyRefusesSpecialMode(t *testing.T) {
 // A read-only directory is found before anything is staged: exit 4, nothing
 // written, no temporary file.
 func TestCLIRenameApplyRefusesReadOnlyDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a directory cannot be made read-only through its mode on Windows")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("root can write anywhere")
 	}

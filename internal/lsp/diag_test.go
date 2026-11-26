@@ -686,6 +686,7 @@ func TestRealShellCheckMergedAndFixed(t *testing.T) {
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir on Windows
 	t.Setenv("XDG_CONFIG_HOME", home)
 	setDebounce(t, 10*time.Millisecond)
 	root := t.TempDir()

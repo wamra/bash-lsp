@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -231,6 +232,9 @@ func TestCheckSaysWhatWasNotAnalysed(t *testing.T) {
 	}
 }
 
+// diagPathRE reads the path of a "PATH:LINE:COL: ..." output line.
+var diagPathRE = regexp.MustCompile(`^(.+?):[0-9]+:`)
+
 func TestCheckDisplayPaths(t *testing.T) {
 	emptyPath(t)
 	tmp := evalDir(t, t.TempDir())
@@ -245,6 +249,10 @@ func TestCheckDisplayPaths(t *testing.T) {
 		_, out, errs := runCode(t, args...)
 		if out == "" {
 			t.Fatalf("%v: no output, stderr %s", args, errs)
+		}
+		// The path ends at the first ":LINE:" (a Windows path holds a ":" of its own).
+		if m := diagPathRE.FindStringSubmatch(out); m != nil {
+			return m[1]
 		}
 		return strings.SplitN(out, ":", 2)[0]
 	}
@@ -478,6 +486,7 @@ func TestDoctorWarnsOnUserRCExternalSources(t *testing.T) {
 	putFile(t, root, "a.sh", "#!/bin/bash\n:\n")
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir on Windows
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	if out := runOK(t, "doctor", root); strings.Contains(out, "external-sources") {
 		t.Errorf("no user rc, yet a warning:\n%s", out)

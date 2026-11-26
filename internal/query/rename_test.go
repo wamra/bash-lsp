@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -230,14 +231,19 @@ func TestReservedNameReasonForAVariable(t *testing.T) {
 func TestCheckFileMeta(t *testing.T) {
 	s, root := world(t, map[string]string{"a.sh": "f() { :; }\n"})
 	_ = s
-	p := root + "/a.sh"
+	p := filepath.Join(root, "a.sh")
 	if _, issue := CheckFileMeta(root, p, "a.sh"); issue != nil {
 		t.Fatalf("%+v", issue)
+	}
+	if runtime.GOOS == "windows" {
+		// Owner, group and link count come from the Unix file identity, which
+		// Windows does not have: the check skips them (README, rename --apply).
+		return
 	}
 	old := effectiveUID
 	defer func() { effectiveUID = old }()
 	effectiveUID = func() int { return os.Geteuid() + 1 }
-	if _, issue := CheckFileMeta(root, p, "a.sh"); issue == nil || (issue.Code != IssueNotOwner && runtime.GOOS != "windows") {
+	if _, issue := CheckFileMeta(root, p, "a.sh"); issue == nil || issue.Code != IssueNotOwner {
 		t.Errorf("another user's file: %+v", issue)
 	}
 	effectiveUID = func() int { return 0 } // root may rewrite and chown
@@ -245,7 +251,7 @@ func TestCheckFileMeta(t *testing.T) {
 		t.Errorf("root: %+v", issue)
 	}
 	effectiveUID = old
-	if err := os.Link(p, root+"/b.sh"); err == nil {
+	if err := os.Link(p, filepath.Join(root, "b.sh")); err == nil {
 		if _, issue := CheckFileMeta(root, p, "a.sh"); issue == nil || issue.Code != IssueHardLink {
 			t.Errorf("hard link: %+v", issue)
 		}
