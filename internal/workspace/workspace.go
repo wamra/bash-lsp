@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unicode"
 
 	"github.com/wamra/bash-lsp/analysis"
@@ -300,6 +301,7 @@ type Workspace struct {
 	rcCache   map[string]rcInfo
 	rcReal    map[string]bool                // search directory -> inside the root after links; cleared with rcCache
 	excl      map[string]bool                // keys of directories whose subtrees another workspace owns
+	epoch     uint64                         // counts Refresh calls; see listingRacy
 	listings  map[string]listing             // directory listings for spelling on a folding volume, by key
 	unlisted  map[string]string              // keys of directories too large to list for spelling -> their LimitsHit line; cleared by a full walk
 	ignBudget *ignore.Budget                 // the ignore work of the last walk
@@ -557,16 +559,26 @@ func (w *Workspace) SetOverlay(path string, version int, text []byte) {
 // listing is a directory's names on a folding volume, by folded name, as of
 // the directory's modification time.
 type listing struct {
-	mtime int64
-	names map[string]string // keyFor(name, true) -> name; an exact name maps to itself
+	mtime  int64
+	readAt int64             // when it was read, UnixNano
+	epoch  uint64            // the Refresh call that read it
+	names  map[string]string // keyFor(name, true) -> name; an exact name maps to itself
 }
 
-// listingByMtime says whether a cached listing is reused while the
-// directory's modification time is unchanged. On Windows it is not: NTFS keeps
-// directory times coarse and updates the copy that os.Stat reads late, so two
-// renames in quick succession can leave the time as it was and the cached
-// listing would hide the second one.
-var listingByMtime = !windows
+// listingRacy is how soon after a directory's modification time a listing of
+// it is still doubtful. Directory times are coarse on Windows (the system
+// clock tick is about 16 ms), so a rename made right after the listing can
+// leave the time as it was; a listing read less than listingRacy after the
+// time it records is trusted only for the Refresh call that read it, and read
+// again by the next one (the way git treats a "racily clean" index entry). A
+// quiet directory, whose time is older than that, is read once. Zero, where
+// times are fine-grained, trusts the time always.
+var listingRacy = func() time.Duration {
+	if windows {
+		return 50 * time.Millisecond
+	}
+	return 0
+}()
 
 // maxListings bounds the listing cache; past it the cache starts over.
 const maxListings = 64
@@ -585,7 +597,8 @@ func (w *Workspace) names(dir string) map[string]string {
 	if err != nil {
 		return nil
 	}
-	if l, ok := w.listings[k]; ok && listingByMtime && l.mtime == fi.ModTime().UnixNano() {
+	if l, ok := w.listings[k]; ok && l.mtime == fi.ModTime().UnixNano() &&
+		(l.epoch == w.epoch || listingRacy <= 0 || l.readAt-l.mtime >= int64(listingRacy)) {
 		return l.names
 	}
 	ents, err := readDirN(dir, maxFoldListing+1)
@@ -607,7 +620,7 @@ func (w *Workspace) names(dir string) map[string]string {
 	if len(w.listings) >= maxListings {
 		w.listings = map[string]listing{}
 	}
-	w.listings[k] = listing{mtime: fi.ModTime().UnixNano(), names: names}
+	w.listings[k] = listing{mtime: fi.ModTime().UnixNano(), readAt: time.Now().UnixNano(), epoch: w.epoch, names: names}
 	return names
 }
 
@@ -687,6 +700,7 @@ const maxRefreshPaths = 512
 func (w *Workspace) Refresh(paths ...string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.epoch++
 	changed := w.rcStale()
 	skipN, skipSum := w.skipSig()
 	if changed {

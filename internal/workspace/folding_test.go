@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func forceFold(t *testing.T, fold bool) {
@@ -150,15 +151,14 @@ func TestFoldedListingAtCapIsListed(t *testing.T) {
 	}
 }
 
-// A cached listing is reused only while the directory's modification time is a
-// trustworthy sign of change. Where it is not (the listingByMtime switch is
-// off), the directory is read again: a rename that leaves the recorded time
-// as it was must still be seen.
-func TestListingCacheDoesNotTrustAnUnchangedMtimeWhereItIsUnreliable(t *testing.T) {
-	def := listingByMtime
-	defer func() { listingByMtime = def }()
-	for _, byMtime := range []bool{true, false} {
-		listingByMtime = byMtime
+// A listing read soon after the directory's recorded time (listingRacy) is
+// trusted only within the Refresh call that read it: a rename that leaves the
+// time as it was must be seen by the next call, and a batch still lists a
+// directory once. Where listingRacy is zero the time is trusted always.
+func TestRacyListingIsReadAgainByTheNextRefresh(t *testing.T) {
+	defer func(v time.Duration) { listingRacy = v }(listingRacy)
+	for _, racy := range []time.Duration{time.Hour, 0} {
+		listingRacy = racy
 		root := t.TempDir()
 		write(t, filepath.Join(root, "d", "a.sh"), ":\n")
 		w := open(t, root)
@@ -167,10 +167,15 @@ func TestListingCacheDoesNotTrustAnUnchangedMtimeWhereItIsUnreliable(t *testing.
 		if err != nil {
 			t.Fatal(err)
 		}
+		list := func() map[string]string {
+			w.mu.Lock()
+			defer w.mu.Unlock()
+			return w.names(dir)
+		}
 		w.mu.Lock()
-		before := w.names(dir)
+		w.epoch++
 		w.mu.Unlock()
-		if before["a.sh"] != "a.sh" {
+		if before := list(); before["a.sh"] != "a.sh" {
 			t.Fatalf("first listing: %v", before)
 		}
 		if err := os.Rename(filepath.Join(dir, "a.sh"), filepath.Join(dir, "B.sh")); err != nil {
@@ -179,14 +184,15 @@ func TestListingCacheDoesNotTrustAnUnchangedMtimeWhereItIsUnreliable(t *testing.
 		if err := os.Chtimes(dir, fi.ModTime(), fi.ModTime()); err != nil { // the time did not move
 			t.Fatal(err)
 		}
-		w.mu.Lock()
-		after := w.names(dir)
-		w.mu.Unlock()
-		if got := after["b.sh"]; byMtime && got != "" || !byMtime && got != "B.sh" {
-			t.Errorf("listingByMtime=%v: after the rename the listing is %v", byMtime, after)
+		if same := list(); same["b.sh"] != "" {
+			t.Errorf("listingRacy=%v: the same Refresh call read the directory again: %v", racy, same)
 		}
-	}
-	if windows && def {
-		t.Error("directory modification times are trusted on Windows")
+		w.mu.Lock()
+		w.epoch++ // the next Refresh call
+		w.mu.Unlock()
+		got := list()["b.sh"]
+		if racy > 0 && got != "B.sh" || racy == 0 && got != "" {
+			t.Errorf("listingRacy=%v: next call sees %q", racy, got)
+		}
 	}
 }

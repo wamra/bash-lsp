@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // ---- Refresh as the target of watched-file events ----
@@ -501,11 +502,16 @@ func TestCaseVariantEventsReadListingsOnce(t *testing.T) {
 	if first == 0 || first > 2 {
 		t.Fatalf("%d listings for one batch, want at most 2 (root and d)", first)
 	}
+	// A listing read within listingRacy of the directory's time is doubtful
+	// and read again once; after that the unchanged directory costs none.
+	time.Sleep(listingRacy)
+	w.Refresh(filepath.Join(w.Root(), "d", "F7.SH"))
+	settled := *n
 	for i := 0; i < 20; i++ {
 		w.Refresh(filepath.Join(w.Root(), "d", "F7.SH"))
 	}
-	if *n != first {
-		t.Fatalf("%d more listings for repeated events in an unchanged directory", *n-first)
+	if *n != settled {
+		t.Fatalf("%d more listings for repeated events in an unchanged directory", *n-settled)
 	}
 	if got := rels(w); len(got) != 50 || got[0] != "d/f0.sh" {
 		t.Fatalf("spelling did not stay the disk's: %v", got[:3])
