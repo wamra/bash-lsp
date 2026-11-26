@@ -1,0 +1,9 @@
+{
+  "name": "bash-lsp",
+  "version": "0.4.0",
+  "description": "Bash language server: go to definition, find references, hover, completion, symbols, rename, syntax and lint diagnostics for shell scripts. Reads the scripts and never runs them. May start ShellCheck, and bash and man for help text, only when found outside the workspace.",
+  "license": "MIT",
+  "author": {
+    "name": "wamra"
+  }
+}
