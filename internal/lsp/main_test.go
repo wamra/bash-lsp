@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -22,7 +23,7 @@ var testBin string
 // The test binary is also the fake ShellCheck of the tests that need one
 // (fakeShellCheck): started with WB_FAKE_TOOL set it plays that part and exits.
 func TestMain(m *testing.M) {
-	if mode := os.Getenv("WB_FAKE_TOOL"); mode != "" {
+	if mode := fakeToolMode(); mode != "" {
 		runFakeTool(mode)
 		os.Exit(0)
 	}
@@ -35,19 +36,58 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	for _, n := range []string{"ls", "cat", "grep", "rm", "mkdir"} {
-		if err := os.WriteFile(filepath.Join(bin, n), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		// On Windows a program needs an executable extension to count as one.
+		if err := os.WriteFile(filepath.Join(bin, n+exeExt()), []byte("#!/bin/sh\n"), 0o755); err != nil {
 			panic(err)
 		}
 	}
 	testBin = bin
 	cfg := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(cfg, []byte("[path]\nprofile = [\""+bin+"\"]\n"), 0o644); err != nil {
+	if err := os.WriteFile(cfg, []byte("[path]\nprofile = ["+tomlLiteral(bin)+"]\n"), 0o644); err != nil {
 		panic(err)
 	}
 	os.Setenv("BASH_LSP_CONFIG", cfg)
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)
+}
+
+// tomlLiteral is p as a TOML literal string: nothing in it is an escape, so a
+// Windows path ("C:\Users\x") reads back as it is written.
+func tomlLiteral(p string) string { return "'" + p + "'" }
+
+// exeExt is the extension a program needs on this platform.
+func exeExt() string {
+	if runtime.GOOS == "windows" {
+		return ".exe"
+	}
+	return ""
+}
+
+// fakeToolMode is the mode this process plays the fake ShellCheck in, or "".
+// On Unix the fake is a script that sets WB_FAKE_TOOL. On Windows it is a link
+// to the test binary named shellcheck.exe, and the mode and the extra
+// environment are in the file beside it, NAME.fake (see fakeShellCheck): the
+// runner passes the fake only a short list of environment variables.
+func fakeToolMode() string {
+	if mode := os.Getenv("WB_FAKE_TOOL"); mode != "" {
+		return mode
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	b, err := os.ReadFile(exe + ".fake")
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	for _, kv := range lines[1:] {
+		if k, v, ok := strings.Cut(strings.TrimSpace(kv), "="); ok {
+			os.Setenv(k, v)
+		}
+	}
+	return strings.TrimSpace(lines[0])
 }
 
 // runFakeTool is the fake ShellCheck. It reads the script on standard input
@@ -125,6 +165,22 @@ func fakeShellCheck(t *testing.T, mode string, env ...string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if runtime.GOOS == "windows" {
+		p := filepath.Join(t.TempDir(), "shellcheck.exe")
+		if err := os.Link(exe, p); err != nil {
+			b, rerr := os.ReadFile(exe)
+			if rerr != nil {
+				t.Fatal(rerr)
+			}
+			if err := os.WriteFile(p, b, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(p+".fake", []byte(mode+"\n"+strings.Join(env, "\n")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
 	var sb strings.Builder
 	sb.WriteString("#!/bin/sh\nWB_FAKE_TOOL=" + mode)
 	for _, kv := range env {
@@ -150,7 +206,7 @@ func userConfig(t *testing.T, extra string) string {
 
 func writeUserConfig(t *testing.T, p, extra string) {
 	t.Helper()
-	body := "[path]\nprofile = [\"" + testBin + "\"]\n" + extra
+	body := "[path]\nprofile = [" + tomlLiteral(testBin) + "]\n" + extra
 	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
