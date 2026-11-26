@@ -16,6 +16,15 @@ func forceFold(t *testing.T, fold bool) {
 	t.Cleanup(func() { detectFold = old })
 }
 
+// foldCases are the case rules a test runs under. Keys fold on every Windows
+// volume (see Workspace.fold), so the case-sensitive rule only exists elsewhere.
+func foldCases() []bool {
+	if windows {
+		return []bool{true}
+	}
+	return []bool{true, false}
+}
+
 // countReadEntries counts the directory entries readDirN returns for the
 // duration of a test.
 func countReadEntries(t *testing.T) *int {
@@ -32,7 +41,7 @@ func countReadEntries(t *testing.T) *int {
 }
 
 func TestGitignoreFoldsOnFoldingVolume(t *testing.T) {
-	for _, fold := range []bool{true, false} {
+	for _, fold := range foldCases() {
 		forceFold(t, fold)
 		root := t.TempDir()
 		write(t, filepath.Join(root, ".gitignore"), "Build/\n")
@@ -56,7 +65,7 @@ func TestGitignoreFoldsOnFoldingVolume(t *testing.T) {
 }
 
 func TestIncludeExcludeFold(t *testing.T) {
-	for _, fold := range []bool{true, false} {
+	for _, fold := range foldCases() {
 		forceFold(t, fold)
 		root := t.TempDir()
 		write(t, filepath.Join(root, "vendor", "a.sh"), "v() { :; }\n")

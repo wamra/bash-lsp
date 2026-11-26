@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -180,7 +181,7 @@ func TestSourcePathsContainment(t *testing.T) {
 		}
 		found := false
 		for _, line := range n {
-			found = found || strings.Contains(line, "sources.paths") && strings.Contains(line, `"`+e+`"`) && strings.HasSuffix(line, "(ignored)")
+			found = found || strings.Contains(line, "sources.paths") && strings.Contains(line, strconv.Quote(e)) && strings.HasSuffix(line, "(ignored)")
 		}
 		if !found {
 			t.Errorf("no notice for %q in %q", e, n)

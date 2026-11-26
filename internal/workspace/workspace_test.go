@@ -65,6 +65,10 @@ func rels(w *Workspace) []string {
 		r, _ := filepath.Rel(w.Root(), p)
 		out = append(out, filepath.ToSlash(r))
 	}
+	// The snapshot orders paths by their OS spelling, where "inner2\c.sh" sorts
+	// before "inner\b.sh" but "inner2/c.sh" after "inner/b.sh"; the tests compare
+	// sets of files, so they compare them in the slash order.
+	slices.Sort(out)
 	return out
 }
 
