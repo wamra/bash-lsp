@@ -561,6 +561,13 @@ type listing struct {
 }
 
 // maxListings bounds the listing cache; past it the cache starts over.
+// listingByMtime says whether a cached listing is reused while the
+// directory's modification time is unchanged. On Windows it is not: NTFS keeps
+// directory times coarse and updates the copy that os.Stat reads late, so two
+// renames in quick succession can leave the time as it was and the cached
+// listing would hide the second one.
+var listingByMtime = !windows
+
 const maxListings = 64
 
 // names lists dir through the cache: a directory is read again only when
@@ -577,7 +584,7 @@ func (w *Workspace) names(dir string) map[string]string {
 	if err != nil {
 		return nil
 	}
-	if l, ok := w.listings[k]; ok && l.mtime == fi.ModTime().UnixNano() {
+	if l, ok := w.listings[k]; ok && listingByMtime && l.mtime == fi.ModTime().UnixNano() {
 		return l.names
 	}
 	ents, err := readDirN(dir, maxFoldListing+1)

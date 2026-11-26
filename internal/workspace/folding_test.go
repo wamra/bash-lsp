@@ -140,3 +140,44 @@ func TestFoldedListingAtCapIsListed(t *testing.T) {
 		t.Fatalf("limit line for a directory at the cap: %q", got)
 	}
 }
+
+// A cached listing is reused only while the directory's modification time is a
+// trustworthy sign of change. Where it is not (the listingByMtime switch is
+// off), the directory is read again: a rename that leaves the recorded time
+// as it was must still be seen.
+func TestListingCacheDoesNotTrustAnUnchangedMtimeWhereItIsUnreliable(t *testing.T) {
+	def := listingByMtime
+	defer func() { listingByMtime = def }()
+	for _, byMtime := range []bool{true, false} {
+		listingByMtime = byMtime
+		root := t.TempDir()
+		write(t, filepath.Join(root, "d", "a.sh"), ":\n")
+		w := open(t, root)
+		dir := filepath.Join(w.Root(), "d")
+		fi, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.mu.Lock()
+		before := w.names(dir)
+		w.mu.Unlock()
+		if before["a.sh"] != "a.sh" {
+			t.Fatalf("first listing: %v", before)
+		}
+		if err := os.Rename(filepath.Join(dir, "a.sh"), filepath.Join(dir, "B.sh")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(dir, fi.ModTime(), fi.ModTime()); err != nil { // the time did not move
+			t.Fatal(err)
+		}
+		w.mu.Lock()
+		after := w.names(dir)
+		w.mu.Unlock()
+		if got := after["b.sh"]; byMtime && got != "" || !byMtime && got != "B.sh" {
+			t.Errorf("listingByMtime=%v: after the rename the listing is %v", byMtime, after)
+		}
+	}
+	if windows && def {
+		t.Error("directory modification times are trusted on Windows")
+	}
+}
