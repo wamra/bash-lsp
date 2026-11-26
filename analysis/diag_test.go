@@ -12,7 +12,7 @@ import (
 	"github.com/wamra/bash-lsp/tree"
 )
 
-const diagRoot = "/w"
+var diagRoot = platPath("/w")
 
 // diagWorld analyses files (root-relative names) under diagRoot.
 func diagWorld(files map[string]string, opt Options) *Snapshot {
@@ -606,16 +606,16 @@ func TestDiagnosticsInBoundedTime(t *testing.T) {
 // A build from the previous snapshot reuses the scans and mentions of the
 // files whose facts it shares; the edited file is scanned afresh.
 func TestDiagScansCarryOver(t *testing.T) {
-	a, b := "/w/a.sh", "/w/b.sh"
+	a, b := filepath.Join(diagRoot, "a.sh"), filepath.Join(diagRoot, "b.sh")
 	fa := Bind(parse.File(a, []byte("#!/bin/bash\nsource ./b.sh\nf() { local u=1; }\nf\n")))
 	fb := Bind(parse.File(b, []byte("g() { echo \"$u\"; }\n")))
-	s1 := Build(map[string]*FileFacts{a: fa, b: fb}, Options{Root: "/w"}, 1)
+	s1 := Build(map[string]*FileFacts{a: fa, b: fb}, Options{Root: diagRoot}, 1)
 	s1.Diagnostics(a, DiagOptions{})
 	if s1.scans[fb] == nil || s1.mentions[fb] == nil {
 		t.Fatal("the visible file was not scanned")
 	}
 	fa2 := Bind(parse.File(a, []byte("#!/bin/bash\nsource ./b.sh\nf() { local u=2; }\nf\n")))
-	s2 := Build(map[string]*FileFacts{a: fa2, b: fb}, Options{Root: "/w", Prev: s1}, 2)
+	s2 := Build(map[string]*FileFacts{a: fa2, b: fb}, Options{Root: diagRoot, Prev: s1}, 2)
 	if s2.scans[fb] != s1.scans[fb] || s2.mentions[fb] != s1.mentions[fb] {
 		t.Fatal("the unchanged file's scan was not carried over")
 	}

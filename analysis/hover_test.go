@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -273,8 +274,8 @@ func TestHoverDynamicScopeCapped(t *testing.T) {
 // Hover on the path word of an unresolved `source` names the
 // reason; a resolved one and the `source` keyword have no hover.
 func TestHoverUnresolvedSource(t *testing.T) {
-	root := "/w"
-	big, main, lib := root+"/big.sh", root+"/m.sh", root+"/lib.sh"
+	root := platPath("/w")
+	big, main, lib := filepath.Join(root, "big.sh"), filepath.Join(root, "m.sh"), filepath.Join(root, "lib.sh")
 	src := "source ./big.sh\nsource ./none.sh\nsource ./lib.sh\n"
 	s := Analyze(map[string][]byte{main: []byte(src), lib: []byte("l() { :; }\n")},
 		Options{Root: root, Oversize: func(p string) bool { return p == big }})

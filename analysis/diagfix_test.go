@@ -170,8 +170,8 @@ func TestUnresolvedSourceSeverity(t *testing.T) {
 		return out
 	}
 	cases := map[string][]Severity{
-		"source ./nope.sh\n":                                                     {SevWarning},
-		"source " + diagRoot + "/lib/none.sh\n":                                  {SevWarning},
+		"source ./nope.sh\n": {SevWarning},
+		"source " + slashed(filepath.Join(diagRoot, "lib", "none.sh")) + "\n": {SevWarning},
 		". /etc/os-release\n":                                                    {SevInfo},
 		"source /opt/app/lib.sh\n":                                               {SevInfo},
 		"source ~/.bashrc\n":                                                     {SevInfo},

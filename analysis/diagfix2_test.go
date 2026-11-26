@@ -179,11 +179,11 @@ func TestSourceMinors(t *testing.T) {
 		t.Errorf("source=: %+v", ds)
 	}
 	// every workspace folder counts as the workspace
-	other := "/other"
-	if got := sev(sh("source /other/lib/x.sh\n"), "x.sh", DiagOptions{Roots: []string{other}}); len(got) != 1 || got[0] != SevWarning {
+	other := platPath("/other")
+	if got := sev(sh("source "+slashed(filepath.Join(other, "lib", "x.sh"))+"\n"), "x.sh", DiagOptions{Roots: []string{other}}); len(got) != 1 || got[0] != SevWarning {
 		t.Errorf("second folder: %v", got)
 	}
-	if got := sev(sh("source /elsewhere/x.sh\n"), "x.sh", DiagOptions{Roots: []string{other}}); len(got) != 1 || got[0] != SevInfo {
+	if got := sev(sh("source "+slashed(platPath("/elsewhere/x.sh"))+"\n"), "x.sh", DiagOptions{Roots: []string{other}}); len(got) != 1 || got[0] != SevInfo {
 		t.Errorf("outside both: %v", got)
 	}
 	// SC1090 silences only a wholly computed path, SC1091 a missing file or a

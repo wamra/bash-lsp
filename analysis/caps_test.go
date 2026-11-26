@@ -3,6 +3,7 @@ package analysis
 import (
 	"fmt"
 	"math"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -637,7 +638,7 @@ func TestCallerLocalBudgetInLimitsHit(t *testing.T) {
 		return sb.String()
 	}
 	over := diagWorld(sh(shape(600)), Options{})
-	p := diagRoot + "/x.sh"
+	p := filepath.Join(diagRoot, "x.sh")
 	if got := limitLines(over, "caller-local search"); len(got) != 0 {
 		t.Fatalf("before Diagnostics: %q", got)
 	}
@@ -678,7 +679,7 @@ func versionGuardShape(chain, users int) string {
 
 func TestVersionGuardBudgetInLimitsHit(t *testing.T) {
 	over := diagWorld(sh(versionGuardShape(300, 600)), Options{})
-	p := diagRoot + "/x.sh"
+	p := filepath.Join(diagRoot, "x.sh")
 	over.Diagnostics(p, DiagOptions{Target: VersionRange{Min: BashVersion{Major: 3, Minor: 2}}})
 	first := limitLines(over, "version-guard search")
 	if len(first) != 1 || !strings.Contains(first[0], "x.sh:") {
@@ -743,7 +744,7 @@ func TestVersionGuardSearchIsDeterministic(t *testing.T) {
 	lines, finds := map[string]bool{}, map[string]bool{}
 	for run := 0; run < 40; run++ {
 		s := diagWorld(sh(src), Options{})
-		ds := s.Diagnostics(diagRoot+"/x.sh", DiagOptions{Target: VersionRange{Min: BashVersion{Major: 3, Minor: 2}}})
+		ds := s.Diagnostics(filepath.Join(diagRoot, "x.sh"), DiagOptions{Target: VersionRange{Min: BashVersion{Major: 3, Minor: 2}}})
 		lines[strings.Join(limitLines(s, "version-guard search"), "|")] = true
 		var keys []string
 		for _, d := range ds {
@@ -865,7 +866,7 @@ func TestVersionGuardManyTopCallsGrowth(t *testing.T) {
 			start := time.Now()
 			var done bool
 			if !withinBound(t, fmt.Sprintf("diagnostics n=%d", k), 20*time.Second, func() {
-				s.Diagnostics(diagRoot+"/x.sh", DiagOptions{Target: VersionRange{Min: BashVersion{Major: 3, Minor: 2}}})
+				s.Diagnostics(filepath.Join(diagRoot, "x.sh"), DiagOptions{Target: VersionRange{Min: BashVersion{Major: 3, Minor: 2}}})
 				done = true
 			}) || !done {
 				return

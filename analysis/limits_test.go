@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -76,17 +77,34 @@ func TestGlobCap(t *testing.T) {
 // The index answers as filepath.Match over every path does, for patterns
 // with and without pattern characters in the directory part.
 func TestGlobIndexEqualsFullScan(t *testing.T) {
+	// The paths and patterns are written as on Unix and converted: on Windows
+	// they get the volume of diagRoot and backslashes: filepath.Match there
+	// takes only a backslash for a separator, so "/" in a path would let * run
+	// across directories and the scan would not describe what the index does.
+	conv := func(s string) string {
+		if runtime.GOOS != "windows" {
+			return s
+		}
+		if strings.HasPrefix(s, "/") {
+			return filepath.VolumeName(diagRoot) + filepath.FromSlash(s)
+		}
+		return filepath.FromSlash(s)
+	}
 	var paths []string
 	for _, d := range []string{"/w", "/w/lib", "/w/lib/a", "/w/lib/b", "/w/x[y]", "/w/plug-1", "/w/plug-2"} {
 		for _, n := range []string{"a.sh", "b.sh", "ab.bash", "c1.sh", "c2.sh", "data.txt", "[z].sh"} {
-			paths = append(paths, d+"/"+n)
+			paths = append(paths, conv(d+"/"+n))
 		}
 	}
 	sort.Strings(paths)
 	g := newGlobIndex(paths)
 	pats := []string{"/w/*.sh", "/w/lib/*.sh", "/w/lib/*/*.sh", "/w/*/a.sh", "/w/plug-?/c?.sh", "/w/lib/[ab].sh", "/w/lib/a/*", "/w/nope/*.sh",
-		"/w/x\\[y\\]/*.sh", "/w/lib/*.{sh}", "/w/plug-[12]/*.bash", "/*/lib/b.sh", "/w/lib/[", "relative/*.sh"}
+		"/w/lib/*.{sh}", "/w/plug-[12]/*.bash", "/*/lib/b.sh", "/w/lib/[", "relative/*.sh"}
+	if runtime.GOOS != "windows" { // there a backslash is the separator, not an escape
+		pats = append(pats, "/w/x\\[y\\]/*.sh")
+	}
 	for _, pat := range pats {
+		pat = conv(pat)
 		var want []string
 		for _, p := range paths {
 			if ok, _ := filepath.Match(pat, p); ok {
@@ -99,7 +117,7 @@ func TestGlobIndexEqualsFullScan(t *testing.T) {
 	}
 	rng := rand.New(rand.NewSource(1))
 	for i := 0; i < 200; i++ {
-		pat := "/w/" + []string{"lib", "*", "plug-?", "lib/*"}[rng.Intn(4)] + "/" + []string{"*.sh", "a*", "?.sh", "c[12].sh"}[rng.Intn(4)]
+		pat := conv("/w/" + []string{"lib", "*", "plug-?", "lib/*"}[rng.Intn(4)] + "/" + []string{"*.sh", "a*", "?.sh", "c[12].sh"}[rng.Intn(4)])
 		var want []string
 		for _, p := range paths {
 			if ok, _ := filepath.Match(pat, p); ok {
@@ -175,12 +193,12 @@ func globLoaderWorld() map[string]*FileFacts {
 	files := map[string]*FileFacts{}
 	for d := 0; d < 20; d++ {
 		for i := 0; i < 50; i++ {
-			p := fmt.Sprintf("%s/d%02d/f%02d.sh", diagRoot, d, i)
+			p := filepath.Join(diagRoot, fmt.Sprintf("d%02d", d), fmt.Sprintf("f%02d.sh", i))
 			files[p] = Bind(parse.File(p, []byte(fmt.Sprintf("d%02d_f%02d() { :; }\n", d, i))))
 		}
 	}
 	for l := 0; l < 200; l++ {
-		p := fmt.Sprintf("%s/load%03d.sh", diagRoot, l)
+		p := filepath.Join(diagRoot, fmt.Sprintf("load%03d.sh", l))
 		src := fmt.Sprintf("for f in d%02d/*.sh; do\n  source \"$f\"\ndone\n", l%20)
 		files[p] = Bind(parse.File(p, []byte(src)))
 	}
@@ -188,7 +206,7 @@ func globLoaderWorld() map[string]*FileFacts {
 }
 
 func globEdit(files map[string]*FileFacts, prev *Snapshot, gen uint64) *Snapshot {
-	p := fmt.Sprintf("%s/d05/f07.sh", diagRoot)
+	p := filepath.Join(diagRoot, "d05", "f07.sh")
 	edited := make(map[string]*FileFacts, len(files))
 	for k, v := range files {
 		edited[k] = v
@@ -213,7 +231,7 @@ func BenchmarkGlobEdit(b *testing.B) {
 func TestGlobIndexLimitsComparisons(t *testing.T) {
 	files := globLoaderWorld()
 	s := Build(files, Options{Root: diagRoot}, 1)
-	if n := len(s.SourceEdges(diagRoot + "/load000.sh")[0].Targets); n != 50 {
+	if n := len(s.SourceEdges(filepath.Join(diagRoot, "load000.sh"))[0].Targets); n != 50 {
 		t.Fatalf("loader resolves %d files, want 50", n)
 	}
 	if got := s.lim.globTried; got == 0 || got > 200*50 {
@@ -221,7 +239,7 @@ func TestGlobIndexLimitsComparisons(t *testing.T) {
 	}
 	// A pattern with a pattern character in its directory part scans every path.
 	g := newGlobIndex(s.paths)
-	g.match(diagRoot + "/d0?/f00.sh")
+	g.match(filepath.Join(diagRoot, "d0?", "f00.sh"))
 	if got := g.tried.Load(); got != int64(len(s.paths)) {
 		t.Errorf("a pattern directory scan compared %d names, want %d", got, len(s.paths))
 	}

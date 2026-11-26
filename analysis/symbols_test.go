@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -81,7 +82,7 @@ read line
 func TestWorkspaceSymbols(t *testing.T) { // C22
 	q := buildCorpus(t)
 	got := q.s.WorkspaceSymbols("plugin_a", 10)
-	if len(got) != 1 || !strings.HasSuffix(got[0].Path, "plugins/a.sh") {
+	if len(got) != 1 || !strings.HasSuffix(filepath.ToSlash(got[0].Path), "plugins/a.sh") {
 		t.Fatalf("%+v", got)
 	}
 	if r := q.s.WorkspaceSymbols("bldrel", 10); len(r) == 0 || r[0].Name != "build_release" { // subsequence
