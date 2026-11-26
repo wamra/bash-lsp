@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -48,10 +51,14 @@ func cmdHook(stdin io.Reader, stderr io.Writer) int {
 	if file == "" || !filepath.IsAbs(file) || !hookShellExts[strings.ToLower(filepath.Ext(file))] {
 		return 0
 	}
+	if _, err := os.Stat(file); errors.Is(err, fs.ErrNotExist) {
+		return 0 // a file that is gone is not worth Claude's attention
+	}
 	var out, errb bytes.Buffer
 	code := runCheck([]string{"--format", "json", "--", file}, &out, &errb)
 	if code == checkRuntime || code == checkUsageErr {
-		// A file that is gone is not worth Claude's attention.
+		// A file that vanished since the check above gives the system's own
+		// message; that one is not worth Claude's attention either.
 		if errb.Len() > 0 && !strings.Contains(errb.String(), "no such file") {
 			fmt.Fprint(stderr, errb.String())
 			return 1
