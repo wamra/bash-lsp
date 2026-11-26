@@ -13,6 +13,15 @@ import (
 	"time"
 )
 
+// exeExt is the extension a program needs to be one on this platform: Windows
+// takes a PATHEXT extension, other systems an execute bit.
+func exeExt() string {
+	if runtime.GOOS == "windows" {
+		return ".exe"
+	}
+	return ""
+}
+
 func write(t *testing.T, dir, name string, mode os.FileMode) string {
 	t.Helper()
 	p := filepath.Join(dir, name)
@@ -48,7 +57,7 @@ func TestProfileExecutableOnly(t *testing.T) {
 
 func TestProfileRelativeDirSkippedAndReported(t *testing.T) {
 	dir := t.TempDir()
-	write(t, dir, "foo", 0o755)
+	write(t, dir, "foo"+exeExt(), 0o755)
 	p := NewProfile([]string{".", "bin", "", dir})
 	if _, ok := p.Lookup("foo"); !ok {
 		t.Fatal("foo in the absolute directory was not found")
@@ -287,7 +296,7 @@ func TestProfileReadsInChunksAndStopsAtCap(t *testing.T) {
 			var out []os.DirEntry
 			for i := 0; i < n; i++ {
 				asked++
-				out = append(out, fakeEntry{"n" + itoa(asked)})
+				out = append(out, fakeEntry{"n" + itoa(asked) + exeExt()})
 			}
 			return out, nil
 		}}, nil
